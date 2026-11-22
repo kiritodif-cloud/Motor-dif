@@ -181,20 +181,24 @@ impl ScriptComponent {
         // 6. get_entity(id)
         let entities_ref = ctx.world_entities.clone();
         let get_entity = lua
-            .create_function(move |lua, id: String| {
-                let map = entities_ref.read().unwrap();
-                if let Some(t) = map.get(&id) {
-                    let tbl = lua.create_table()?;
-                    tbl.set("x", t[0])?;
-                    tbl.set("y", t[1])?;
-                    tbl.set("z", t[2])?;
-                    tbl.set("rx", t[3])?;
-                    tbl.set("ry", t[4])?;
-                    tbl.set("rz", t[5])?;
-                    tbl.set("sx", t[6])?;
-                    tbl.set("sy", t[7])?;
-                    tbl.set("sz", t[8])?;
-                    Ok(Some(tbl))
+            .create_function(move |lua, id: Option<String>| {
+                if let Some(id) = id {
+                    let map = entities_ref.read().unwrap();
+                    if let Some(t) = map.get(&id) {
+                        let tbl = lua.create_table()?;
+                        tbl.set("x", t[0])?;
+                        tbl.set("y", t[1])?;
+                        tbl.set("z", t[2])?;
+                        tbl.set("rx", t[3])?;
+                        tbl.set("ry", t[4])?;
+                        tbl.set("rz", t[5])?;
+                        tbl.set("sx", t[6])?;
+                        tbl.set("sy", t[7])?;
+                        tbl.set("sz", t[8])?;
+                        Ok(Some(tbl))
+                    } else {
+                        Ok(None)
+                    }
                 } else {
                     Ok(None)
                 }

@@ -1,149 +1,90 @@
 {
   "camera": {
     "mode": "3d",
-    "position": [0.0, 6.5, 12.0],
-    "target": [0.0, 2.0, 0.0],
+    "position": [0.0, 4.5, 9.5],
+    "target": [0.0, 1.2, 0.0],
     "ortho_size": 10.0
   },
   "entities": [
     {
-      "id": "ground",
+      "id": "floor",
       "mesh": "plane",
       "position": [0.0, 0.0, 0.0],
       "rotation": [0.0, 0.0, 0.0],
-      "scale": [24.0, 1.0, 24.0],
-      "color": [0.18, 0.20, 0.24, 1.0],
+      "scale": [14.0, 1.0, 14.0],
+      "texture": "assets/textures/checker.png",
+      "color": [1.0, 1.0, 1.0, 1.0],
       "emissive": 0.0,
       "script": null,
       "physics": {
         "body": "fixed",
         "collider": "cuboid",
         "mass": 0.0,
-        "restitution": 0.3
+        "restitution": 0.85
       }
     },
     {
-      "id": "player_ball",
+      "id": "sprite_banner",
+      "mesh": "quad",
+      "position": [0.0, 3.8, -3.5],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [2.6, 2.6, 2.6],
+      "texture": "assets/textures/sprite_orb.png",
+      "color": [0.4, 0.9, 1.0, 0.95],
+      "emissive": 0.3,
+      "script": "assets/scripts/sprite_float.lua",
+      "physics": null
+    },
+    {
+      "id": "bouncing_orb",
       "mesh": "sphere",
-      "position": [0.0, 2.5, 0.0],
+      "position": [0.0, 6.0, 0.0],
       "rotation": [0.0, 0.0, 0.0],
       "scale": [1.2, 1.2, 1.2],
-      "color": [0.1, 0.85, 1.0, 1.0],
-      "emissive": 0.5,
-      "script": "assets/scripts/gameplay_demo.lua",
+      "texture": "assets/textures/sprite_orb.png",
+      "color": [1.0, 0.35, 0.85, 1.0],
+      "emissive": 0.45,
+      "script": "assets/scripts/bouncing_orb.lua",
       "physics": {
         "body": "dynamic",
         "collider": "ball",
-        "mass": 1.2,
-        "restitution": 0.65
+        "mass": 1.0,
+        "restitution": 0.92
       }
     },
     {
-      "id": "neon_tower_left",
-      "mesh": "cylinder",
-      "position": [-4.5, 2.5, -2.5],
-      "rotation": [0.0, 0.0, 0.0],
-      "scale": [1.0, 5.0, 1.0],
-      "color": [1.0, 0.15, 0.55, 1.0],
-      "emissive": 0.9,
-      "script": null,
-      "physics": {
-        "body": "fixed",
-        "collider": "cuboid",
-        "mass": 0.0,
-        "restitution": 0.4
-      }
-    },
-    {
-      "id": "neon_tower_right",
-      "mesh": "cylinder",
-      "position": [4.5, 2.5, -2.5],
-      "rotation": [0.0, 0.0, 0.0],
-      "scale": [1.0, 5.0, 1.0],
-      "color": [0.25, 1.0, 0.45, 1.0],
-      "emissive": 0.85,
-      "script": null,
-      "physics": {
-        "body": "fixed",
-        "collider": "cuboid",
-        "mass": 0.0,
-        "restitution": 0.4
-      }
-    },
-    {
-      "id": "arch_beam",
+      "id": "cube_gold",
       "mesh": "cube",
-      "position": [0.0, 5.2, -2.5],
-      "rotation": [0.0, 0.0, 0.0],
-      "scale": [10.0, 0.6, 1.2],
-      "color": [0.35, 0.40, 0.50, 1.0],
+      "position": [-3.2, 1.2, -1.0],
+      "rotation": [0.0, 0.45, 0.0],
+      "scale": [1.6, 1.6, 1.6],
+      "texture": "assets/textures/checker.png",
+      "color": [0.95, 0.8, 0.25, 1.0],
       "emissive": 0.15,
       "script": null,
       "physics": {
+        "body": "dynamic",
+        "collider": "cuboid",
+        "mass": 2.5,
+        "restitution": 0.4
+      }
+    },
+    {
+      "id": "pillar_cyan",
+      "mesh": "cylinder",
+      "position": [3.4, 1.6, -1.2],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [1.2, 3.2, 1.2],
+      "texture": null,
+      "color": [0.2, 0.85, 0.85, 1.0],
+      "emissive": 0.1,
+      "script": null,
+      "physics": {
         "body": "fixed",
         "collider": "cuboid",
         "mass": 0.0,
-        "restitution": 0.3
-      }
-    },
-    {
-      "id": "dynamic_cube_orange",
-      "mesh": "cube",
-      "position": [-1.6, 6.0, -1.0],
-      "rotation": [0.2, 0.4, 0.1],
-      "scale": [1.1, 1.1, 1.1],
-      "color": [1.0, 0.6, 0.1, 1.0],
-      "emissive": 0.25,
-      "script": null,
-      "physics": {
-        "body": "dynamic",
-        "collider": "cuboid",
-        "mass": 1.0,
         "restitution": 0.5
       }
-    },
-    {
-      "id": "dynamic_cube_purple",
-      "mesh": "cube",
-      "position": [1.6, 7.2, 0.2],
-      "rotation": [0.1, 0.7, 0.3],
-      "scale": [1.0, 1.0, 1.0],
-      "color": [0.75, 0.2, 0.95, 1.0],
-      "emissive": 0.35,
-      "script": null,
-      "physics": {
-        "body": "dynamic",
-        "collider": "cuboid",
-        "mass": 0.9,
-        "restitution": 0.55
-      }
-    },
-    {
-      "id": "dynamic_sphere_gold",
-      "mesh": "sphere",
-      "position": [0.2, 9.0, -1.8],
-      "rotation": [0.0, 0.0, 0.0],
-      "scale": [1.0, 1.0, 1.0],
-      "color": [1.0, 0.9, 0.15, 1.0],
-      "emissive": 0.7,
-      "script": null,
-      "physics": {
-        "body": "dynamic",
-        "collider": "ball",
-        "mass": 0.8,
-        "restitution": 0.75
-      }
-    },
-    {
-      "id": "backdrop_quad",
-      "mesh": "quad",
-      "position": [0.0, 6.0, -9.0],
-      "rotation": [0.0, 0.0, 0.0],
-      "scale": [22.0, 12.0, 1.0],
-      "color": [0.07, 0.08, 0.13, 1.0],
-      "emissive": 0.0,
-      "script": null,
-      "physics": null
     }
   ]
 }
