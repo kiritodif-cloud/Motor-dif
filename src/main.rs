@@ -4,6 +4,7 @@ pub mod camera;
 pub mod ecs;
 pub mod hot_reload;
 pub mod mcp_server;
+pub mod particles;
 pub mod physics;
 pub mod renderer;
 pub mod scripting;
@@ -130,6 +131,7 @@ pub struct EngineState {
     pub audio: Arc<std::sync::Mutex<audio::AudioManager>>,
     pub lua_ctx: scripting::LuaEngineContext,
     pub last_lua_error: Option<String>,
+    pub particles: particles::ParticleSystem,
 
     // Editor State
     pub play_mode: PlayMode,
@@ -295,6 +297,7 @@ impl EngineState {
             audio: audio_mgr,
             lua_ctx,
             last_lua_error: None,
+            particles: particles::ParticleSystem::new(),
 
             play_mode: PlayMode::Edit,
             play_snapshot: None,
@@ -816,6 +819,7 @@ impl EngineState {
                             if let Some(snapshot) = self.play_snapshot.take() {
                                 assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
                             }
+                            self.particles.clear();
                             self.play_mode = PlayMode::Edit;
                             let msg = "Play mode set to Stop (Scene restored)".to_string();
                             self.logs.push(msg.clone());
@@ -935,6 +939,37 @@ impl EngineState {
                         Ok(())
                     });
                     if let Ok(f) = set_hud_text { let _ = lua.globals().set("set_hud_text", f); }
+
+                    let particles_ref = self.lua_ctx.pending_particles.clone();
+                    let spawn_particles = lua.create_function(
+                        move |_,
+                              (x, y, z, r, g, b, count, speed, lifetime): (
+                            f32,
+                            f32,
+                            f32,
+                            f32,
+                            f32,
+                            f32,
+                            Option<usize>,
+                            Option<f32>,
+                            Option<f32>,
+                        )| {
+                            let req = particles::ParticleSpawnRequest {
+                                position: [x, y, z],
+                                color: [r, g, b, 1.0],
+                                count: count.unwrap_or(30),
+                                speed: speed.unwrap_or(4.0),
+                                lifetime: lifetime.unwrap_or(1.0),
+                            };
+                            if let Ok(mut list) = particles_ref.lock() {
+                                list.push(req);
+                            }
+                            Ok(())
+                        },
+                    );
+                    if let Ok(f) = spawn_particles {
+                        let _ = lua.globals().set("spawn_particles", f);
+                    }
 
                     let chunk = lua.load(&code);
                     let result_str = match chunk.eval::<mlua::Value>() {
@@ -1174,6 +1209,25 @@ impl EngineState {
             }
         }
 
+        // Drain and spawn pending particles
+        let pending_particles = if let Ok(mut particles) = self.lua_ctx.pending_particles.lock() {
+            std::mem::take(&mut *particles)
+        } else {
+            Vec::new()
+        };
+        for req in pending_particles {
+            self.particles.spawn(
+                Vec3::from(req.position),
+                req.color,
+                req.count,
+                req.speed,
+                req.lifetime,
+            );
+        }
+
+        // Update active particles
+        self.particles.update(dt);
+
         // Update camera in GPU
         self.gpu.update_camera(&self.camera);
 
@@ -1286,6 +1340,7 @@ impl EngineState {
                                 assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
                                 self.logs.push("Simulation stopped. Scene restored to initial snapshot.".to_string());
                             }
+                            self.particles.clear();
                             self.play_mode = PlayMode::Edit;
                         }
 
@@ -2291,6 +2346,27 @@ impl EngineState {
                         0..mesh_gpu.num_indices,
                         0,
                         0..instances.len() as u32,
+                    );
+                }
+            }
+
+            // Render Instanced Particles
+            let particle_instances = self.particles.get_instances();
+            if !particle_instances.is_empty() {
+                self.gpu.ensure_mesh("quad");
+                if let Some(mesh_gpu) = self.gpu.meshes.get("quad") {
+                    render_pass.set_bind_group(1, &self.gpu.default_white_texture.bind_group, &[]);
+                    let instance_buffer = create_instance_buffer(&self.gpu.device, &particle_instances);
+                    render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
+                    render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
+                    render_pass.set_index_buffer(
+                        mesh_gpu.index_buffer.slice(..),
+                        mesh_gpu.index_format,
+                    );
+                    render_pass.draw_indexed(
+                        0..mesh_gpu.num_indices,
+                        0,
+                        0..particle_instances.len() as u32,
                     );
                 }
             }

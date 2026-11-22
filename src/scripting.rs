@@ -12,6 +12,7 @@ pub struct LuaEngineContext {
     pub pressed_keys: Arc<RwLock<HashSet<String>>>,
     pub pending_spawns: Arc<Mutex<Vec<EntityDef>>>,
     pub pending_destroys: Arc<Mutex<Vec<String>>>,
+    pub pending_particles: Arc<Mutex<Vec<crate::particles::ParticleSpawnRequest>>>,
     pub hud_texts: Arc<RwLock<HashMap<String, String>>>,
     pub world_entities: Arc<RwLock<HashMap<String, [f32; 9]>>>,
     pub audio: Arc<Mutex<crate::audio::AudioManager>>,
@@ -26,6 +27,7 @@ impl LuaEngineContext {
             pressed_keys,
             pending_spawns: Arc::new(Mutex::new(Vec::new())),
             pending_destroys: Arc::new(Mutex::new(Vec::new())),
+            pending_particles: Arc::new(Mutex::new(Vec::new())),
             hud_texts: Arc::new(RwLock::new(HashMap::new())),
             world_entities: Arc::new(RwLock::new(HashMap::new())),
             audio,
@@ -249,6 +251,40 @@ impl ScriptComponent {
             })
             .map_err(|e| format!("Failed to register stop_music: {}", e))?;
         lua.globals().set("stop_music", stop_music).map_err(|e| e.to_string())?;
+
+        // 11. spawn_particles(x, y, z, r, g, b, [count], [speed], [lifetime])
+        let particles_ref = ctx.pending_particles.clone();
+        let spawn_particles = lua
+            .create_function(
+                move |_,
+                      (x, y, z, r, g, b, count, speed, lifetime): (
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    Option<usize>,
+                    Option<f32>,
+                    Option<f32>,
+                )| {
+                    let req = crate::particles::ParticleSpawnRequest {
+                        position: [x, y, z],
+                        color: [r, g, b, 1.0],
+                        count: count.unwrap_or(30),
+                        speed: speed.unwrap_or(4.0),
+                        lifetime: lifetime.unwrap_or(1.0),
+                    };
+                    if let Ok(mut list) = particles_ref.lock() {
+                        list.push(req);
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(|e| format!("Failed to register spawn_particles: {}", e))?;
+        lua.globals()
+            .set("spawn_particles", spawn_particles)
+            .map_err(|e| e.to_string())?;
 
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
