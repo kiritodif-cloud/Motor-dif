@@ -46,6 +46,13 @@ pub enum GizmoMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GizmoAxis {
+    X,
+    Y,
+    Z,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BottomTab {
     Console,
     Assets,
@@ -135,6 +142,35 @@ pub struct EngineState {
     pub entity_counter: u32,
     pub assets_cache: Vec<String>,
     pub last_assets_scan: Instant,
+
+    // Mouse & Gizmo Interaction
+    pub mouse_pos: [f32; 2],
+    pub is_right_mouse_down: bool,
+    pub is_middle_mouse_down: bool,
+    pub is_left_mouse_down: bool,
+    pub active_gizmo_axis: Option<GizmoAxis>,
+    pub hovered_gizmo_axis: Option<GizmoAxis>,
+    pub gizmo_drag_start_pos: Option<Vec3>,
+    pub gizmo_drag_start_rot: Option<Vec3>,
+    pub gizmo_drag_start_scale: Option<Vec3>,
+    pub gizmo_drag_mouse_origin: Option<[f32; 2]>,
+}
+
+pub fn dist_to_segment_2d(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    let len_sq = dx * dx + dy * dy;
+    if len_sq < 1e-4 {
+        let px = p[0] - a[0];
+        let py = p[1] - a[1];
+        return (px * px + py * py).sqrt();
+    }
+    let t = (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len_sq).clamp(0.0, 1.0);
+    let proj_x = a[0] + t * dx;
+    let proj_y = a[1] + t * dy;
+    let rx = p[0] - proj_x;
+    let ry = p[1] - proj_y;
+    (rx * rx + ry * ry).sqrt()
 }
 
 impl EngineState {
@@ -243,6 +279,17 @@ impl EngineState {
             entity_counter: 10,
             assets_cache: Vec::new(),
             last_assets_scan: Instant::now() - std::time::Duration::from_secs(10),
+
+            mouse_pos: [0.0, 0.0],
+            is_right_mouse_down: false,
+            is_middle_mouse_down: false,
+            is_left_mouse_down: false,
+            active_gizmo_axis: None,
+            hovered_gizmo_axis: None,
+            gizmo_drag_start_pos: None,
+            gizmo_drag_start_rot: None,
+            gizmo_drag_start_scale: None,
+            gizmo_drag_mouse_origin: None,
         }
     }
 
@@ -524,6 +571,197 @@ impl EngineState {
                             }
                         }
                     }
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let new_pos = [position.x as f32, position.y as f32];
+                let dx = new_pos[0] - self.mouse_pos[0];
+                let dy = new_pos[1] - self.mouse_pos[1];
+                self.mouse_pos = new_pos;
+
+                let egui_wants_pointer = self.gpu.egui_winit_state.egui_ctx().egui_wants_pointer_input();
+
+                // Camera Orbit & Pan when not interacting with egui UI or dragging gizmo
+                if !egui_wants_pointer && self.active_gizmo_axis.is_none() {
+                    let is_shift = {
+                        let set = self.pressed_keys.read().unwrap();
+                        set.contains("SHIFT") || set.contains("SHIFTRIGHT") || set.contains("SHIFTLEFT")
+                    };
+
+                    if self.is_right_mouse_down {
+                        if is_shift {
+                            self.camera.pan(dx, dy);
+                        } else {
+                            self.camera.orbit(dx, dy);
+                        }
+                    } else if self.is_middle_mouse_down {
+                        self.camera.pan(dx, dy);
+                    }
+                }
+
+                // Gizmo Dragging
+                if let (Some(axis), Some(start_m)) = (self.active_gizmo_axis, self.gizmo_drag_mouse_origin) {
+                    if let Some(entity) = self.selected_entity {
+                        let screen_size = [self.gpu.config.width as f32, self.gpu.config.height as f32];
+                        let ctrl = {
+                            let set = self.pressed_keys.read().unwrap();
+                            set.contains("CONTROL") || set.contains("CONTROLRIGHT") || set.contains("CONTROLLEFT") || self.snap_enabled
+                        };
+
+                        let axis_vec = match axis {
+                            GizmoAxis::X => Vec3::X,
+                            GizmoAxis::Y => Vec3::Y,
+                            GizmoAxis::Z => Vec3::Z,
+                        };
+
+                        let (origin_2d, axis_2d) = if let Ok(transform) = self.world.get::<&Transform>(entity) {
+                            (
+                                self.camera.world_to_screen(transform.position, screen_size),
+                                self.camera.world_to_screen(transform.position + axis_vec * 1.5, screen_size),
+                            )
+                        } else {
+                            (None, None)
+                        };
+
+                        if let (Some(o), Some(a)) = (origin_2d, axis_2d) {
+                            let dir_x = a[0] - o[0];
+                            let dir_y = a[1] - o[1];
+                            let len = (dir_x * dir_x + dir_y * dir_y).sqrt().max(1.0);
+                            let ndir_x = dir_x / len;
+                            let ndir_y = dir_y / len;
+
+                            let total_dx = new_pos[0] - start_m[0];
+                            let total_dy = new_pos[1] - start_m[1];
+                            let proj = (total_dx * ndir_x + total_dy * ndir_y) * 0.035;
+
+                            if let Ok(mut transform) = self.world.get::<&mut Transform>(entity) {
+                                match self.gizmo_mode {
+                                    GizmoMode::Translate => {
+                                        if let Some(start_pos) = self.gizmo_drag_start_pos {
+                                            let mut new_p = start_pos + axis_vec * proj;
+                                            if ctrl {
+                                                new_p.x = (new_p.x / 0.5).round() * 0.5;
+                                                new_p.y = (new_p.y / 0.5).round() * 0.5;
+                                                new_p.z = (new_p.z / 0.5).round() * 0.5;
+                                            }
+                                            transform.position = new_p;
+                                        }
+                                    }
+                                    GizmoMode::Rotate => {
+                                        if let Some(start_rot) = self.gizmo_drag_start_rot {
+                                            let angle = proj * 2.0;
+                                            let mut new_r = start_rot + axis_vec * angle;
+                                            if ctrl {
+                                                let step = std::f32::consts::PI / 12.0;
+                                                new_r.x = (new_r.x / step).round() * step;
+                                                new_r.y = (new_r.y / step).round() * step;
+                                                new_r.z = (new_r.z / step).round() * step;
+                                            }
+                                            transform.rotation = new_r;
+                                        }
+                                    }
+                                    GizmoMode::Scale => {
+                                        if let Some(start_scale) = self.gizmo_drag_start_scale {
+                                            let factor = (1.0 + proj * 0.5).max(0.05);
+                                            let mut new_s = start_scale;
+                                            match axis {
+                                                GizmoAxis::X => new_s.x = (start_scale.x * factor).max(0.01),
+                                                GizmoAxis::Y => new_s.y = (start_scale.y * factor).max(0.01),
+                                                GizmoAxis::Z => new_s.z = (start_scale.z * factor).max(0.01),
+                                            }
+                                            if ctrl {
+                                                new_s.x = (new_s.x / 0.25).round() * 0.25;
+                                                new_s.y = (new_s.y / 0.25).round() * 0.25;
+                                                new_s.z = (new_s.z / 0.25).round() * 0.25;
+                                            }
+                                            transform.scale = new_s;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let egui_wants_pointer = self.gpu.egui_winit_state.egui_ctx().egui_wants_pointer_input();
+                if !egui_wants_pointer {
+                    let scroll_y = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => *y,
+                        winit::event::MouseScrollDelta::PixelDelta(p) => (p.y as f32) * 0.05,
+                    };
+                    self.camera.zoom(scroll_y);
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let is_pressed = *state == winit::event::ElementState::Pressed;
+                match button {
+                    winit::event::MouseButton::Right => {
+                        self.is_right_mouse_down = is_pressed;
+                    }
+                    winit::event::MouseButton::Middle => {
+                        self.is_middle_mouse_down = is_pressed;
+                    }
+                    winit::event::MouseButton::Left => {
+                        self.is_left_mouse_down = is_pressed;
+                        let egui_wants_pointer = self.gpu.egui_winit_state.egui_ctx().egui_wants_pointer_input();
+
+                        if is_pressed {
+                            if let Some(axis) = self.hovered_gizmo_axis {
+                                self.active_gizmo_axis = Some(axis);
+                                self.gizmo_drag_mouse_origin = Some(self.mouse_pos);
+                                if let Some(entity) = self.selected_entity {
+                                    if let Ok(trans) = self.world.get::<&Transform>(entity) {
+                                        self.gizmo_drag_start_pos = Some(trans.position);
+                                        self.gizmo_drag_start_rot = Some(trans.rotation);
+                                        self.gizmo_drag_start_scale = Some(trans.scale);
+                                    }
+                                }
+                            } else if !egui_wants_pointer {
+                                // Viewport Raycasting selection
+                                let screen_size = [self.gpu.config.width as f32, self.gpu.config.height as f32];
+                                let (ray_origin, ray_dir) = self.camera.screen_to_ray(self.mouse_pos, screen_size);
+
+                                let mut closest_hit: Option<(hecs::Entity, f32)> = None;
+
+                                for entity_ref in self.world.iter() {
+                                    let entity = entity_ref.entity();
+                                    if let Some(transform) = entity_ref.get::<&Transform>() {
+                                        let half_s = transform.scale * 0.5;
+                                        let min = transform.position - half_s;
+                                        let max = transform.position + half_s;
+
+                                        if let Some(t) = camera::ray_intersects_aabb(ray_origin, ray_dir, min, max) {
+                                            if t > 0.0 {
+                                                match closest_hit {
+                                                    None => closest_hit = Some((entity, t)),
+                                                    Some((_, cur_t)) if t < cur_t => closest_hit = Some((entity, t)),
+                                                    _ => {}
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if let Some((hit_entity, _)) = closest_hit {
+                                    self.selected_entity = Some(hit_entity);
+                                    if let Ok(meta) = self.world.get::<&EntityMeta>(hit_entity) {
+                                        self.logs.push(format!("Selected entity '{}' via viewport raycast", meta.id));
+                                    }
+                                }
+                            }
+                        } else {
+                            if self.active_gizmo_axis.is_some() {
+                                self.push_history();
+                                self.active_gizmo_axis = None;
+                                self.gizmo_drag_start_pos = None;
+                                self.gizmo_drag_start_rot = None;
+                                self.gizmo_drag_start_scale = None;
+                                self.gizmo_drag_mouse_origin = None;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -1215,8 +1453,120 @@ impl EngineState {
                 // Central Panel for remaining screen space
                 CentralPanel::default()
                     .frame(Frame::new().fill(egui::Color32::TRANSPARENT))
-                    .show(ui, |_ui| {
-                        // Viewport area - 3D content rendered underneath
+                    .show(ui, |ui| {
+                        // Draw 3D Gizmos and Selection Outline using egui Painter
+                        let painter = ui.painter();
+                        let screen_size = [self.gpu.config.width as f32, self.gpu.config.height as f32];
+                        let mouse_pos = self.mouse_pos;
+
+                        if let Some(entity) = self.selected_entity {
+                            if let Ok(transform) = self.world.get::<&Transform>(entity) {
+                                // 1. Selection Outline
+                                let corners = [
+                                    Vec3::new(-0.5, -0.5, -0.5),
+                                    Vec3::new( 0.5, -0.5, -0.5),
+                                    Vec3::new( 0.5,  0.5, -0.5),
+                                    Vec3::new(-0.5,  0.5, -0.5),
+                                    Vec3::new(-0.5, -0.5,  0.5),
+                                    Vec3::new( 0.5, -0.5,  0.5),
+                                    Vec3::new( 0.5,  0.5,  0.5),
+                                    Vec3::new(-0.5,  0.5,  0.5),
+                                ];
+                                let mat = transform.matrix();
+                                let mut screen_corners = [None; 8];
+                                for i in 0..8 {
+                                    let world_pt = mat.transform_point3(corners[i]);
+                                    screen_corners[i] = self.camera.world_to_screen(world_pt, screen_size);
+                                }
+
+                                let outline_color = egui::Color32::from_rgb(80, 220, 255);
+                                let outline_stroke = egui::Stroke::new(1.5, outline_color);
+
+                                let edges = [
+                                    (0, 1), (1, 2), (2, 3), (3, 0),
+                                    (4, 5), (5, 6), (6, 7), (7, 4),
+                                    (0, 4), (1, 5), (2, 6), (3, 7),
+                                ];
+                                for (a, b) in edges {
+                                    if let (Some(pa), Some(pb)) = (screen_corners[a], screen_corners[b]) {
+                                        painter.line_segment([egui::pos2(pa[0], pa[1]), egui::pos2(pb[0], pb[1])], outline_stroke);
+                                    }
+                                }
+
+                                // 2. 3D Gizmo
+                                let origin_pt = self.camera.world_to_screen(transform.position, screen_size);
+                                if let Some(origin) = origin_pt {
+                                    let origin_pos = egui::pos2(origin[0], origin[1]);
+                                    painter.circle_filled(origin_pos, 4.0, egui::Color32::WHITE);
+
+                                    let gizmo_len = 1.4f32;
+                                    let pt_x = self.camera.world_to_screen(transform.position + Vec3::X * gizmo_len, screen_size);
+                                    let pt_y = self.camera.world_to_screen(transform.position + Vec3::Y * gizmo_len, screen_size);
+                                    let pt_z = self.camera.world_to_screen(transform.position + Vec3::Z * gizmo_len, screen_size);
+
+                                    let mut hovered_axis = None;
+
+                                    let axes = [
+                                        (GizmoAxis::X, pt_x, egui::Color32::from_rgb(235, 60, 60), "X"),
+                                        (GizmoAxis::Y, pt_y, egui::Color32::from_rgb(60, 220, 60), "Y"),
+                                        (GizmoAxis::Z, pt_z, egui::Color32::from_rgb(60, 130, 245), "Z"),
+                                    ];
+
+                                    for (axis, pt_opt, base_color, label) in axes {
+                                        if let Some(pt) = pt_opt {
+                                            let end_pos = egui::pos2(pt[0], pt[1]);
+                                            let dist = dist_to_segment_2d(mouse_pos, origin, pt);
+
+                                            let is_hovered = dist <= 12.0;
+                                            let is_active = self.active_gizmo_axis == Some(axis);
+
+                                            if is_hovered && hovered_axis.is_none() {
+                                                hovered_axis = Some(axis);
+                                            }
+
+                                            let color = if is_active || is_hovered {
+                                                egui::Color32::from_rgb(255, 240, 50)
+                                            } else {
+                                                base_color
+                                            };
+
+                                            let stroke = egui::Stroke::new(if is_active || is_hovered { 3.5 } else { 2.5 }, color);
+
+                                            match self.gizmo_mode {
+                                                GizmoMode::Translate => {
+                                                    painter.line_segment([origin_pos, end_pos], stroke);
+                                                    painter.circle_filled(end_pos, 6.0, color);
+                                                }
+                                                GizmoMode::Rotate => {
+                                                    painter.line_segment([origin_pos, end_pos], stroke);
+                                                    painter.circle_stroke(end_pos, 7.0, stroke);
+                                                }
+                                                GizmoMode::Scale => {
+                                                    painter.line_segment([origin_pos, end_pos], stroke);
+                                                    painter.rect_filled(
+                                                        egui::Rect::from_center_size(end_pos, egui::vec2(10.0, 10.0)),
+                                                        2.0,
+                                                        color,
+                                                    );
+                                                }
+                                            }
+
+                                            painter.text(
+                                                end_pos + egui::vec2(6.0, -6.0),
+                                                egui::Align2::LEFT_BOTTOM,
+                                                label,
+                                                egui::FontId::monospace(13.0),
+                                                color,
+                                            );
+                                        }
+                                    }
+
+                                    if self.active_gizmo_axis.is_none() {
+                                        self.hovered_gizmo_axis = hovered_axis;
+                                    }
+                                }
+                            }
+                        }
                     });
             });
 
@@ -1372,6 +1722,20 @@ impl EngineState {
                     );
                 }
             }
+
+            // Render 3D Grid on Y=0
+            render_pass.set_pipeline(&self.gpu.line_pipeline);
+            render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.gpu.grid_mesh.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(
+                self.gpu.grid_mesh.index_buffer.slice(..),
+                self.gpu.grid_mesh.index_format,
+            );
+            render_pass.draw_indexed(
+                0..self.gpu.grid_mesh.num_indices,
+                0,
+                0..1,
+            );
         }
 
         // 2. Egui Overlay Render Pass

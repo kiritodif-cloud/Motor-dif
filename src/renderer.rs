@@ -107,6 +107,9 @@ pub struct GpuContext {
     pub size: winit::dpi::PhysicalSize<u32>,
     pub depth_texture: DepthTexture,
     pub render_pipeline: wgpu::RenderPipeline,
+    pub line_pipeline: wgpu::RenderPipeline,
+    pub grid_mesh: MeshGpu,
+    pub wireframe_cube_mesh: MeshGpu,
     pub camera_buffer: wgpu::Buffer,
     pub camera_bind_group: wgpu::BindGroup,
     pub meshes: HashMap<String, MeshGpu>,
@@ -185,6 +188,40 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let base_lit = in.color.rgb * lighting;
     let emissive_boost = in.color.rgb * in.emissive * 1.5;
     return vec4<f32>(base_lit + emissive_boost, in.color.a);
+}
+"#;
+
+const LINE_SHADER_SOURCE: &str = r#"
+struct CameraUniform {
+    view_proj: mat4x4<f32>,
+    camera_pos: vec4<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> camera: CameraUniform;
+
+struct LineVertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec4<f32>,
+};
+
+struct LineVertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+};
+
+@vertex
+fn vs_line(in: LineVertexInput) -> LineVertexOutput {
+    var out: LineVertexOutput;
+    out.clip_position = camera.view_proj * vec4<f32>(in.position, 1.0);
+    out.color = in.color;
+    return out;
+}
+
+@fragment
+fn fs_line(in: LineVertexOutput) -> @location(0) vec4<f32> {
+    return in.color;
 }
 "#;
 
@@ -331,9 +368,72 @@ impl GpuContext {
             cache: None,
         });
 
+        // Line pipeline for Grid, Wireframes and Debug Colliders
+        let line_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Line Shader Module"),
+            source: wgpu::ShaderSource::Wgsl(LINE_SHADER_SOURCE.into()),
+        });
+
+        let line_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Line Pipeline Layout"),
+                bind_group_layouts: &[Some(&camera_bind_group_layout)],
+                immediate_size: 0,
+            });
+
+        let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Line Render Pipeline"),
+            layout: Some(&line_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &line_shader,
+                entry_point: Some("vs_line"),
+                buffers: &[Some(Vertex::desc())],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &line_shader,
+                entry_point: Some("fs_line"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DepthTexture::DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let grid_mesh = create_grid_mesh(&device);
+        let wireframe_cube_mesh = create_wireframe_cube_mesh(&device);
+
         let mut meshes = HashMap::new();
         meshes.insert("cube".to_string(), create_cube_mesh(&device));
         meshes.insert("quad".to_string(), create_quad_mesh(&device));
+        meshes.insert("sphere".to_string(), create_sphere_mesh(&device, 16, 24));
+        meshes.insert("cylinder".to_string(), create_cylinder_mesh(&device, 24));
+        meshes.insert("plane".to_string(), create_plane_mesh(&device));
 
         // egui integration
         let egui_ctx = egui::Context::default();
@@ -361,6 +461,9 @@ impl GpuContext {
             size,
             depth_texture,
             render_pipeline,
+            line_pipeline,
+            grid_mesh,
+            wireframe_cube_mesh,
             camera_buffer,
             camera_bind_group,
             meshes,
@@ -373,14 +476,33 @@ impl GpuContext {
         if self.meshes.contains_key(mesh_id) {
             return;
         }
-        match load_gltf_mesh(&self.device, mesh_id) {
-            Ok(mesh) => {
-                self.meshes.insert(mesh_id.to_string(), mesh);
+        match mesh_id {
+            "cube" => {
+                self.meshes.insert("cube".to_string(), create_cube_mesh(&self.device));
             }
-            Err(e) => {
-                eprintln!("glTF mesh load error for '{}': {}. Falling back to cube.", mesh_id, e);
-                let fallback = create_cube_mesh(&self.device);
-                self.meshes.insert(mesh_id.to_string(), fallback);
+            "quad" => {
+                self.meshes.insert("quad".to_string(), create_quad_mesh(&self.device));
+            }
+            "sphere" => {
+                self.meshes.insert("sphere".to_string(), create_sphere_mesh(&self.device, 16, 24));
+            }
+            "cylinder" => {
+                self.meshes.insert("cylinder".to_string(), create_cylinder_mesh(&self.device, 24));
+            }
+            "plane" => {
+                self.meshes.insert("plane".to_string(), create_plane_mesh(&self.device));
+            }
+            _ => {
+                match load_gltf_mesh(&self.device, mesh_id) {
+                    Ok(mesh) => {
+                        self.meshes.insert(mesh_id.to_string(), mesh);
+                    }
+                    Err(e) => {
+                        eprintln!("glTF mesh load error for '{}': {}. Falling back to cube.", mesh_id, e);
+                        let fallback = create_cube_mesh(&self.device);
+                        self.meshes.insert(mesh_id.to_string(), fallback);
+                    }
+                }
             }
         }
     }
@@ -494,6 +616,274 @@ pub fn create_quad_mesh(device: &wgpu::Device) -> MeshGpu {
 
     let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Quad Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
+    MeshGpu {
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint16,
+    }
+}
+
+pub fn create_grid_mesh(device: &wgpu::Device) -> MeshGpu {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    let half_size = 30.0f32;
+    let step = 1.0f32;
+    let grid_color = [0.28, 0.32, 0.40, 0.4];
+    let x_axis_color = [0.95, 0.25, 0.25, 0.9]; // Red X axis
+    let z_axis_color = [0.25, 0.50, 0.95, 0.9]; // Blue Z axis
+
+    let mut idx = 0u16;
+
+    let mut z = -half_size;
+    while z <= half_size + 0.001 {
+        let is_center = z.abs() < 0.001;
+        let color = if is_center { x_axis_color } else { grid_color };
+        vertices.push(Vertex { position: [-half_size, 0.0, z], normal: [0.0, 1.0, 0.0], color });
+        vertices.push(Vertex { position: [ half_size, 0.0, z], normal: [0.0, 1.0, 0.0], color });
+        indices.push(idx);
+        indices.push(idx + 1);
+        idx += 2;
+        z += step;
+    }
+
+    let mut x = -half_size;
+    while x <= half_size + 0.001 {
+        let is_center = x.abs() < 0.001;
+        let color = if is_center { z_axis_color } else { grid_color };
+        vertices.push(Vertex { position: [x, 0.0, -half_size], normal: [0.0, 1.0, 0.0], color });
+        vertices.push(Vertex { position: [x, 0.0,  half_size], normal: [0.0, 1.0, 0.0], color });
+        indices.push(idx);
+        indices.push(idx + 1);
+        idx += 2;
+        x += step;
+    }
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Grid Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Grid Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
+    MeshGpu {
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint16,
+    }
+}
+
+pub fn create_wireframe_cube_mesh(device: &wgpu::Device) -> MeshGpu {
+    let yellow = [1.0, 0.9, 0.2, 0.9];
+    let vertices = [
+        Vertex { position: [-0.5, -0.5, -0.5], normal: [0.0, 1.0, 0.0], color: yellow },
+        Vertex { position: [ 0.5, -0.5, -0.5], normal: [0.0, 1.0, 0.0], color: yellow },
+        Vertex { position: [ 0.5,  0.5, -0.5], normal: [0.0, 1.0, 0.0], color: yellow },
+        Vertex { position: [-0.5,  0.5, -0.5], normal: [0.0, 1.0, 0.0], color: yellow },
+        Vertex { position: [-0.5, -0.5,  0.5], normal: [0.0, 1.0, 0.0], color: yellow },
+        Vertex { position: [ 0.5, -0.5,  0.5], normal: [0.0, 1.0, 0.0], color: yellow },
+        Vertex { position: [ 0.5,  0.5,  0.5], normal: [0.0, 1.0, 0.0], color: yellow },
+        Vertex { position: [-0.5,  0.5,  0.5], normal: [0.0, 1.0, 0.0], color: yellow },
+    ];
+
+    let indices: [u16; 24] = [
+        0, 1, 1, 2, 2, 3, 3, 0, // back square
+        4, 5, 5, 6, 6, 7, 7, 4, // front square
+        0, 4, 1, 5, 2, 6, 3, 7, // connecting edges
+    ];
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Wireframe Cube Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Wireframe Cube Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
+    MeshGpu {
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint16,
+    }
+}
+
+pub fn create_sphere_mesh(device: &wgpu::Device, stacks: u32, slices: u32) -> MeshGpu {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let radius = 0.5f32;
+    let white = [1.0, 1.0, 1.0, 1.0];
+
+    for i in 0..=stacks {
+        let phi = std::f32::consts::PI * (i as f32 / stacks as f32);
+        for j in 0..=slices {
+            let theta = 2.0 * std::f32::consts::PI * (j as f32 / slices as f32);
+            let x = radius * phi.sin() * theta.cos();
+            let y = radius * phi.cos();
+            let z = radius * phi.sin() * theta.sin();
+            let normal = [x / radius, y / radius, z / radius];
+            vertices.push(Vertex {
+                position: [x, y, z],
+                normal,
+                color: white,
+            });
+        }
+    }
+
+    for i in 0..stacks {
+        for j in 0..slices {
+            let first = (i * (slices + 1) + j) as u16;
+            let second = first + (slices as u16) + 1;
+
+            indices.push(first);
+            indices.push(second);
+            indices.push(first + 1);
+
+            indices.push(second);
+            indices.push(second + 1);
+            indices.push(first + 1);
+        }
+    }
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Sphere Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Sphere Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
+    MeshGpu {
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint16,
+    }
+}
+
+pub fn create_cylinder_mesh(device: &wgpu::Device, segments: u32) -> MeshGpu {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let radius = 0.5f32;
+    let half_h = 0.5f32;
+    let white = [1.0, 1.0, 1.0, 1.0];
+
+    // Side vertices
+    for i in 0..=segments {
+        let theta = 2.0 * std::f32::consts::PI * (i as f32 / segments as f32);
+        let cos_t = theta.cos();
+        let sin_t = theta.sin();
+        let x = radius * cos_t;
+        let z = radius * sin_t;
+        let normal = [cos_t, 0.0, sin_t];
+
+        // Bottom vertex
+        vertices.push(Vertex { position: [x, -half_h, z], normal, color: white });
+        // Top vertex
+        vertices.push(Vertex { position: [x,  half_h, z], normal, color: white });
+    }
+
+    for i in 0..segments {
+        let b0 = (i * 2) as u16;
+        let t0 = b0 + 1;
+        let b1 = ((i + 1) * 2) as u16;
+        let t1 = b1 + 1;
+
+        indices.push(b0);
+        indices.push(t0);
+        indices.push(b1);
+
+        indices.push(t0);
+        indices.push(t1);
+        indices.push(b1);
+    }
+
+    // Top cap
+    let top_center_idx = vertices.len() as u16;
+    vertices.push(Vertex { position: [0.0, half_h, 0.0], normal: [0.0, 1.0, 0.0], color: white });
+    let top_start_idx = vertices.len() as u16;
+    for i in 0..=segments {
+        let theta = 2.0 * std::f32::consts::PI * (i as f32 / segments as f32);
+        vertices.push(Vertex { position: [radius * theta.cos(), half_h, radius * theta.sin()], normal: [0.0, 1.0, 0.0], color: white });
+    }
+    for i in 0..segments {
+        indices.push(top_center_idx);
+        indices.push(top_start_idx + i as u16);
+        indices.push(top_start_idx + i as u16 + 1);
+    }
+
+    // Bottom cap
+    let bot_center_idx = vertices.len() as u16;
+    vertices.push(Vertex { position: [0.0, -half_h, 0.0], normal: [0.0, -1.0, 0.0], color: white });
+    let bot_start_idx = vertices.len() as u16;
+    for i in 0..=segments {
+        let theta = 2.0 * std::f32::consts::PI * (i as f32 / segments as f32);
+        vertices.push(Vertex { position: [radius * theta.cos(), -half_h, radius * theta.sin()], normal: [0.0, -1.0, 0.0], color: white });
+    }
+    for i in 0..segments {
+        indices.push(bot_center_idx);
+        indices.push(bot_start_idx + i as u16 + 1);
+        indices.push(bot_start_idx + i as u16);
+    }
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Cylinder Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Cylinder Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
+    MeshGpu {
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint16,
+    }
+}
+
+pub fn create_plane_mesh(device: &wgpu::Device) -> MeshGpu {
+    let white = [1.0, 1.0, 1.0, 1.0];
+    let vertices = [
+        Vertex { position: [-0.5, 0.0, -0.5], normal: [0.0, 1.0, 0.0], color: white },
+        Vertex { position: [ 0.5, 0.0, -0.5], normal: [0.0, 1.0, 0.0], color: white },
+        Vertex { position: [ 0.5, 0.0,  0.5], normal: [0.0, 1.0, 0.0], color: white },
+        Vertex { position: [-0.5, 0.0,  0.5], normal: [0.0, 1.0, 0.0], color: white },
+    ];
+
+    let indices: [u16; 6] = [0, 2, 1, 0, 3, 2];
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Plane Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Plane Index Buffer"),
         contents: bytemuck::cast_slice(&indices),
         usage: wgpu::BufferUsages::INDEX,
     });

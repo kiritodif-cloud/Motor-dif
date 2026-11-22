@@ -92,6 +92,144 @@ impl Camera {
         };
         proj * view
     }
+
+    pub fn orbit(&mut self, delta_x: f32, delta_y: f32) {
+        if self.mode == CameraMode::Orthographic {
+            self.pan(delta_x * 5.0, delta_y * 5.0);
+            return;
+        }
+        let offset = self.eye - self.target;
+        let radius = offset.length().max(0.1);
+        let mut yaw = offset.z.atan2(offset.x);
+        let mut pitch = (offset.y / radius).clamp(-0.9999, 0.9999).asin();
+
+        yaw -= delta_x * 0.006;
+        pitch = (pitch + delta_y * 0.006).clamp(-1.52, 1.52);
+
+        let cos_pitch = pitch.cos();
+        let new_offset = Vec3::new(
+            radius * cos_pitch * yaw.cos(),
+            radius * pitch.sin(),
+            radius * cos_pitch * yaw.sin(),
+        );
+        self.eye = self.target + new_offset;
+    }
+
+    pub fn pan(&mut self, delta_x: f32, delta_y: f32) {
+        let forward = (self.target - self.eye).normalize_or_zero();
+        let right = forward.cross(self.up).normalize_or_zero();
+        let up = right.cross(forward).normalize_or_zero();
+
+        let dist = (self.eye - self.target).length().max(1.0);
+        let factor = match self.mode {
+            CameraMode::Perspective => dist * 0.0018,
+            CameraMode::Orthographic => self.ortho_size * 0.0018,
+        };
+
+        let move_vec = (-right * delta_x + up * delta_y) * factor;
+        self.eye += move_vec;
+        self.target += move_vec;
+    }
+
+    pub fn zoom(&mut self, delta_y: f32) {
+        match self.mode {
+            CameraMode::Perspective => {
+                let offset = self.eye - self.target;
+                let dist = offset.length();
+                let new_dist = (dist * (1.0 - delta_y * 0.08)).clamp(0.5, 200.0);
+                self.eye = self.target + offset.normalize_or_zero() * new_dist;
+            }
+            CameraMode::Orthographic => {
+                self.ortho_size = (self.ortho_size * (1.0 - delta_y * 0.08)).clamp(1.0, 100.0);
+            }
+        }
+    }
+
+    pub fn screen_to_ray(&self, screen_pos: [f32; 2], screen_size: [f32; 2]) -> (Vec3, Vec3) {
+        let w = screen_size[0].max(1.0);
+        let h = screen_size[1].max(1.0);
+
+        let ndc_x = (2.0 * screen_pos[0] / w) - 1.0;
+        let ndc_y = 1.0 - (2.0 * screen_pos[1] / h);
+
+        let inv_vp = self.build_view_projection_matrix().inverse();
+
+        match self.mode {
+            CameraMode::Perspective => {
+                let near_pt = inv_vp.project_point3(Vec3::new(ndc_x, ndc_y, 0.0));
+                let far_pt = inv_vp.project_point3(Vec3::new(ndc_x, ndc_y, 1.0));
+                let dir = (far_pt - near_pt).normalize_or_zero();
+                (near_pt, dir)
+            }
+            CameraMode::Orthographic => {
+                let near_pt = inv_vp.project_point3(Vec3::new(ndc_x, ndc_y, 0.0));
+                let dir = (self.target - self.eye).normalize_or_zero();
+                (near_pt, dir)
+            }
+        }
+    }
+
+    pub fn world_to_screen(&self, world_pos: Vec3, screen_size: [f32; 2]) -> Option<[f32; 2]> {
+        let vp = self.build_view_projection_matrix();
+        let clip = vp * glam::Vec4::new(world_pos.x, world_pos.y, world_pos.z, 1.0);
+        if clip.w <= 0.0 {
+            return None;
+        }
+        let ndc = clip.truncate() / clip.w;
+        let screen_x = (ndc.x + 1.0) * 0.5 * screen_size[0];
+        let screen_y = (1.0 - ndc.y) * 0.5 * screen_size[1];
+        Some([screen_x, screen_y])
+    }
+}
+
+pub fn ray_intersects_aabb(origin: Vec3, dir: Vec3, min: Vec3, max: Vec3) -> Option<f32> {
+    let mut tmin = (min.x - origin.x) / if dir.x.abs() > 1e-6 { dir.x } else { 1e-6 * dir.x.signum() };
+    let mut tmax = (max.x - origin.x) / if dir.x.abs() > 1e-6 { dir.x } else { 1e-6 * dir.x.signum() };
+    if tmin > tmax { std::mem::swap(&mut tmin, &mut tmax); }
+
+    let mut tymin = (min.y - origin.y) / if dir.y.abs() > 1e-6 { dir.y } else { 1e-6 * dir.y.signum() };
+    let mut tymax = (max.y - origin.y) / if dir.y.abs() > 1e-6 { dir.y } else { 1e-6 * dir.y.signum() };
+    if tymin > tymax { std::mem::swap(&mut tymin, &mut tymax); }
+
+    if (tmin > tymax) || (tymin > tmax) {
+        return None;
+    }
+
+    if tymin > tmin { tmin = tymin; }
+    if tymax < tmax { tmax = tymax; }
+
+    let mut tzmin = (min.z - origin.z) / if dir.z.abs() > 1e-6 { dir.z } else { 1e-6 * dir.z.signum() };
+    let mut tzmax = (max.z - origin.z) / if dir.z.abs() > 1e-6 { dir.z } else { 1e-6 * dir.z.signum() };
+    if tzmin > tzmax { std::mem::swap(&mut tzmin, &mut tzmax); }
+
+    if (tmin > tzmax) || (tzmin > tmax) {
+        return None;
+    }
+
+    if tzmin > tmin { tmin = tzmin; }
+    if tzmax < tmax { tmax = tzmax; }
+
+    if tmax < 0.0 {
+        return None;
+    }
+    Some(if tmin < 0.0 { tmax } else { tmin })
+}
+
+pub fn ray_intersects_sphere(origin: Vec3, dir: Vec3, center: Vec3, radius: f32) -> Option<f32> {
+    let oc = origin - center;
+    let b = oc.dot(dir);
+    let c = oc.dot(oc) - radius * radius;
+    let discriminant = b * b - c;
+    if discriminant < 0.0 {
+        return None;
+    }
+    let t = -b - discriminant.sqrt();
+    if t > 0.0 {
+        Some(t)
+    } else {
+        let t2 = -b + discriminant.sqrt();
+        if t2 > 0.0 { Some(t2) } else { None }
+    }
 }
 
 #[repr(C)]
