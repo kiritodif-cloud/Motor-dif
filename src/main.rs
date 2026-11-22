@@ -1,4 +1,5 @@
 pub mod assets;
+pub mod audio;
 pub mod camera;
 pub mod ecs;
 pub mod hot_reload;
@@ -125,6 +126,8 @@ pub struct EngineState {
     pub fps_timer: Instant,
     pub logs: Vec<String>,
     pub pressed_keys: Arc<RwLock<HashSet<String>>>,
+    pub _audio_stream: Option<rodio::OutputStream>,
+    pub audio: Arc<std::sync::Mutex<audio::AudioManager>>,
     pub lua_ctx: scripting::LuaEngineContext,
     pub last_lua_error: Option<String>,
 
@@ -191,12 +194,25 @@ impl EngineState {
         }
 
         let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
-        let lua_ctx = scripting::LuaEngineContext::new(pressed_keys.clone());
+        let (audio_stream, audio_inner) = audio::AudioManager::init();
+        let audio_mgr = Arc::new(std::sync::Mutex::new(audio_inner));
+        let lua_ctx = scripting::LuaEngineContext::new(pressed_keys.clone(), audio_mgr.clone());
+
+        // Generate procedural bounce.wav if not present
+        let bounce_path = Path::new("assets/sfx/bounce.wav");
+        if !bounce_path.exists() {
+            let _ = audio::generate_bounce_wav(bounce_path);
+        }
 
         let mut world = hecs::World::new();
         let mut physics = PhysicsEngine::new();
         let mut logs = Vec::new();
         logs.push("Motor-dif engine initialized (Professional Editor Mode).".to_string());
+        if audio_mgr.lock().unwrap().available {
+            logs.push("Audio: Rodio initialized (WAV/OGG).".to_string());
+        } else {
+            logs.push("Audio: No audio device detected (No-op fallback).".to_string());
+        }
 
         let scene_path = Path::new("assets/scene.json");
         if !scene_path.exists() {
@@ -265,6 +281,8 @@ impl EngineState {
             fps_timer: Instant::now(),
             logs,
             pressed_keys,
+            _audio_stream: audio_stream,
+            audio: audio_mgr,
             lua_ctx,
             last_lua_error: None,
 

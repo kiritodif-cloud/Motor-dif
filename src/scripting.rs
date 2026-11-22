@@ -14,16 +14,21 @@ pub struct LuaEngineContext {
     pub pending_destroys: Arc<Mutex<Vec<String>>>,
     pub hud_texts: Arc<RwLock<HashMap<String, String>>>,
     pub world_entities: Arc<RwLock<HashMap<String, [f32; 9]>>>,
+    pub audio: Arc<Mutex<crate::audio::AudioManager>>,
 }
 
 impl LuaEngineContext {
-    pub fn new(pressed_keys: Arc<RwLock<HashSet<String>>>) -> Self {
+    pub fn new(
+        pressed_keys: Arc<RwLock<HashSet<String>>>,
+        audio: Arc<Mutex<crate::audio::AudioManager>>,
+    ) -> Self {
         Self {
             pressed_keys,
             pending_spawns: Arc::new(Mutex::new(Vec::new())),
             pending_destroys: Arc::new(Mutex::new(Vec::new())),
             hud_texts: Arc::new(RwLock::new(HashMap::new())),
             world_entities: Arc::new(RwLock::new(HashMap::new())),
+            audio,
         }
     }
 }
@@ -204,6 +209,44 @@ impl ScriptComponent {
             })
             .map_err(|e| format!("Failed to register set_hud_text: {}", e))?;
         lua.globals().set("set_hud_text", set_hud_text).map_err(|e| e.to_string())?;
+
+        // 8. play_sound(path, [volume])
+        let audio_sound = ctx.audio.clone();
+        let play_sound = lua
+            .create_function(move |_, (path, volume): (String, Option<f32>)| {
+                let vol = volume.unwrap_or(1.0);
+                if let Ok(audio) = audio_sound.lock() {
+                    let _ = audio.play_sound(&path, vol);
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register play_sound: {}", e))?;
+        lua.globals().set("play_sound", play_sound).map_err(|e| e.to_string())?;
+
+        // 9. play_music(path, [volume])
+        let audio_music = ctx.audio.clone();
+        let play_music = lua
+            .create_function(move |_, (path, volume): (String, Option<f32>)| {
+                let vol = volume.unwrap_or(1.0);
+                if let Ok(mut audio) = audio_music.lock() {
+                    let _ = audio.play_music(&path, vol);
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register play_music: {}", e))?;
+        lua.globals().set("play_music", play_music).map_err(|e| e.to_string())?;
+
+        // 10. stop_music()
+        let audio_stop = ctx.audio.clone();
+        let stop_music = lua
+            .create_function(move |_, ()| {
+                if let Ok(mut audio) = audio_stop.lock() {
+                    audio.stop_music();
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register stop_music: {}", e))?;
+        lua.globals().set("stop_music", stop_music).map_err(|e| e.to_string())?;
 
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
