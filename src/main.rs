@@ -132,6 +132,7 @@ pub struct EngineState {
     pub lua_ctx: scripting::LuaEngineContext,
     pub last_lua_error: Option<String>,
     pub particles: particles::ParticleSystem,
+    pub is_standalone_play: bool,
 
     // Editor State
     pub play_mode: PlayMode,
@@ -180,7 +181,7 @@ pub fn dist_to_segment_2d(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
 }
 
 impl EngineState {
-    pub async fn new(window: Arc<Window>) -> Self {
+    pub async fn new(window: Arc<Window>, is_standalone_play: bool, initial_scene_path: String) -> Self {
         let size = window.inner_size();
         let aspect = size.width as f32 / size.height.max(1) as f32;
         let mut camera = Camera::new_3d(Vec3::new(0.0, 3.5, 9.0), Vec3::ZERO, aspect);
@@ -226,8 +227,8 @@ impl EngineState {
             logs.push("Audio: No audio device detected (No-op fallback).".to_string());
         }
 
-        let scene_path = Path::new("assets/scene.json");
-        if !scene_path.exists() {
+        let scene_path = Path::new(&initial_scene_path);
+        if !scene_path.exists() && initial_scene_path == "assets/scene.json" {
             let default_scene = SceneDef::default();
             if let Ok(json) = serde_json::to_string_pretty(&default_scene) {
                 let _ = std::fs::write(scene_path, json);
@@ -238,10 +239,10 @@ impl EngineState {
         match assets::load_scene_from_file(scene_path) {
             Ok(scene) => {
                 assets::apply_scene_to_world(&scene, &mut world, &mut camera, &mut physics, Some(&lua_ctx));
-                logs.push(format!("Scene loaded from assets/scene.json ({} entities)", world.len()));
+                logs.push(format!("Scene loaded from '{}' ({} entities)", initial_scene_path, world.len()));
             }
             Err(e) => {
-                logs.push(format!("Warning loading scene: {}", e));
+                logs.push(format!("Warning loading scene '{}': {}", initial_scene_path, e));
             }
         }
 
@@ -298,8 +299,9 @@ impl EngineState {
             lua_ctx,
             last_lua_error: None,
             particles: particles::ParticleSystem::new(),
+            is_standalone_play,
 
-            play_mode: PlayMode::Edit,
+            play_mode: if is_standalone_play { PlayMode::Play } else { PlayMode::Edit },
             play_snapshot: None,
             gizmo_mode: GizmoMode::Translate,
             snap_enabled: false,
@@ -577,6 +579,19 @@ impl EngineState {
                             set.insert(k);
                         } else {
                             set.remove(&k);
+                        }
+                    }
+                }
+
+                if is_pressed {
+                    if self.is_standalone_play {
+                        let is_escape = match logical_key {
+                            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => true,
+                            _ => false,
+                        };
+                        if is_escape {
+                            event_loop.exit();
+                            return;
                         }
                     }
                 }
@@ -1373,6 +1388,32 @@ impl EngineState {
 
         let full_output = egui_ctx.run_ui(raw_input, |ui| {
                 ui.ctx().set_visuals(egui::Visuals::dark());
+
+                if self.is_standalone_play {
+                    // In Standalone Game Mode: Render only HUD overlay on top of full viewport
+                    if let Ok(hud) = self.lua_ctx.hud_texts.read() {
+                        if !hud.is_empty() {
+                            let hud_area = egui::Area::new(ui.make_persistent_id("lua_hud_overlay_standalone"))
+                                .fixed_pos(egui::pos2(25.0, 25.0))
+                                .interactable(false);
+                            hud_area.show(ui.ctx(), |ui| {
+                                egui::Frame::new()
+                                    .fill(egui::Color32::from_black_alpha(180))
+                                    .corner_radius(8.0)
+                                    .inner_margin(12.0)
+                                    .show(ui, |ui| {
+                                        for (k, v) in hud.iter() {
+                                            ui.colored_label(
+                                                egui::Color32::from_rgb(100, 220, 255),
+                                                format!("{}: {}", k, v),
+                                            );
+                                        }
+                                    });
+                            });
+                        }
+                    }
+                    return;
+                }
 
                 // 1. TOP MENU & TOOLBAR
                 Panel::top("top_toolbar").show(ui, |ui| {
@@ -2507,19 +2548,21 @@ impl EngineState {
                 }
             }
 
-            // Render 3D Grid on Y=0
-            render_pass.set_pipeline(&self.gpu.line_pipeline);
-            render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.gpu.grid_mesh.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(
-                self.gpu.grid_mesh.index_buffer.slice(..),
-                self.gpu.grid_mesh.index_format,
-            );
-            render_pass.draw_indexed(
-                0..self.gpu.grid_mesh.num_indices,
-                0,
-                0..1,
-            );
+            // Render 3D Grid on Y=0 (editor mode only)
+            if !self.is_standalone_play {
+                render_pass.set_pipeline(&self.gpu.line_pipeline);
+                render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.gpu.grid_mesh.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(
+                    self.gpu.grid_mesh.index_buffer.slice(..),
+                    self.gpu.grid_mesh.index_format,
+                );
+                render_pass.draw_indexed(
+                    0..self.gpu.grid_mesh.num_indices,
+                    0,
+                    0..1,
+                );
+            }
         }
 
         // 2. Egui Overlay Render Pass
@@ -2575,11 +2618,17 @@ impl EngineState {
 
 pub struct App {
     state: Option<EngineState>,
+    is_play_mode: bool,
+    target_scene: String,
 }
 
 impl App {
-    pub fn new() -> Self {
-        Self { state: None }
+    pub fn new(is_play_mode: bool, target_scene: String) -> Self {
+        Self {
+            state: None,
+            is_play_mode,
+            target_scene,
+        }
     }
 }
 
@@ -2587,8 +2636,13 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         event_loop.set_control_flow(ControlFlow::Poll);
         if self.state.is_none() {
+            let title = if self.is_play_mode {
+                "Motor-dif | Game Mode"
+            } else {
+                "Motor-dif | AI-Native Lightweight 2D/3D Engine (Editor)"
+            };
             let window_attributes = Window::default_attributes()
-                .with_title("Motor-dif | AI-Native Lightweight 2D/3D Engine (Editor)")
+                .with_title(title)
                 .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
                 .with_visible(true);
             let window = Arc::new(
@@ -2598,7 +2652,11 @@ impl ApplicationHandler for App {
             );
             window.set_visible(true);
             window.focus_window();
-            let state = pollster::block_on(EngineState::new(window.clone()));
+            let state = pollster::block_on(EngineState::new(
+                window.clone(),
+                self.is_play_mode,
+                self.target_scene.clone(),
+            ));
             window.request_redraw();
             self.state = Some(state);
         }
@@ -2626,9 +2684,25 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let mut is_play_mode = false;
+    let mut target_scene = "assets/scene.json".to_string();
+
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--play" {
+            is_play_mode = true;
+            if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                target_scene = args[i + 1].clone();
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::new();
+    let mut app = App::new(is_play_mode, target_scene);
     event_loop.run_app(&mut app).expect("Error running event loop");
 }
