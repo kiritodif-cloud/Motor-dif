@@ -22,7 +22,7 @@ use glam::{EulerRot, Quat, Vec3};
 use hot_reload::{HotReloadEvent, HotReloadManager};
 use mcp_server::{EngineLogsResponse, McpCommand, WorldInspection};
 use physics::{PhysicsEngine, RigidBodyComponent};
-use renderer::{create_instance_buffer, GpuContext, InstanceRaw};
+use renderer::{create_instance_buffer, GpuContext, InstanceRaw, LightsUniform, PointLightRaw};
 use scripting::ScriptComponent;
 use tokio::sync::{mpsc, oneshot};
 use wgpu::CurrentSurfaceTexture;
@@ -789,6 +789,13 @@ impl EngineState {
                                 let _ = self.world.insert_one(e, RigidBodyComponent { handle });
                             }
                         }
+                        if let Some(pl) = &entity.point_light {
+                            let _ = self.world.insert_one(e, ecs::PointLight {
+                                color: pl.color,
+                                intensity: pl.intensity,
+                                radius: pl.radius,
+                            });
+                        }
                     } else {
                         let meta = EntityMeta {
                             id: entity.id.clone(),
@@ -818,6 +825,14 @@ impl EngineState {
                             let mut script_comp = ScriptComponent::new(script_path.clone());
                             let _ = script_comp.init_or_reload(self.lua_ctx.clone());
                             let _ = self.world.insert_one(e, script_comp);
+                        }
+
+                        if let Some(pl) = &entity.point_light {
+                            let _ = self.world.insert_one(e, ecs::PointLight {
+                                color: pl.color,
+                                intensity: pl.intensity,
+                                radius: pl.radius,
+                            });
                         }
                     }
 
@@ -991,7 +1006,7 @@ impl EngineState {
                         let parent: Option<String> = table.get("parent").ok();
                         let def = assets::EntityDef {
                             id, mesh, position: [x,y,z], rotation: [rx,ry,rz], scale: [sx,sy,sz],
-                            color, texture, parent, emissive: 0.0, script: None, physics: None
+                            color, texture, parent, emissive: 0.0, script: None, physics: None, point_light: None
                         };
                         if let Ok(mut list) = spawns_ref.lock() { list.push(def); }
                         Ok(())
@@ -1105,6 +1120,17 @@ impl EngineState {
                     );
                     if let Ok(f) = set_parent { let _ = lua.globals().set("set_parent", f); }
 
+                    let lights_ref_snippet = self.lua_ctx.pending_lights.clone();
+                    let set_light = lua.create_function(
+                        move |_, (id, r, g, b, intensity, radius): (String, f32, f32, f32, f32, f32)| {
+                            if let Ok(mut list) = lights_ref_snippet.lock() {
+                                list.push((id, [r, g, b], intensity, radius));
+                            }
+                            Ok(true)
+                        },
+                    );
+                    if let Ok(f) = set_light { let _ = lua.globals().set("set_light", f); }
+
                     let chunk = lua.load(&code);
                     let result_str = match chunk.eval::<mlua::Value>() {
                         Ok(val) => format!("{:?}", val),
@@ -1171,6 +1197,14 @@ impl EngineState {
                                 let mut s = ScriptComponent::new(script_path.clone());
                                 let _ = s.init_or_reload(self.lua_ctx.clone());
                                 let _ = self.world.insert_one(e, s);
+                            }
+
+                            if let Some(pl) = &def.point_light {
+                                let _ = self.world.insert_one(e, ecs::PointLight {
+                                    color: pl.color,
+                                    intensity: pl.intensity,
+                                    radius: pl.radius,
+                                });
                             }
 
                             self.selected_entity = Some(e);
@@ -1420,6 +1454,40 @@ impl EngineState {
             }
         }
 
+        // Drain and apply pending light updates
+        let pending_lights = if let Ok(mut lights) = self.lua_ctx.pending_lights.lock() {
+            std::mem::take(&mut *lights)
+        } else {
+            Vec::new()
+        };
+        for (id, col, intensity, radius) in pending_lights {
+            let target_entity = {
+                let mut found = None;
+                for entity_ref in self.world.iter() {
+                    if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                        if meta.id == id {
+                            found = Some(entity_ref.entity());
+                            break;
+                        }
+                    }
+                }
+                found
+            };
+            if let Some(entity) = target_entity {
+                if let Ok(mut pl) = self.world.get::<&mut ecs::PointLight>(entity) {
+                    pl.color = col;
+                    pl.intensity = intensity;
+                    pl.radius = radius;
+                } else {
+                    let _ = self.world.insert_one(entity, ecs::PointLight {
+                        color: col,
+                        intensity,
+                        radius,
+                    });
+                }
+            }
+        }
+
         // Drain and spawn pending particles
         let pending_particles = if let Ok(mut particles) = self.lua_ctx.pending_particles.lock() {
             std::mem::take(&mut *particles)
@@ -1444,6 +1512,34 @@ impl EngineState {
 
         // Compute world transforms (ParentWorld * Local) with cycle detection
         let world_transforms = compute_world_transforms(&self.world);
+
+        // Collect active point lights into GPU uniform
+        let mut lights_uniform = LightsUniform::default();
+        let mut light_count = 0u32;
+        for entity_ref in self.world.iter() {
+            if light_count >= 16 {
+                break;
+            }
+            let entity = entity_ref.entity();
+            if let Some(light) = entity_ref.get::<&ecs::PointLight>() {
+                let world_pos = if let Some((_, pos)) = world_transforms.get(&entity) {
+                    [pos.x, pos.y, pos.z]
+                } else if let Some(t) = entity_ref.get::<&Transform>() {
+                    [t.position.x, t.position.y, t.position.z]
+                } else {
+                    [0.0, 0.0, 0.0]
+                };
+                lights_uniform.lights[light_count as usize] = PointLightRaw {
+                    position: world_pos,
+                    radius: light.radius,
+                    color: light.color,
+                    intensity: light.intensity,
+                };
+                light_count += 1;
+            }
+        }
+        lights_uniform.num_lights = light_count;
+        self.gpu.update_lights(&lights_uniform);
 
         // Collect instances by mesh type and texture
         let mut instances_by_batch: HashMap<(String, Option<String>), Vec<InstanceRaw>> = HashMap::new();
@@ -1940,7 +2036,43 @@ impl EngineState {
                                     }
                                 });
 
-                                // 6. Prefab Export
+                                // 6. Point Light
+                                ui.group(|ui| {
+                                    ui.label(egui::RichText::new("Point Light").strong());
+                                    let has_light = self.world.get::<&ecs::PointLight>(entity).is_ok();
+                                    let mut enable_light = has_light;
+                                    if ui.checkbox(&mut enable_light, "Enable Light").changed() {
+                                        if enable_light {
+                                            let _ = self.world.insert_one(entity, ecs::PointLight {
+                                                color: [1.0, 0.9, 0.7],
+                                                intensity: 2.0,
+                                                radius: 8.0,
+                                            });
+                                        } else {
+                                            let _ = self.world.remove_one::<ecs::PointLight>(entity);
+                                        }
+                                    }
+
+                                    if let Ok(mut light) = self.world.get::<&mut ecs::PointLight>(entity) {
+                                        ui.horizontal(|ui| {
+                                            ui.label("Color:");
+                                            let mut rgb = [light.color[0], light.color[1], light.color[2]];
+                                            if ui.color_edit_button_rgb(&mut rgb).changed() {
+                                                light.color = rgb;
+                                            }
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.label("Intensity:");
+                                            ui.add(egui::DragValue::new(&mut light.intensity).speed(0.1).range(0.0..=50.0));
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.label("Radius:");
+                                            ui.add(egui::DragValue::new(&mut light.radius).speed(0.2).range(0.1..=100.0));
+                                        });
+                                    }
+                                });
+
+                                // 7. Prefab Export
                                 ui.group(|ui| {
                                     ui.label(egui::RichText::new("Prefab Export").strong());
                                     if ui.button("[*] Save as Prefab").clicked() {
@@ -2698,6 +2830,7 @@ impl EngineState {
 
             render_pass.set_pipeline(&self.gpu.render_pipeline);
             render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
+            render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
 
             for ((mesh_id, tex_opt), instances) in &instances_by_batch {
                 if instances.is_empty() {

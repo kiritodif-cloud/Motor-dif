@@ -13,6 +13,7 @@ pub struct LuaEngineContext {
     pub pending_spawns: Arc<Mutex<Vec<EntityDef>>>,
     pub pending_destroys: Arc<Mutex<Vec<String>>>,
     pub pending_parents: Arc<Mutex<Vec<(String, Option<String>)>>>,
+    pub pending_lights: Arc<Mutex<Vec<(String, [f32; 3], f32, f32)>>>,
     pub pending_particles: Arc<Mutex<Vec<crate::particles::ParticleSpawnRequest>>>,
     pub hud_texts: Arc<RwLock<HashMap<String, String>>>,
     pub world_entities: Arc<RwLock<HashMap<String, [f32; 9]>>>,
@@ -29,6 +30,7 @@ impl LuaEngineContext {
             pending_spawns: Arc::new(Mutex::new(Vec::new())),
             pending_destroys: Arc::new(Mutex::new(Vec::new())),
             pending_parents: Arc::new(Mutex::new(Vec::new())),
+            pending_lights: Arc::new(Mutex::new(Vec::new())),
             pending_particles: Arc::new(Mutex::new(Vec::new())),
             hud_texts: Arc::new(RwLock::new(HashMap::new())),
             world_entities: Arc::new(RwLock::new(HashMap::new())),
@@ -160,6 +162,7 @@ impl ScriptComponent {
                     emissive,
                     script,
                     physics: phys_def,
+                    point_light: None,
                 };
 
                 if let Ok(mut spawns) = spawns_ref.lock() {
@@ -356,6 +359,22 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register set_parent: {}", e))?;
         lua.globals()
             .set("set_parent", set_parent)
+            .map_err(|e| e.to_string())?;
+
+        // 14. set_light(entity_id, r, g, b, intensity, radius)
+        let lights_ref = ctx.pending_lights.clone();
+        let set_light = lua
+            .create_function(
+                move |_, (id, r, g, b, intensity, radius): (String, f32, f32, f32, f32, f32)| {
+                    if let Ok(mut list) = lights_ref.lock() {
+                        list.push((id, [r, g, b], intensity, radius));
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register set_light: {}", e))?;
+        lua.globals()
+            .set("set_light", set_light)
             .map_err(|e| e.to_string())?;
 
         // Execute the script chunk to define on_update, on_collision, and globals

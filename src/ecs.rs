@@ -65,6 +65,23 @@ impl EntityMeta {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct PointLight {
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub radius: f32,
+}
+
+impl Default for PointLight {
+    fn default() -> Self {
+        Self {
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            radius: 8.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshRender {
     pub mesh_type: String, // "cube", "quad", "sphere", "cylinder", "plane", or path to .glb / .gltf

@@ -58,6 +58,44 @@ impl InstanceRaw {
     }
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct PointLightRaw {
+    pub position: [f32; 3],
+    pub radius: f32,
+    pub color: [f32; 3],
+    pub intensity: f32,
+}
+
+impl Default for PointLightRaw {
+    fn default() -> Self {
+        Self {
+            position: [0.0; 3],
+            radius: 0.0,
+            color: [0.0; 3],
+            intensity: 0.0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct LightsUniform {
+    pub num_lights: u32,
+    pub _pad: [u32; 3],
+    pub lights: [PointLightRaw; 16],
+}
+
+impl Default for LightsUniform {
+    fn default() -> Self {
+        Self {
+            num_lights: 0,
+            _pad: [0; 3],
+            lights: [PointLightRaw::default(); 16],
+        }
+    }
+}
+
 pub struct MeshGpu {
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
@@ -224,6 +262,9 @@ pub struct GpuContext {
     pub camera_bind_group: wgpu::BindGroup,
     pub texture_bind_group_layout: wgpu::BindGroupLayout,
     pub default_white_texture: TextureGpu,
+    pub lights_buffer: wgpu::Buffer,
+    pub lights_bind_group_layout: wgpu::BindGroupLayout,
+    pub lights_bind_group: wgpu::BindGroup,
     pub texture_cache: HashMap<String, TextureGpu>,
     pub meshes: HashMap<String, MeshGpu>,
     pub egui_renderer: egui_wgpu::Renderer,
@@ -243,6 +284,24 @@ var<uniform> camera: CameraUniform;
 var t_diffuse: texture_2d<f32>;
 @group(1) @binding(1)
 var s_diffuse: sampler;
+
+struct PointLightGpu {
+    position: vec3<f32>,
+    radius: f32,
+    color: vec3<f32>,
+    intensity: f32,
+};
+
+struct LightsUniform {
+    num_lights: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+    lights: array<PointLightGpu, 16>,
+};
+
+@group(2) @binding(0)
+var<uniform> lights: LightsUniform;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -327,11 +386,34 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let spec_factor = pow(n_dot_h, 32.0) * step(0.001, n_dot_l) * 0.35;
     let specular = vec3<f32>(1.0, 1.0, 1.0) * spec_factor;
 
-    // 4. Emissive Material Glow
+    // 4. Point Lights Accumulation
+    var point_diffuse = vec3<f32>(0.0);
+    var point_specular = vec3<f32>(0.0);
+    let count = min(lights.num_lights, 16u);
+
+    for (var i = 0u; i < count; i = i + 1u) {
+        let pl = lights.lights[i];
+        let light_vec = pl.position - in.world_pos;
+        let d = length(light_vec);
+        if (d < pl.radius && d > 0.0001) {
+            let l_dir = light_vec / d;
+            let norm_d = clamp(d / max(pl.radius, 0.001), 0.0, 1.0);
+            let atten = (1.0 - norm_d * norm_d) * (1.0 - norm_d * norm_d) * pl.intensity;
+
+            let pl_ndotl = max(dot(in.world_normal, l_dir), 0.0);
+            point_diffuse += pl.color * pl_ndotl * atten;
+
+            let pl_half = normalize(l_dir + view_dir);
+            let pl_ndoth = max(dot(in.world_normal, pl_half), 0.0);
+            point_specular += pl.color * pow(pl_ndoth, 24.0) * step(0.001, pl_ndotl) * atten * 0.4;
+        }
+    }
+
+    // 5. Emissive Material Glow
     let emissive = base_color.rgb * in.emissive * 2.0;
 
-    // 5. Combined Lighting
-    let lit_color = base_color.rgb * (ambient + diffuse) + specular + emissive;
+    // 6. Combined Lighting
+    let lit_color = base_color.rgb * (ambient + diffuse + point_diffuse) + specular + point_specular + emissive;
 
     // 6. Horizon Gradient & Soft Distance Fog
     let fog_color = vec3<f32>(0.08, 0.09, 0.12);
@@ -500,6 +582,38 @@ impl GpuContext {
         let _ = generate_checker_texture(Path::new("assets/textures/checker.png"));
         let _ = generate_sprite_orb_texture(Path::new("assets/textures/sprite_orb.png"));
 
+        // Point Lights Uniform Buffer
+        let lights_uniform = LightsUniform::default();
+        let lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Lights Buffer"),
+            contents: bytemuck::cast_slice(&[lights_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let lights_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("lights_bind_group_layout"),
+            });
+
+        let lights_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &lights_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: lights_buffer.as_entire_binding(),
+            }],
+            label: Some("lights_bind_group"),
+        });
+
         // Pipeline Layout
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -507,6 +621,7 @@ impl GpuContext {
                 bind_group_layouts: &[
                     Some(&camera_bind_group_layout),
                     Some(&texture_bind_group_layout),
+                    Some(&lights_bind_group_layout),
                 ],
                 immediate_size: 0,
             });
@@ -655,6 +770,9 @@ impl GpuContext {
             camera_bind_group,
             texture_bind_group_layout,
             default_white_texture,
+            lights_buffer,
+            lights_bind_group_layout,
+            lights_bind_group,
             texture_cache: HashMap::new(),
             meshes,
             egui_renderer,
@@ -750,6 +868,14 @@ impl GpuContext {
             &self.camera_buffer,
             0,
             bytemuck::cast_slice(&[uniform]),
+        );
+    }
+
+    pub fn update_lights(&self, lights: &LightsUniform) {
+        self.queue.write_buffer(
+            &self.lights_buffer,
+            0,
+            bytemuck::cast_slice(&[*lights]),
         );
     }
 }
@@ -1397,5 +1523,13 @@ mod tests {
         let orb_path = Path::new("assets/textures/sprite_orb.png");
         generate_sprite_orb_texture(orb_path).expect("Failed to generate sprite_orb.png");
         assert!(orb_path.exists());
+    }
+
+    #[test]
+    fn test_lights_uniform_layout() {
+        use std::mem::size_of;
+        assert_eq!(size_of::<PointLightRaw>(), 32);
+        assert_eq!(size_of::<LightsUniform>(), 528);
+        assert_eq!(size_of::<LightsUniform>() % 16, 0);
     }
 }

@@ -40,6 +40,23 @@ fn default_restitution() -> f32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PointLightDef {
+    pub color: [f32; 3],
+    #[serde(default = "default_light_intensity")]
+    pub intensity: f32,
+    #[serde(default = "default_light_radius")]
+    pub radius: f32,
+}
+
+fn default_light_intensity() -> f32 {
+    1.0
+}
+
+fn default_light_radius() -> f32 {
+    8.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityDef {
     pub id: String,
     pub mesh: String,
@@ -59,6 +76,8 @@ pub struct EntityDef {
     pub script: Option<String>,
     #[serde(default)]
     pub physics: Option<PhysicsDef>,
+    #[serde(default)]
+    pub point_light: Option<PointLightDef>,
 }
 
 fn default_scale() -> [f32; 3] {
@@ -93,6 +112,7 @@ impl Default for SceneDef {
                     emissive: 0.0,
                     script: None,
                     physics: None,
+                    point_light: None,
                 },
                 EntityDef {
                     id: "cube_green".to_string(),
@@ -106,6 +126,7 @@ impl Default for SceneDef {
                     emissive: 0.0,
                     script: None,
                     physics: None,
+                    point_light: None,
                 },
                 EntityDef {
                     id: "cube_blue".to_string(),
@@ -119,6 +140,7 @@ impl Default for SceneDef {
                     emissive: 0.0,
                     script: None,
                     physics: None,
+                    point_light: None,
                 },
             ],
         }
@@ -163,13 +185,14 @@ pub fn extract_scene_from_world(
     };
 
     let mut entities = Vec::new();
-    for (meta, transform, mesh, script_opt, rb_opt) in world
+    for (meta, transform, mesh, script_opt, rb_opt, light_comp_opt) in world
         .query::<(
             &EntityMeta,
             &Transform,
             &MeshRender,
             Option<&ScriptComponent>,
             Option<&RigidBodyComponent>,
+            Option<&crate::ecs::PointLight>,
         )>()
         .iter()
     {
@@ -193,6 +216,12 @@ pub fn extract_scene_from_world(
             })
         });
 
+        let light_opt = light_comp_opt.map(|l| PointLightDef {
+            color: l.color,
+            intensity: l.intensity,
+            radius: l.radius,
+        });
+
         entities.push(EntityDef {
             id: meta.id.clone(),
             mesh: mesh.mesh_type.clone(),
@@ -205,6 +234,7 @@ pub fn extract_scene_from_world(
             emissive: mesh.emissive,
             script: script_opt.map(|s| s.path.clone()),
             physics: phys_def,
+            point_light: light_opt,
         });
     }
 
@@ -266,6 +296,17 @@ pub fn apply_scene_to_world(
                 let _ = script_comp.init_or_reload(ctx.clone());
             }
             let _ = world.insert_one(e, script_comp);
+        }
+
+        if let Some(light_def) = &entity.point_light {
+            let _ = world.insert_one(
+                e,
+                crate::ecs::PointLight {
+                    color: light_def.color,
+                    intensity: light_def.intensity,
+                    radius: light_def.radius,
+                },
+            );
         }
     }
 }
@@ -335,6 +376,12 @@ pub fn extract_entity_def(
         None
     };
 
+    let point_light = world.get::<&crate::ecs::PointLight>(entity).ok().map(|l| PointLightDef {
+        color: l.color,
+        intensity: l.intensity,
+        radius: l.radius,
+    });
+
     Some(EntityDef {
         id: meta.id.clone(),
         mesh: mesh.mesh_type.clone(),
@@ -347,6 +394,7 @@ pub fn extract_entity_def(
         emissive: mesh.emissive,
         script,
         physics: phys_def,
+        point_light,
     })
 }
 
@@ -383,10 +431,17 @@ mod tests {
             emissive: 0.0,
             script: None,
             physics: None,
+            point_light: Some(PointLightDef {
+                color: [1.0, 0.5, 0.2],
+                intensity: 3.5,
+                radius: 12.0,
+            }),
         };
         let json = serde_json::to_string(&def).unwrap();
         assert!(json.contains("\"parent\":\"parent_node\""));
+        assert!(json.contains("\"point_light\""));
         let decoded: EntityDef = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.parent, Some("parent_node".to_string()));
+        assert_eq!(decoded.point_light.as_ref().unwrap().intensity, 3.5);
     }
 }
