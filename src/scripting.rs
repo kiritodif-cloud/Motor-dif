@@ -105,6 +105,7 @@ pub struct LuaEngineContext {
     pub pending_camera_shakes: Arc<Mutex<Vec<(f32, f32)>>>,
     pub pending_tweens: Arc<Mutex<Vec<crate::tweens::TweenRequest>>>,
     pub pending_scene_load: Arc<Mutex<Option<String>>>,
+    pub pending_sprite_frames: Arc<Mutex<Vec<(String, u32, u32, u32)>>>,
     pub save_data_store: Arc<RwLock<HashMap<String, serde_json::Value>>>,
     pub hud_buttons: Arc<RwLock<HashMap<String, HudButtonDef>>>,
     pub pending_button_clicks: Arc<Mutex<Vec<String>>>,
@@ -144,6 +145,7 @@ impl LuaEngineContext {
             pending_camera_shakes: Arc::new(Mutex::new(Vec::new())),
             pending_tweens: Arc::new(Mutex::new(Vec::new())),
             pending_scene_load: Arc::new(Mutex::new(None)),
+            pending_sprite_frames: Arc::new(Mutex::new(Vec::new())),
             save_data_store,
             hud_buttons: Arc::new(RwLock::new(HashMap::new())),
             pending_button_clicks: Arc::new(Mutex::new(Vec::new())),
@@ -655,6 +657,22 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register set_hud_button: {}", e))?;
         lua.globals()
             .set("set_hud_button", set_hud_button)
+            .map_err(|e| e.to_string())?;
+
+        // 24. set_sprite_frame(entity_id, cols, rows, frame_index)
+        let sprite_frames_ref = ctx.pending_sprite_frames.clone();
+        let set_sprite_frame = lua
+            .create_function(
+                move |_, (id, cols, rows, frame): (String, u32, u32, u32)| {
+                    if let Ok(mut list) = sprite_frames_ref.lock() {
+                        list.push((id, cols.max(1), rows.max(1), frame));
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register set_sprite_frame: {}", e))?;
+        lua.globals()
+            .set("set_sprite_frame", set_sprite_frame)
             .map_err(|e| e.to_string())?;
 
         // Execute the script chunk to define on_update, on_collision, and globals

@@ -124,3 +124,49 @@ impl MeshRender {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpriteAnimation {
+    pub cols: u32,
+    pub rows: u32,
+    pub current_frame: u32,
+}
+
+impl SpriteAnimation {
+    pub fn new(cols: u32, rows: u32, current_frame: u32) -> Self {
+        Self {
+            cols: cols.max(1),
+            rows: rows.max(1),
+            current_frame,
+        }
+    }
+
+    pub fn uv_offset_and_scale(&self) -> ([f32; 2], [f32; 2]) {
+        let cols = self.cols.max(1) as f32;
+        let rows = self.rows.max(1) as f32;
+        let u_scale = 1.0 / cols;
+        let v_scale = 1.0 / rows;
+        let col = (self.current_frame % self.cols.max(1)) as f32;
+        let row = ((self.current_frame / self.cols.max(1)) % self.rows.max(1)) as f32;
+        ([col * u_scale, row * v_scale], [u_scale, v_scale])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sprite_animation_math() {
+        let anim = SpriteAnimation::new(4, 2, 0);
+        let (offset, scale) = anim.uv_offset_and_scale();
+        assert_eq!(scale, [0.25, 0.5]);
+        assert_eq!(offset, [0.0, 0.0]);
+
+        // Frame 5 -> col 1, row 1
+        let anim_f5 = SpriteAnimation::new(4, 2, 5);
+        let (offset5, scale5) = anim_f5.uv_offset_and_scale();
+        assert_eq!(scale5, [0.25, 0.5]);
+        assert_eq!(offset5, [0.25, 0.5]);
+    }
+}

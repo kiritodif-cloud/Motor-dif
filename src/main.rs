@@ -1229,6 +1229,15 @@ impl EngineState {
                     });
                     if let Ok(f) = set_hud_button { let _ = lua.globals().set("set_hud_button", f); }
 
+                    let sprites_s = self.lua_ctx.pending_sprite_frames.clone();
+                    let set_sprite_frame = lua.create_function(move |_, (id, cols, rows, frame): (String, u32, u32, u32)| {
+                        if let Ok(mut list) = sprites_s.lock() {
+                            list.push((id, cols.max(1), rows.max(1), frame));
+                        }
+                        Ok(true)
+                    });
+                    if let Ok(f) = set_sprite_frame { let _ = lua.globals().set("set_sprite_frame", f); }
+
                     let chunk = lua.load(&code);
                     let result_str = match chunk.eval::<mlua::Value>() {
                         Ok(val) => format!("{:?}", val),
@@ -1628,6 +1637,30 @@ impl EngineState {
             }
         }
 
+        // Drain and apply sprite frame updates from Lua
+        let pending_sprites = if let Ok(mut s) = self.lua_ctx.pending_sprite_frames.lock() {
+            std::mem::take(&mut *s)
+        } else {
+            Vec::new()
+        };
+        for (id, cols, rows, frame) in pending_sprites {
+            let target_entity = {
+                let mut found = None;
+                for entity_ref in self.world.iter() {
+                    if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                        if meta.id == id {
+                            found = Some(entity_ref.entity());
+                            break;
+                        }
+                    }
+                }
+                found
+            };
+            if let Some(entity) = target_entity {
+                let _ = self.world.insert_one(entity, ecs::SpriteAnimation::new(cols, rows, frame));
+            }
+        }
+
         // Drain and apply camera commands from Lua
         let pending_cam_sets = if let Ok(mut c) = self.lua_ctx.pending_camera_sets.lock() {
             std::mem::take(&mut *c)
@@ -1762,10 +1795,17 @@ impl EngineState {
                 } else {
                     transform.matrix().to_cols_array_2d()
                 };
+                let (uv_offset, uv_scale) = if let Some(anim) = entity_ref.get::<&ecs::SpriteAnimation>() {
+                    anim.uv_offset_and_scale()
+                } else {
+                    ([0.0, 0.0], [1.0, 1.0])
+                };
                 let raw = InstanceRaw {
                     model: model_mat,
                     color: mesh.color,
                     extra: [mesh.emissive, 0.0, 0.0, 0.0],
+                    uv_offset,
+                    uv_scale,
                 };
                 instances_by_batch
                     .entry((mesh.mesh_type.clone(), mesh.texture.clone()))

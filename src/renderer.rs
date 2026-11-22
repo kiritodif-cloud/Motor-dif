@@ -38,17 +38,21 @@ pub struct InstanceRaw {
     pub model: [[f32; 4]; 4],
     pub color: [f32; 4],
     pub extra: [f32; 4], // extra[0] = emissive factor
+    pub uv_offset: [f32; 2],
+    pub uv_scale: [f32; 2],
 }
 
 impl InstanceRaw {
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
-        const ATTRIBS: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+        const ATTRIBS: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
             4 => Float32x4,
             5 => Float32x4,
             6 => Float32x4,
             7 => Float32x4,
             8 => Float32x4,
             9 => Float32x4,
+            10 => Float32x2,
+            11 => Float32x2,
         ];
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<InstanceRaw>() as wgpu::BufferAddress,
@@ -317,6 +321,8 @@ struct InstanceInput {
     @location(7) model_matrix_3: vec4<f32>,
     @location(8) inst_color: vec4<f32>,
     @location(9) inst_extra: vec4<f32>,
+    @location(10) uv_offset: vec2<f32>,
+    @location(11) uv_scale: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -352,7 +358,7 @@ fn vs_main(
     out.clip_position = camera.view_proj * world_pos;
     out.world_normal = world_normal;
     out.color = vertex.vert_color * instance.inst_color;
-    out.uv = vertex.uv;
+    out.uv = vertex.uv * instance.uv_scale + instance.uv_offset;
     out.emissive = instance.inst_extra.x;
     out.world_pos = world_pos.xyz;
     return out;
@@ -581,6 +587,7 @@ impl GpuContext {
         // Ensure procedural test textures exist
         let _ = generate_checker_texture(Path::new("assets/textures/checker.png"));
         let _ = generate_sprite_orb_texture(Path::new("assets/textures/sprite_orb.png"));
+        let _ = generate_test_spritesheet(Path::new("assets/textures/spritesheet_test.png"));
 
         // Point Lights Uniform Buffer
         let lights_uniform = LightsUniform::default();
@@ -1396,6 +1403,32 @@ pub fn generate_sprite_orb_texture(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("Failed to save sprite_orb.png: {}", e))
 }
 
+pub fn generate_test_spritesheet(path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let width = 128u32;
+    let height = 128u32;
+    let mut img = image::RgbaImage::new(width, height);
+
+    for y in 0..height {
+        for x in 0..width {
+            let col = x >= width / 2;
+            let row = y >= height / 2;
+            let color = match (col, row) {
+                (false, false) => [240u8, 60u8, 60u8, 255u8],   // Frame 0 (top-left): Red
+                (true, false) => [60u8, 220u8, 60u8, 255u8],   // Frame 1 (top-right): Green
+                (false, true) => [60u8, 120u8, 240u8, 255u8],  // Frame 2 (bottom-left): Blue
+                (true, true) => [240u8, 220u8, 40u8, 255u8],   // Frame 3 (bottom-right): Yellow
+            };
+            img.put_pixel(x, y, image::Rgba(color));
+        }
+    }
+
+    img.save_with_format(path, image::ImageFormat::Png)
+        .map_err(|e| format!("Failed to save spritesheet_test.png: {}", e))
+}
+
 pub fn create_instance_buffer(device: &wgpu::Device, instances: &[InstanceRaw]) -> wgpu::Buffer {
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Instance Buffer"),
@@ -1523,6 +1556,10 @@ mod tests {
         let orb_path = Path::new("assets/textures/sprite_orb.png");
         generate_sprite_orb_texture(orb_path).expect("Failed to generate sprite_orb.png");
         assert!(orb_path.exists());
+
+        let sheet_path = Path::new("assets/textures/spritesheet_test.png");
+        generate_test_spritesheet(sheet_path).expect("Failed to generate spritesheet_test.png");
+        assert!(sheet_path.exists());
     }
 
     #[test]
