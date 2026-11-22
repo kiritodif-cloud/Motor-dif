@@ -1,0 +1,17 @@
+{
+  "id": "bouncing_orb",
+  "mesh": "sphere",
+  "position": [0.0, 5.0, 0.0],
+  "rotation": [0.0, 0.0, 0.0],
+  "scale": [1.0, 1.0, 1.0],
+  "texture": "assets/textures/sprite_orb.png",
+  "color": [1.0, 0.35, 0.85, 1.0],
+  "emissive": 0.4,
+  "script": "assets/scripts/bouncing_orb.lua",
+  "physics": {
+    "body": "dynamic",
+    "collider": "ball",
+    "mass": 1.0,
+    "restitution": 0.95
+  }
+}

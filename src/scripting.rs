@@ -286,6 +286,46 @@ impl ScriptComponent {
             .set("spawn_particles", spawn_particles)
             .map_err(|e| e.to_string())?;
 
+        // 12. spawn_prefab(name, [x], [y], [z])
+        let spawns_ref_prefab = ctx.pending_spawns.clone();
+        let spawn_prefab = lua
+            .create_function(
+                move |_, (name, x, y, z): (String, Option<f32>, Option<f32>, Option<f32>)| {
+                    let file_path = if name.ends_with(".json") {
+                        if name.starts_with("assets/prefabs/") {
+                            name.clone()
+                        } else {
+                            format!("assets/prefabs/{}", name)
+                        }
+                    } else {
+                        format!("assets/prefabs/{}.json", name)
+                    };
+
+                    match crate::assets::load_prefab_from_file(&file_path) {
+                        Ok(mut def) => {
+                            let ts = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.subsec_nanos())
+                                .unwrap_or(1);
+                            def.id = format!("{}_{}", def.id, ts % 10000);
+                            def.position = [x.unwrap_or(0.0), y.unwrap_or(0.0), z.unwrap_or(0.0)];
+                            if let Ok(mut list) = spawns_ref_prefab.lock() {
+                                list.push(def);
+                            }
+                            Ok(true)
+                        }
+                        Err(e) => {
+                            eprintln!("[Lua] Failed to spawn prefab '{}': {}", name, e);
+                            Ok(false)
+                        }
+                    }
+                },
+            )
+            .map_err(|e| format!("Failed to register spawn_prefab: {}", e))?;
+        lua.globals()
+            .set("spawn_prefab", spawn_prefab)
+            .map_err(|e| e.to_string())?;
+
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
             .exec()

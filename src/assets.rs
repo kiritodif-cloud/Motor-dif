@@ -262,3 +262,102 @@ pub fn apply_scene_to_world(
         }
     }
 }
+
+pub fn load_prefab_from_file<P: AsRef<Path>>(path: P) -> Result<EntityDef, String> {
+    let content = fs::read_to_string(path.as_ref())
+        .map_err(|e| format!("Error reading prefab file: {}", e))?;
+    let prefab: EntityDef = serde_json::from_str(&content)
+        .map_err(|e| format!("Error parsing prefab JSON: {}", e))?;
+    Ok(prefab)
+}
+
+pub fn save_prefab_to_file<P: AsRef<Path>>(path: P, def: &EntityDef) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(def)
+        .map_err(|e| format!("Error serializing prefab: {}", e))?;
+    if let Some(parent) = path.as_ref().parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::write(path.as_ref(), json)
+        .map_err(|e| format!("Error writing prefab file: {}", e))?;
+    Ok(())
+}
+
+pub fn extract_entity_def(
+    world: &hecs::World,
+    physics: &PhysicsEngine,
+    entity: hecs::Entity,
+) -> Option<EntityDef> {
+    let meta = world.get::<&EntityMeta>(entity).ok()?;
+    let transform = world.get::<&Transform>(entity).ok()?;
+    let mesh = world.get::<&MeshRender>(entity).ok()?;
+    let script = world.get::<&ScriptComponent>(entity).ok().map(|s| s.path.clone());
+
+    let phys_def = if let Ok(rb) = world.get::<&RigidBodyComponent>(entity) {
+        if let Some(body) = physics.rigid_body_set.get(rb.handle) {
+            let body_type = if body.is_dynamic() { "dynamic" } else { "fixed" };
+            let collider_type = if let Some(&c_handle) = body.colliders().first() {
+                if let Some(collider) = physics.collider_set.get(c_handle) {
+                    if collider.shape().as_ball().is_some() {
+                        "ball"
+                    } else {
+                        "cuboid"
+                    }
+                } else {
+                    "cuboid"
+                }
+            } else {
+                "cuboid"
+            };
+
+            let restitution = if let Some(&c_handle) = body.colliders().first() {
+                physics.collider_set.get(c_handle).map(|c| c.restitution()).unwrap_or(0.4)
+            } else {
+                0.4
+            };
+
+            Some(PhysicsDef {
+                body: body_type.to_string(),
+                collider: collider_type.to_string(),
+                mass: body.mass(),
+                restitution,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Some(EntityDef {
+        id: meta.id.clone(),
+        mesh: mesh.mesh_type.clone(),
+        position: [transform.position.x, transform.position.y, transform.position.z],
+        rotation: [transform.rotation.x, transform.rotation.y, transform.rotation.z],
+        scale: [transform.scale.x, transform.scale.y, transform.scale.z],
+        texture: mesh.texture.clone(),
+        color: mesh.color,
+        emissive: mesh.emissive,
+        script,
+        physics: phys_def,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_prefab_serialization() {
+        let prefab_path = Path::new("assets/prefabs/bouncing_orb.json");
+        assert!(prefab_path.exists());
+
+        let def = load_prefab_from_file(prefab_path).expect("Failed to load bouncing_orb.json");
+        assert_eq!(def.id, "bouncing_orb");
+        assert_eq!(def.mesh, "sphere");
+        assert!(def.texture.is_some());
+        assert!(def.physics.is_some());
+        let phys = def.physics.unwrap();
+        assert_eq!(phys.collider, "ball");
+        assert!(phys.restitution > 0.9);
+    }
+}

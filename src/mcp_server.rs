@@ -62,6 +62,11 @@ pub enum McpCommand {
         path: Option<String>,
         respond_to: oneshot::Sender<Result<String, String>>,
     },
+    SpawnPrefab {
+        name: String,
+        position: [f32; 3],
+        respond_to: oneshot::Sender<Result<String, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,6 +291,20 @@ pub async fn handle_jsonrpc(
                                     "path": { "type": "string", "description": "Ruta del archivo (por defecto 'assets/scene.json')" }
                                 }
                             }
+                        },
+                        {
+                            "name": "spawn_prefab",
+                            "description": "Instancia un prefab desde assets/prefabs/<name>.json en la posicion indicada",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "name": { "type": "string", "description": "Nombre del prefab (ej. 'bouncing_orb')" },
+                                    "x": { "type": "number", "description": "Posicion X" },
+                                    "y": { "type": "number", "description": "Posicion Y" },
+                                    "z": { "type": "number", "description": "Posicion Z" }
+                                },
+                                "required": ["name"]
+                            }
                         }
                     ]
                 }),
@@ -498,6 +517,24 @@ pub async fn handle_jsonrpc(
                         Ok(Ok(msg)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": msg }] }))),
                         Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al guardar escena")),
+                    }
+                }
+                "spawn_prefab" => {
+                    let name = match args.get("name").and_then(|v| v.as_str()) {
+                        Some(n) => n.to_string(),
+                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'name'")),
+                    };
+                    let x = args.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                    let y = args.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                    let z = args.get("z").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::SpawnPrefab { name, position: [x, y, z], respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(msg)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": msg }] }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al instanciar prefab")),
                     }
                 }
                 _ => Some(JsonRpcResponse::error(id, -32601, format!("Herramienta desconocida: {}", tool_name))),

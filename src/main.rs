@@ -971,6 +971,28 @@ impl EngineState {
                         let _ = lua.globals().set("spawn_particles", f);
                     }
 
+                    let spawns_ref_p = self.lua_ctx.pending_spawns.clone();
+                    let spawn_prefab = lua.create_function(
+                        move |_, (name, x, y, z): (String, Option<f32>, Option<f32>, Option<f32>)| {
+                            let file_path = if name.ends_with(".json") {
+                                if name.starts_with("assets/prefabs/") { name.clone() } else { format!("assets/prefabs/{}", name) }
+                            } else {
+                                format!("assets/prefabs/{}.json", name)
+                            };
+                            match assets::load_prefab_from_file(&file_path) {
+                                Ok(mut def) => {
+                                    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(1);
+                                    def.id = format!("{}_{}", def.id, ts % 10000);
+                                    def.position = [x.unwrap_or(0.0), y.unwrap_or(0.0), z.unwrap_or(0.0)];
+                                    if let Ok(mut list) = spawns_ref_p.lock() { list.push(def); }
+                                    Ok(true)
+                                }
+                                Err(_) => Ok(false),
+                            }
+                        },
+                    );
+                    if let Ok(f) = spawn_prefab { let _ = lua.globals().set("spawn_prefab", f); }
+
                     let chunk = lua.load(&code);
                     let result_str = match chunk.eval::<mlua::Value>() {
                         Ok(val) => format!("{:?}", val),
@@ -992,6 +1014,60 @@ impl EngineState {
                     self.save_scene_to_file(&target_path);
                     let msg = format!("Scene saved to '{}'", target_path);
                     let _ = respond_to.send(Ok(msg));
+                }
+                McpCommand::SpawnPrefab { name, position, respond_to } => {
+                    let file_path = if name.ends_with(".json") {
+                        if name.starts_with("assets/prefabs/") {
+                            name.clone()
+                        } else {
+                            format!("assets/prefabs/{}", name)
+                        }
+                    } else {
+                        format!("assets/prefabs/{}.json", name)
+                    };
+
+                    match assets::load_prefab_from_file(&file_path) {
+                        Ok(mut def) => {
+                            self.entity_counter += 1;
+                            def.id = format!("{}_{}", def.id, self.entity_counter);
+                            def.position = position;
+
+                            let meta = EntityMeta { id: def.id.clone(), name: def.id.clone() };
+                            let transform = Transform::new(
+                                Vec3::from(def.position),
+                                Vec3::from(def.rotation),
+                                Vec3::from(def.scale),
+                            );
+                            let mesh = MeshRender {
+                                mesh_type: def.mesh.clone(),
+                                color: def.color,
+                                texture: def.texture.clone(),
+                                emissive: def.emissive,
+                            };
+                            let e = self.world.spawn((meta, transform, mesh));
+
+                            if let Some(phys) = &def.physics {
+                                let handle = self.physics.add_body(&transform, phys);
+                                let _ = self.world.insert_one(e, RigidBodyComponent { handle });
+                            }
+
+                            if let Some(script_path) = &def.script {
+                                let mut s = ScriptComponent::new(script_path.clone());
+                                let _ = s.init_or_reload(self.lua_ctx.clone());
+                                let _ = self.world.insert_one(e, s);
+                            }
+
+                            self.selected_entity = Some(e);
+                            let msg = format!("Spawned prefab '{}' as entity '{}' at {:?}", name, def.id, position);
+                            self.logs.push(msg.clone());
+                            let _ = respond_to.send(Ok(msg));
+                        }
+                        Err(e) => {
+                            let err_msg = format!("Failed to spawn prefab '{}': {}", name, e);
+                            self.logs.push(err_msg.clone());
+                            let _ = respond_to.send(Err(err_msg));
+                        }
+                    }
                 }
             }
         }
@@ -1627,6 +1703,24 @@ impl EngineState {
                                         }
                                     }
                                 });
+
+                                // 6. Prefab Export
+                                ui.group(|ui| {
+                                    ui.label(egui::RichText::new("Prefab Export").strong());
+                                    if ui.button("[*] Save as Prefab").clicked() {
+                                        if let Some(def) = assets::extract_entity_def(&self.world, &self.physics, entity) {
+                                            let prefab_path = format!("assets/prefabs/{}.json", def.id);
+                                            match assets::save_prefab_to_file(&prefab_path, &def) {
+                                                Ok(()) => {
+                                                    self.logs.push(format!("Saved prefab to '{}'", prefab_path));
+                                                }
+                                                Err(e) => {
+                                                    self.logs.push(format!("Failed to save prefab '{}': {}", prefab_path, e));
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
                             } else {
                                 self.selected_entity = None;
                                 ui.label("Selected entity no longer exists.");
@@ -1691,7 +1785,49 @@ impl EngineState {
                                 egui::ScrollArea::vertical().show(ui, |ui| {
                                     for path in &self.assets_cache.clone() {
                                         ui.horizontal(|ui| {
-                                            if path.ends_with(".json") {
+                                            if path.contains("prefabs") && path.ends_with(".json") {
+                                                ui.label(format!("[prefab] {}", path));
+                                                if ui.button("[+] Spawn Prefab").clicked() {
+                                                    match assets::load_prefab_from_file(path) {
+                                                        Ok(mut def) => {
+                                                            self.entity_counter += 1;
+                                                            def.id = format!("{}_{}", def.id, self.entity_counter);
+                                                            def.position = [0.0, 2.0, 0.0];
+
+                                                            let meta = EntityMeta { id: def.id.clone(), name: def.id.clone() };
+                                                            let transform = Transform::new(
+                                                                Vec3::from(def.position),
+                                                                Vec3::from(def.rotation),
+                                                                Vec3::from(def.scale),
+                                                            );
+                                                            let mesh = MeshRender {
+                                                                mesh_type: def.mesh.clone(),
+                                                                color: def.color,
+                                                                texture: def.texture.clone(),
+                                                                emissive: def.emissive,
+                                                            };
+                                                            let e = self.world.spawn((meta, transform, mesh));
+
+                                                            if let Some(phys) = &def.physics {
+                                                                let handle = self.physics.add_body(&transform, phys);
+                                                                let _ = self.world.insert_one(e, RigidBodyComponent { handle });
+                                                            }
+
+                                                            if let Some(script_path) = &def.script {
+                                                                let mut s = ScriptComponent::new(script_path.clone());
+                                                                let _ = s.init_or_reload(self.lua_ctx.clone());
+                                                                let _ = self.world.insert_one(e, s);
+                                                            }
+
+                                                            self.selected_entity = Some(e);
+                                                            self.logs.push(format!("Spawned prefab '{}' as entity '{}'", path, def.id));
+                                                        }
+                                                        Err(e) => {
+                                                            self.logs.push(format!("Failed to load prefab '{}': {}", path, e));
+                                                        }
+                                                    }
+                                                }
+                                            } else if path.ends_with(".json") {
                                                 ui.label(format!("[json] {}", path));
                                                 if ui.button("Load Scene").clicked() {
                                                     match assets::load_scene_from_file(path) {
