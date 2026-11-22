@@ -3758,6 +3758,13 @@ fn main() {
                 target_scene = args[i + 1].clone();
                 i += 1;
             }
+        } else if args[i] == "--scene" {
+            if i + 1 < args.len() {
+                target_scene = args[i + 1].clone();
+                i += 1;
+            }
+        } else if args[i].ends_with(".json") {
+            target_scene = args[i].clone();
         }
         i += 1;
     }
