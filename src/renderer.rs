@@ -35,16 +35,18 @@ impl Vertex {
 pub struct InstanceRaw {
     pub model: [[f32; 4]; 4],
     pub color: [f32; 4],
+    pub extra: [f32; 4], // extra[0] = emissive factor
 }
 
 impl InstanceRaw {
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
-        const ATTRIBS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+        const ATTRIBS: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
             3 => Float32x4,
             4 => Float32x4,
             5 => Float32x4,
             6 => Float32x4,
             7 => Float32x4,
+            8 => Float32x4,
         ];
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<InstanceRaw>() as wgpu::BufferAddress,
@@ -133,12 +135,14 @@ struct InstanceInput {
     @location(5) model_matrix_2: vec4<f32>,
     @location(6) model_matrix_3: vec4<f32>,
     @location(7) inst_color: vec4<f32>,
+    @location(8) inst_extra: vec4<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) world_normal: vec3<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) emissive: f32,
 };
 
 @vertex
@@ -165,6 +169,7 @@ fn vs_main(
     out.clip_position = camera.view_proj * world_pos;
     out.world_normal = world_normal;
     out.color = vertex.vert_color * instance.inst_color;
+    out.emissive = instance.inst_extra.x;
     return out;
 }
 
@@ -177,7 +182,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let diffuse = n_dot_l * 0.65;
     let lighting = ambient + diffuse;
     
-    return vec4<f32>(in.color.rgb * lighting, in.color.a);
+    let base_lit = in.color.rgb * lighting;
+    let emissive_boost = in.color.rgb * in.emissive * 1.5;
+    return vec4<f32>(base_lit + emissive_boost, in.color.a);
 }
 "#;
 

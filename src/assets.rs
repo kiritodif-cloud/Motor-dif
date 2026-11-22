@@ -52,6 +52,8 @@ pub struct EntityDef {
     pub scale: [f32; 3],
     pub color: [f32; 4],
     #[serde(default)]
+    pub emissive: f32,
+    #[serde(default)]
     pub script: Option<String>,
     #[serde(default)]
     pub physics: Option<PhysicsDef>,
@@ -84,6 +86,7 @@ impl Default for SceneDef {
                     rotation: [0.0, 0.4, 0.0],
                     scale: [1.3, 1.3, 1.3],
                     color: [0.95, 0.25, 0.25, 1.0],
+                    emissive: 0.0,
                     script: None,
                     physics: None,
                 },
@@ -94,6 +97,7 @@ impl Default for SceneDef {
                     rotation: [0.3, 0.5, 0.0],
                     scale: [1.3, 1.3, 1.3],
                     color: [0.25, 0.85, 0.35, 1.0],
+                    emissive: 0.0,
                     script: None,
                     physics: None,
                 },
@@ -104,6 +108,7 @@ impl Default for SceneDef {
                     rotation: [-0.2, 0.6, 0.0],
                     scale: [1.3, 1.3, 1.3],
                     color: [0.25, 0.45, 0.95, 1.0],
+                    emissive: 0.0,
                     script: None,
                     physics: None,
                 },
@@ -121,6 +126,82 @@ pub fn load_scene_from_file(path: impl AsRef<Path>) -> Result<SceneDef, String> 
         .map_err(|e| format!("JSON syntax error in '{}': {}", p.display(), e))?;
 
     Ok(scene)
+}
+
+pub fn save_scene_to_file(path: impl AsRef<Path>, scene: &SceneDef) -> Result<(), String> {
+    let p = path.as_ref();
+    let json = serde_json::to_string_pretty(scene)
+        .map_err(|e| format!("Error serializing scene to JSON: {}", e))?;
+
+    fs::write(p, json)
+        .map_err(|e| format!("Error writing scene file '{}': {}", p.display(), e))?;
+
+    Ok(())
+}
+
+pub fn extract_scene_from_world(
+    world: &hecs::World,
+    camera: &Camera,
+    physics: &PhysicsEngine,
+) -> SceneDef {
+    let camera_def = CameraDef {
+        mode: match camera.mode {
+            CameraMode::Perspective => "3d".to_string(),
+            CameraMode::Orthographic => "2d".to_string(),
+        },
+        position: [camera.eye.x, camera.eye.y, camera.eye.z],
+        target: [camera.target.x, camera.target.y, camera.target.z],
+        ortho_size: camera.ortho_size,
+    };
+
+    let mut entities = Vec::new();
+    for (meta, transform, mesh, script_opt, rb_opt) in world
+        .query::<(
+            &EntityMeta,
+            &Transform,
+            &MeshRender,
+            Option<&ScriptComponent>,
+            Option<&RigidBodyComponent>,
+        )>()
+        .iter()
+    {
+        let phys_def = rb_opt.and_then(|rb| {
+            physics.rigid_body_set.get(rb.handle).map(|body| {
+                // Find collider associated with body
+                let collider_shape = body.colliders().first().and_then(|h| physics.collider_set.get(*h)).map(|c| {
+                    if c.shape().as_ball().is_some() {
+                        "ball".to_string()
+                    } else {
+                        "cuboid".to_string()
+                    }
+                }).unwrap_or_else(|| "cuboid".to_string());
+
+                PhysicsDef {
+                    body: if body.is_dynamic() { "dynamic".to_string() } else { "fixed".to_string() },
+                    collider: collider_shape,
+                    mass: body.mass(),
+                    restitution: 0.5,
+                }
+            })
+        });
+
+        entities.push(EntityDef {
+            id: meta.id.clone(),
+            mesh: mesh.mesh_type.clone(),
+            position: [transform.position.x, transform.position.y, transform.position.z],
+            rotation: [transform.rotation.x, transform.rotation.y, transform.rotation.z],
+            scale: [transform.scale.x, transform.scale.y, transform.scale.z],
+            color: mesh.color,
+            emissive: mesh.emissive,
+            script: script_opt.map(|s| s.path.clone()),
+            physics: phys_def,
+        });
+    }
+
+    SceneDef {
+        camera: camera_def,
+        entities,
+    }
 }
 
 pub fn apply_scene_to_world(
@@ -157,6 +238,7 @@ pub fn apply_scene_to_world(
         let mesh = MeshRender {
             mesh_type: entity.mesh.clone(),
             color: entity.color,
+            emissive: entity.emissive,
         };
 
         let e = world.spawn((meta, transform, mesh));

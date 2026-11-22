@@ -14,6 +14,7 @@ pub struct HotReloadManager {
     rx: Receiver<notify::Result<Event>>,
     pub last_reload_status: Option<String>,
     pub last_reload_error: Option<String>,
+    pub ignore_scene_change_until: Option<std::time::Instant>,
 }
 
 impl HotReloadManager {
@@ -34,6 +35,7 @@ impl HotReloadManager {
             rx,
             last_reload_status: Some("Watching assets/ directory in real-time".to_string()),
             last_reload_error: None,
+            ignore_scene_change_until: None,
         })
     }
 
@@ -45,7 +47,12 @@ impl HotReloadManager {
             rx,
             last_reload_status: None,
             last_reload_error: Some(err),
+            ignore_scene_change_until: None,
         }
+    }
+
+    pub fn suppress_scene_events(&mut self, duration: std::time::Duration) {
+        self.ignore_scene_change_until = Some(std::time::Instant::now() + duration);
     }
 
     pub fn poll_events(&mut self) -> Vec<HotReloadEvent> {
@@ -68,6 +75,16 @@ impl HotReloadManager {
                     } else {
                         events.push(HotReloadEvent::Other(path));
                     }
+                }
+            }
+        }
+
+        if scene_changed {
+            if let Some(until) = self.ignore_scene_change_until {
+                if std::time::Instant::now() < until {
+                    scene_changed = false;
+                } else {
+                    self.ignore_scene_change_until = None;
                 }
             }
         }

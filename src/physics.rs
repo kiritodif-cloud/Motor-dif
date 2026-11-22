@@ -153,6 +153,18 @@ impl PhysicsEngine {
         }
     }
 
+    pub fn remove_body(&mut self, handle: RigidBodyHandle) {
+        self.rigid_body_set.remove(
+            handle,
+            &mut self.island_manager,
+            &mut self.collider_set,
+            &mut self.impulse_joint_set,
+            &mut self.multibody_joint_set,
+            &mut self.soft_body_set,
+            true,
+        );
+    }
+
     pub fn dynamic_bodies_count(&self) -> usize {
         self.rigid_body_set.iter().filter(|(_, b)| b.is_dynamic()).count()
     }
