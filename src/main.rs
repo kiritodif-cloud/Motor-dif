@@ -9,6 +9,7 @@ pub mod physics;
 pub mod renderer;
 pub mod scripting;
 pub mod tweens;
+pub mod ui_theme;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -262,6 +263,8 @@ impl EngineState {
 
         let mut gpu = GpuContext::new(window.clone()).await;
         gpu.update_camera(&camera);
+        ui_theme::setup_custom_fonts(gpu.egui_winit_state.egui_ctx());
+        ui_theme::apply_theme(gpu.egui_winit_state.egui_ctx());
 
         if !Path::new("assets/scripts").exists() {
             let _ = std::fs::create_dir_all("assets/scripts");
@@ -1865,7 +1868,7 @@ impl EngineState {
         let egui_ctx = self.gpu.egui_winit_state.egui_ctx().clone();
 
         let full_output = egui_ctx.run_ui(raw_input, |ui| {
-                ui.ctx().set_visuals(egui::Visuals::dark());
+                ui_theme::apply_theme(ui.ctx());
 
                 if self.is_standalone_play {
                     // In Standalone Game Mode: Render only HUD overlay on top of full viewport
