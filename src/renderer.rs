@@ -12,15 +12,17 @@ use crate::camera::{Camera, CameraUniform};
 pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
+    pub uv: [f32; 2],
     pub color: [f32; 4],
 }
 
 impl Vertex {
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
-        const ATTRIBS: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
+        const ATTRIBS: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
             0 => Float32x3,
             1 => Float32x3,
-            2 => Float32x4,
+            2 => Float32x2,
+            3 => Float32x4,
         ];
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
@@ -41,12 +43,12 @@ pub struct InstanceRaw {
 impl InstanceRaw {
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
         const ATTRIBS: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
-            3 => Float32x4,
             4 => Float32x4,
             5 => Float32x4,
             6 => Float32x4,
             7 => Float32x4,
             8 => Float32x4,
+            9 => Float32x4,
         ];
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<InstanceRaw>() as wgpu::BufferAddress,
@@ -98,6 +100,114 @@ impl DepthTexture {
     }
 }
 
+pub struct TextureGpu {
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    pub sampler: wgpu::Sampler,
+    pub bind_group: wgpu::BindGroup,
+}
+
+impl TextureGpu {
+    pub fn from_bytes(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &wgpu::BindGroupLayout,
+        bytes: &[u8],
+        label: &str,
+    ) -> Result<Self, String> {
+        let img = image::load_from_memory(bytes).map_err(|e| format!("Image decode error: {}", e))?;
+        let rgba = img.to_rgba8();
+        let (width, height) = rgba.dimensions();
+        Self::from_rgba(device, queue, layout, &rgba, width, height, label)
+    }
+
+    pub fn from_rgba(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &wgpu::BindGroupLayout,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        label: &str,
+    ) -> Result<Self, String> {
+        let size = wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * width.max(1)),
+                rows_per_image: Some(height.max(1)),
+            },
+            size,
+        );
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some(&format!("{}_sampler", label)),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+            label: Some(&format!("{}_bind_group", label)),
+        });
+
+        Ok(Self {
+            texture,
+            view,
+            sampler,
+            bind_group,
+        })
+    }
+
+    pub fn create_white_1x1(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &wgpu::BindGroupLayout,
+    ) -> Self {
+        let white_pixel = [255u8, 255u8, 255u8, 255u8];
+        Self::from_rgba(device, queue, layout, &white_pixel, 1, 1, "default_white_1x1")
+            .expect("Failed to create default 1x1 white texture")
+    }
+}
+
 pub struct GpuContext {
     pub instance: wgpu::Instance,
     pub surface: wgpu::Surface<'static>,
@@ -112,6 +222,9 @@ pub struct GpuContext {
     pub wireframe_cube_mesh: MeshGpu,
     pub camera_buffer: wgpu::Buffer,
     pub camera_bind_group: wgpu::BindGroup,
+    pub texture_bind_group_layout: wgpu::BindGroupLayout,
+    pub default_white_texture: TextureGpu,
+    pub texture_cache: HashMap<String, TextureGpu>,
     pub meshes: HashMap<String, MeshGpu>,
     pub egui_renderer: egui_wgpu::Renderer,
     pub egui_winit_state: egui_winit::State,
@@ -126,27 +239,34 @@ struct CameraUniform {
 @group(0) @binding(0)
 var<uniform> camera: CameraUniform;
 
+@group(1) @binding(0)
+var t_diffuse: texture_2d<f32>;
+@group(1) @binding(1)
+var s_diffuse: sampler;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
-    @location(2) vert_color: vec4<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) vert_color: vec4<f32>,
 };
 
 struct InstanceInput {
-    @location(3) model_matrix_0: vec4<f32>,
-    @location(4) model_matrix_1: vec4<f32>,
-    @location(5) model_matrix_2: vec4<f32>,
-    @location(6) model_matrix_3: vec4<f32>,
-    @location(7) inst_color: vec4<f32>,
-    @location(8) inst_extra: vec4<f32>,
+    @location(4) model_matrix_0: vec4<f32>,
+    @location(5) model_matrix_1: vec4<f32>,
+    @location(6) model_matrix_2: vec4<f32>,
+    @location(7) model_matrix_3: vec4<f32>,
+    @location(8) inst_color: vec4<f32>,
+    @location(9) inst_extra: vec4<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) world_normal: vec3<f32>,
     @location(1) color: vec4<f32>,
-    @location(2) emissive: f32,
-    @location(3) world_pos: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) emissive: f32,
+    @location(4) world_pos: vec3<f32>,
 };
 
 @vertex
@@ -173,6 +293,7 @@ fn vs_main(
     out.clip_position = camera.view_proj * world_pos;
     out.world_normal = world_normal;
     out.color = vertex.vert_color * instance.inst_color;
+    out.uv = vertex.uv;
     out.emissive = instance.inst_extra.x;
     out.world_pos = world_pos.xyz;
     return out;
@@ -180,6 +301,13 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let tex_color = textureSample(t_diffuse, s_diffuse, in.uv);
+    let base_color = in.color * tex_color;
+
+    if (base_color.a < 0.01) {
+        discard;
+    }
+
     // 1. Hemispheric Ambient Lighting (Sky/Ground)
     let sky_ambient = vec3<f32>(0.28, 0.32, 0.40);
     let ground_ambient = vec3<f32>(0.12, 0.13, 0.16);
@@ -200,10 +328,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let specular = vec3<f32>(1.0, 1.0, 1.0) * spec_factor;
 
     // 4. Emissive Material Glow
-    let emissive = in.color.rgb * in.emissive * 2.0;
+    let emissive = base_color.rgb * in.emissive * 2.0;
 
     // 5. Combined Lighting
-    let lit_color = in.color.rgb * (ambient + diffuse) + specular + emissive;
+    let lit_color = base_color.rgb * (ambient + diffuse) + specular + emissive;
 
     // 6. Horizon Gradient & Soft Distance Fog
     let fog_color = vec3<f32>(0.08, 0.09, 0.12);
@@ -211,7 +339,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let fog_factor = clamp((dist - 15.0) / 60.0, 0.0, 0.85);
     let final_color = mix(lit_color, fog_color, fog_factor);
 
-    return vec4<f32>(final_color, in.color.a);
+    return vec4<f32>(final_color, base_color.a);
 }
 "#;
 
@@ -227,7 +355,8 @@ var<uniform> camera: CameraUniform;
 struct LineVertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
-    @location(2) color: vec4<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) color: vec4<f32>,
 };
 
 struct LineVertexOutput {
@@ -340,11 +469,45 @@ impl GpuContext {
             label: Some("camera_bind_group"),
         });
 
+        // Texture Bind Group Layout
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("texture_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        let default_white_texture =
+            TextureGpu::create_white_1x1(&device, &queue, &texture_bind_group_layout);
+
+        // Ensure procedural test textures exist
+        let _ = generate_checker_texture(Path::new("assets/textures/checker.png"));
+        let _ = generate_sprite_orb_texture(Path::new("assets/textures/sprite_orb.png"));
+
         // Pipeline Layout
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[Some(&camera_bind_group_layout)],
+                bind_group_layouts: &[
+                    Some(&camera_bind_group_layout),
+                    Some(&texture_bind_group_layout),
+                ],
                 immediate_size: 0,
             });
 
@@ -371,7 +534,7 @@ impl GpuContext {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
+                cull_mode: None, // Allow transparent 2D sprites/quads to be double-sided
                 polygon_mode: wgpu::PolygonMode::Fill,
                 unclipped_depth: false,
                 conservative: false,
@@ -490,10 +653,44 @@ impl GpuContext {
             wireframe_cube_mesh,
             camera_buffer,
             camera_bind_group,
+            texture_bind_group_layout,
+            default_white_texture,
+            texture_cache: HashMap::new(),
             meshes,
             egui_renderer,
             egui_winit_state,
         }
+    }
+
+    pub fn get_or_load_texture(&mut self, path: &str) -> &TextureGpu {
+        if !self.texture_cache.contains_key(path) {
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    match TextureGpu::from_bytes(
+                        &self.device,
+                        &self.queue,
+                        &self.texture_bind_group_layout,
+                        &bytes,
+                        path,
+                    ) {
+                        Ok(tex) => {
+                            self.texture_cache.insert(path.to_string(), tex);
+                        }
+                        Err(e) => {
+                            eprintln!("[Renderer] Error decoding texture '{}': {}. Falling back to default.", path, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[Renderer] Warning: Could not read texture '{}': {}. Falling back to default.", path, e);
+                }
+            }
+        }
+        self.texture_cache.get(path).unwrap_or(&self.default_white_texture)
+    }
+
+    pub fn get_texture(&self, path: &str) -> &TextureGpu {
+        self.texture_cache.get(path).unwrap_or(&self.default_white_texture)
     }
 
     pub fn ensure_mesh(&mut self, mesh_id: &str) {
@@ -561,35 +758,35 @@ pub fn create_cube_mesh(device: &wgpu::Device) -> MeshGpu {
     let white = [1.0, 1.0, 1.0, 1.0];
     let vertices = [
         // Front face (+Z)
-        Vertex { position: [-0.5, -0.5,  0.5], normal: [ 0.0,  0.0,  1.0], color: white },
-        Vertex { position: [ 0.5, -0.5,  0.5], normal: [ 0.0,  0.0,  1.0], color: white },
-        Vertex { position: [ 0.5,  0.5,  0.5], normal: [ 0.0,  0.0,  1.0], color: white },
-        Vertex { position: [-0.5,  0.5,  0.5], normal: [ 0.0,  0.0,  1.0], color: white },
+        Vertex { position: [-0.5, -0.5,  0.5], normal: [ 0.0,  0.0,  1.0], uv: [0.0, 1.0], color: white },
+        Vertex { position: [ 0.5, -0.5,  0.5], normal: [ 0.0,  0.0,  1.0], uv: [1.0, 1.0], color: white },
+        Vertex { position: [ 0.5,  0.5,  0.5], normal: [ 0.0,  0.0,  1.0], uv: [1.0, 0.0], color: white },
+        Vertex { position: [-0.5,  0.5,  0.5], normal: [ 0.0,  0.0,  1.0], uv: [0.0, 0.0], color: white },
         // Back face (-Z)
-        Vertex { position: [ 0.5, -0.5, -0.5], normal: [ 0.0,  0.0, -1.0], color: white },
-        Vertex { position: [-0.5, -0.5, -0.5], normal: [ 0.0,  0.0, -1.0], color: white },
-        Vertex { position: [-0.5,  0.5, -0.5], normal: [ 0.0,  0.0, -1.0], color: white },
-        Vertex { position: [ 0.5,  0.5, -0.5], normal: [ 0.0,  0.0, -1.0], color: white },
+        Vertex { position: [ 0.5, -0.5, -0.5], normal: [ 0.0,  0.0, -1.0], uv: [0.0, 1.0], color: white },
+        Vertex { position: [-0.5, -0.5, -0.5], normal: [ 0.0,  0.0, -1.0], uv: [1.0, 1.0], color: white },
+        Vertex { position: [-0.5,  0.5, -0.5], normal: [ 0.0,  0.0, -1.0], uv: [1.0, 0.0], color: white },
+        Vertex { position: [ 0.5,  0.5, -0.5], normal: [ 0.0,  0.0, -1.0], uv: [0.0, 0.0], color: white },
         // Top face (+Y)
-        Vertex { position: [-0.5,  0.5,  0.5], normal: [ 0.0,  1.0,  0.0], color: white },
-        Vertex { position: [ 0.5,  0.5,  0.5], normal: [ 0.0,  1.0,  0.0], color: white },
-        Vertex { position: [ 0.5,  0.5, -0.5], normal: [ 0.0,  1.0,  0.0], color: white },
-        Vertex { position: [-0.5,  0.5, -0.5], normal: [ 0.0,  1.0,  0.0], color: white },
+        Vertex { position: [-0.5,  0.5,  0.5], normal: [ 0.0,  1.0,  0.0], uv: [0.0, 1.0], color: white },
+        Vertex { position: [ 0.5,  0.5,  0.5], normal: [ 0.0,  1.0,  0.0], uv: [1.0, 1.0], color: white },
+        Vertex { position: [ 0.5,  0.5, -0.5], normal: [ 0.0,  1.0,  0.0], uv: [1.0, 0.0], color: white },
+        Vertex { position: [-0.5,  0.5, -0.5], normal: [ 0.0,  1.0,  0.0], uv: [0.0, 0.0], color: white },
         // Bottom face (-Y)
-        Vertex { position: [-0.5, -0.5, -0.5], normal: [ 0.0, -1.0,  0.0], color: white },
-        Vertex { position: [ 0.5, -0.5, -0.5], normal: [ 0.0, -1.0,  0.0], color: white },
-        Vertex { position: [ 0.5, -0.5,  0.5], normal: [ 0.0, -1.0,  0.0], color: white },
-        Vertex { position: [-0.5, -0.5,  0.5], normal: [ 0.0, -1.0,  0.0], color: white },
+        Vertex { position: [-0.5, -0.5, -0.5], normal: [ 0.0, -1.0,  0.0], uv: [0.0, 1.0], color: white },
+        Vertex { position: [ 0.5, -0.5, -0.5], normal: [ 0.0, -1.0,  0.0], uv: [1.0, 1.0], color: white },
+        Vertex { position: [ 0.5, -0.5,  0.5], normal: [ 0.0, -1.0,  0.0], uv: [1.0, 0.0], color: white },
+        Vertex { position: [-0.5, -0.5,  0.5], normal: [ 0.0, -1.0,  0.0], uv: [0.0, 0.0], color: white },
         // Right face (+X)
-        Vertex { position: [ 0.5, -0.5,  0.5], normal: [ 1.0,  0.0,  0.0], color: white },
-        Vertex { position: [ 0.5, -0.5, -0.5], normal: [ 1.0,  0.0,  0.0], color: white },
-        Vertex { position: [ 0.5,  0.5, -0.5], normal: [ 1.0,  0.0,  0.0], color: white },
-        Vertex { position: [ 0.5,  0.5,  0.5], normal: [ 1.0,  0.0,  0.0], color: white },
+        Vertex { position: [ 0.5, -0.5,  0.5], normal: [ 1.0,  0.0,  0.0], uv: [0.0, 1.0], color: white },
+        Vertex { position: [ 0.5, -0.5, -0.5], normal: [ 1.0,  0.0,  0.0], uv: [1.0, 1.0], color: white },
+        Vertex { position: [ 0.5,  0.5, -0.5], normal: [ 1.0,  0.0,  0.0], uv: [1.0, 0.0], color: white },
+        Vertex { position: [ 0.5,  0.5,  0.5], normal: [ 1.0,  0.0,  0.0], uv: [0.0, 0.0], color: white },
         // Left face (-X)
-        Vertex { position: [-0.5, -0.5, -0.5], normal: [-1.0,  0.0,  0.0], color: white },
-        Vertex { position: [-0.5, -0.5,  0.5], normal: [-1.0,  0.0,  0.0], color: white },
-        Vertex { position: [-0.5,  0.5,  0.5], normal: [-1.0,  0.0,  0.0], color: white },
-        Vertex { position: [-0.5,  0.5, -0.5], normal: [-1.0,  0.0,  0.0], color: white },
+        Vertex { position: [-0.5, -0.5, -0.5], normal: [-1.0,  0.0,  0.0], uv: [0.0, 1.0], color: white },
+        Vertex { position: [-0.5, -0.5,  0.5], normal: [-1.0,  0.0,  0.0], uv: [1.0, 1.0], color: white },
+        Vertex { position: [-0.5,  0.5,  0.5], normal: [-1.0,  0.0,  0.0], uv: [1.0, 0.0], color: white },
+        Vertex { position: [-0.5,  0.5, -0.5], normal: [-1.0,  0.0,  0.0], uv: [0.0, 0.0], color: white },
     ];
 
     let indices: [u16; 36] = [
@@ -624,10 +821,10 @@ pub fn create_cube_mesh(device: &wgpu::Device) -> MeshGpu {
 pub fn create_quad_mesh(device: &wgpu::Device) -> MeshGpu {
     let white = [1.0, 1.0, 1.0, 1.0];
     let vertices = [
-        Vertex { position: [-0.5, -0.5, 0.0], normal: [0.0, 0.0, 1.0], color: white },
-        Vertex { position: [ 0.5, -0.5, 0.0], normal: [0.0, 0.0, 1.0], color: white },
-        Vertex { position: [ 0.5,  0.5, 0.0], normal: [0.0, 0.0, 1.0], color: white },
-        Vertex { position: [-0.5,  0.5, 0.0], normal: [0.0, 0.0, 1.0], color: white },
+        Vertex { position: [-0.5, -0.5, 0.0], normal: [0.0, 0.0, 1.0], uv: [0.0, 1.0], color: white },
+        Vertex { position: [ 0.5, -0.5, 0.0], normal: [0.0, 0.0, 1.0], uv: [1.0, 1.0], color: white },
+        Vertex { position: [ 0.5,  0.5, 0.0], normal: [0.0, 0.0, 1.0], uv: [1.0, 0.0], color: white },
+        Vertex { position: [-0.5,  0.5, 0.0], normal: [0.0, 0.0, 1.0], uv: [0.0, 0.0], color: white },
     ];
 
     let indices: [u16; 6] = [0, 1, 2, 0, 2, 3];
@@ -668,8 +865,8 @@ pub fn create_grid_mesh(device: &wgpu::Device) -> MeshGpu {
     while z <= half_size + 0.001 {
         let is_center = z.abs() < 0.001;
         let color = if is_center { x_axis_color } else { grid_color };
-        vertices.push(Vertex { position: [-half_size, 0.0, z], normal: [0.0, 1.0, 0.0], color });
-        vertices.push(Vertex { position: [ half_size, 0.0, z], normal: [0.0, 1.0, 0.0], color });
+        vertices.push(Vertex { position: [-half_size, 0.0, z], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color });
+        vertices.push(Vertex { position: [ half_size, 0.0, z], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color });
         indices.push(idx);
         indices.push(idx + 1);
         idx += 2;
@@ -680,8 +877,8 @@ pub fn create_grid_mesh(device: &wgpu::Device) -> MeshGpu {
     while x <= half_size + 0.001 {
         let is_center = x.abs() < 0.001;
         let color = if is_center { z_axis_color } else { grid_color };
-        vertices.push(Vertex { position: [x, 0.0, -half_size], normal: [0.0, 1.0, 0.0], color });
-        vertices.push(Vertex { position: [x, 0.0,  half_size], normal: [0.0, 1.0, 0.0], color });
+        vertices.push(Vertex { position: [x, 0.0, -half_size], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color });
+        vertices.push(Vertex { position: [x, 0.0,  half_size], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color });
         indices.push(idx);
         indices.push(idx + 1);
         idx += 2;
@@ -711,14 +908,14 @@ pub fn create_grid_mesh(device: &wgpu::Device) -> MeshGpu {
 pub fn create_wireframe_cube_mesh(device: &wgpu::Device) -> MeshGpu {
     let yellow = [1.0, 0.9, 0.2, 0.9];
     let vertices = [
-        Vertex { position: [-0.5, -0.5, -0.5], normal: [0.0, 1.0, 0.0], color: yellow },
-        Vertex { position: [ 0.5, -0.5, -0.5], normal: [0.0, 1.0, 0.0], color: yellow },
-        Vertex { position: [ 0.5,  0.5, -0.5], normal: [0.0, 1.0, 0.0], color: yellow },
-        Vertex { position: [-0.5,  0.5, -0.5], normal: [0.0, 1.0, 0.0], color: yellow },
-        Vertex { position: [-0.5, -0.5,  0.5], normal: [0.0, 1.0, 0.0], color: yellow },
-        Vertex { position: [ 0.5, -0.5,  0.5], normal: [0.0, 1.0, 0.0], color: yellow },
-        Vertex { position: [ 0.5,  0.5,  0.5], normal: [0.0, 1.0, 0.0], color: yellow },
-        Vertex { position: [-0.5,  0.5,  0.5], normal: [0.0, 1.0, 0.0], color: yellow },
+        Vertex { position: [-0.5, -0.5, -0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: yellow },
+        Vertex { position: [ 0.5, -0.5, -0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: yellow },
+        Vertex { position: [ 0.5,  0.5, -0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: yellow },
+        Vertex { position: [-0.5,  0.5, -0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: yellow },
+        Vertex { position: [-0.5, -0.5,  0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: yellow },
+        Vertex { position: [ 0.5, -0.5,  0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: yellow },
+        Vertex { position: [ 0.5,  0.5,  0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: yellow },
+        Vertex { position: [-0.5,  0.5,  0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: yellow },
     ];
 
     let indices: [u16; 24] = [
@@ -755,8 +952,10 @@ pub fn create_sphere_mesh(device: &wgpu::Device, stacks: u32, slices: u32) -> Me
 
     for i in 0..=stacks {
         let phi = std::f32::consts::PI * (i as f32 / stacks as f32);
+        let v = i as f32 / stacks as f32;
         for j in 0..=slices {
             let theta = 2.0 * std::f32::consts::PI * (j as f32 / slices as f32);
+            let u = j as f32 / slices as f32;
             let x = radius * phi.sin() * theta.cos();
             let y = radius * phi.cos();
             let z = radius * phi.sin() * theta.sin();
@@ -764,6 +963,7 @@ pub fn create_sphere_mesh(device: &wgpu::Device, stacks: u32, slices: u32) -> Me
             vertices.push(Vertex {
                 position: [x, y, z],
                 normal,
+                uv: [u, v],
                 color: white,
             });
         }
@@ -814,6 +1014,7 @@ pub fn create_cylinder_mesh(device: &wgpu::Device, segments: u32) -> MeshGpu {
     // Side vertices
     for i in 0..=segments {
         let theta = 2.0 * std::f32::consts::PI * (i as f32 / segments as f32);
+        let u = i as f32 / segments as f32;
         let cos_t = theta.cos();
         let sin_t = theta.sin();
         let x = radius * cos_t;
@@ -821,9 +1022,9 @@ pub fn create_cylinder_mesh(device: &wgpu::Device, segments: u32) -> MeshGpu {
         let normal = [cos_t, 0.0, sin_t];
 
         // Bottom vertex
-        vertices.push(Vertex { position: [x, -half_h, z], normal, color: white });
+        vertices.push(Vertex { position: [x, -half_h, z], normal, uv: [u, 1.0], color: white });
         // Top vertex
-        vertices.push(Vertex { position: [x,  half_h, z], normal, color: white });
+        vertices.push(Vertex { position: [x,  half_h, z], normal, uv: [u, 0.0], color: white });
     }
 
     for i in 0..segments {
@@ -843,11 +1044,13 @@ pub fn create_cylinder_mesh(device: &wgpu::Device, segments: u32) -> MeshGpu {
 
     // Top cap
     let top_center_idx = vertices.len() as u16;
-    vertices.push(Vertex { position: [0.0, half_h, 0.0], normal: [0.0, 1.0, 0.0], color: white });
+    vertices.push(Vertex { position: [0.0, half_h, 0.0], normal: [0.0, 1.0, 0.0], uv: [0.5, 0.5], color: white });
     let top_start_idx = vertices.len() as u16;
     for i in 0..=segments {
         let theta = 2.0 * std::f32::consts::PI * (i as f32 / segments as f32);
-        vertices.push(Vertex { position: [radius * theta.cos(), half_h, radius * theta.sin()], normal: [0.0, 1.0, 0.0], color: white });
+        let u = (theta.cos() + 1.0) * 0.5;
+        let v = (theta.sin() + 1.0) * 0.5;
+        vertices.push(Vertex { position: [radius * theta.cos(), half_h, radius * theta.sin()], normal: [0.0, 1.0, 0.0], uv: [u, v], color: white });
     }
     for i in 0..segments {
         indices.push(top_center_idx);
@@ -857,11 +1060,13 @@ pub fn create_cylinder_mesh(device: &wgpu::Device, segments: u32) -> MeshGpu {
 
     // Bottom cap
     let bot_center_idx = vertices.len() as u16;
-    vertices.push(Vertex { position: [0.0, -half_h, 0.0], normal: [0.0, -1.0, 0.0], color: white });
+    vertices.push(Vertex { position: [0.0, -half_h, 0.0], normal: [0.0, -1.0, 0.0], uv: [0.5, 0.5], color: white });
     let bot_start_idx = vertices.len() as u16;
     for i in 0..=segments {
         let theta = 2.0 * std::f32::consts::PI * (i as f32 / segments as f32);
-        vertices.push(Vertex { position: [radius * theta.cos(), -half_h, radius * theta.sin()], normal: [0.0, -1.0, 0.0], color: white });
+        let u = (theta.cos() + 1.0) * 0.5;
+        let v = (theta.sin() + 1.0) * 0.5;
+        vertices.push(Vertex { position: [radius * theta.cos(), -half_h, radius * theta.sin()], normal: [0.0, -1.0, 0.0], uv: [u, v], color: white });
     }
     for i in 0..segments {
         indices.push(bot_center_idx);
@@ -892,10 +1097,10 @@ pub fn create_cylinder_mesh(device: &wgpu::Device, segments: u32) -> MeshGpu {
 pub fn create_plane_mesh(device: &wgpu::Device) -> MeshGpu {
     let white = [1.0, 1.0, 1.0, 1.0];
     let vertices = [
-        Vertex { position: [-0.5, 0.0, -0.5], normal: [0.0, 1.0, 0.0], color: white },
-        Vertex { position: [ 0.5, 0.0, -0.5], normal: [0.0, 1.0, 0.0], color: white },
-        Vertex { position: [ 0.5, 0.0,  0.5], normal: [0.0, 1.0, 0.0], color: white },
-        Vertex { position: [-0.5, 0.0,  0.5], normal: [0.0, 1.0, 0.0], color: white },
+        Vertex { position: [-0.5, 0.0, -0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: white },
+        Vertex { position: [ 0.5, 0.0, -0.5], normal: [0.0, 1.0, 0.0], uv: [1.0, 0.0], color: white },
+        Vertex { position: [ 0.5, 0.0,  0.5], normal: [0.0, 1.0, 0.0], uv: [1.0, 1.0], color: white },
+        Vertex { position: [-0.5, 0.0,  0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 1.0], color: white },
     ];
 
     let indices: [u16; 6] = [0, 2, 1, 0, 3, 2];
@@ -944,6 +1149,12 @@ pub fn load_gltf_mesh(device: &wgpu::Device, path: impl AsRef<Path>) -> Result<M
                 vec![[0.0, 1.0, 0.0]; positions.len()]
             };
 
+            let tex_coords: Vec<[f32; 2]> = if let Some(iter) = reader.read_tex_coords(0) {
+                iter.into_f32().collect()
+            } else {
+                vec![[0.0, 0.0]; positions.len()]
+            };
+
             let colors: Vec<[f32; 4]> = if let Some(iter) = reader.read_colors(0) {
                 iter.into_rgba_f32().collect()
             } else {
@@ -955,6 +1166,7 @@ pub fn load_gltf_mesh(device: &wgpu::Device, path: impl AsRef<Path>) -> Result<M
                 vertices.push(Vertex {
                     position: positions[i],
                     normal: if i < normals.len() { normals[i] } else { [0.0, 1.0, 0.0] },
+                    uv: if i < tex_coords.len() { tex_coords[i] } else { [0.0, 0.0] },
                     color: if i < colors.len() { colors[i] } else { [1.0, 1.0, 1.0, 1.0] },
                 });
             }
@@ -993,6 +1205,69 @@ pub fn load_gltf_mesh(device: &wgpu::Device, path: impl AsRef<Path>) -> Result<M
         num_indices: indices.len() as u32,
         index_format: wgpu::IndexFormat::Uint32,
     })
+}
+
+pub fn generate_checker_texture(path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let width = 256u32;
+    let height = 256u32;
+    let mut img = image::RgbaImage::new(width, height);
+    let tile_size = 32u32;
+
+    for y in 0..height {
+        for x in 0..width {
+            let tx = x / tile_size;
+            let ty = y / tile_size;
+            let is_even = (tx + ty) % 2 == 0;
+            let color = if is_even {
+                image::Rgba([215, 222, 235, 255])
+            } else {
+                image::Rgba([115, 125, 145, 255])
+            };
+            img.put_pixel(x, y, color);
+        }
+    }
+
+    img.save_with_format(path, image::ImageFormat::Png)
+        .map_err(|e| format!("Failed to save checker.png: {}", e))
+}
+
+pub fn generate_sprite_orb_texture(path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let width = 256u32;
+    let height = 256u32;
+    let mut img = image::RgbaImage::new(width, height);
+    let cx = 128.0f32;
+    let cy = 128.0f32;
+    let max_radius = 120.0f32;
+
+    for y in 0..height {
+        for x in 0..width {
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let dist = (dx * dx + dy * dy).sqrt();
+
+            if dist > max_radius {
+                img.put_pixel(x, y, image::Rgba([0, 0, 0, 0]));
+            } else {
+                let norm = dist / max_radius;
+                let alpha = (1.0 - norm.powf(1.6)).clamp(0.0, 1.0);
+                let a_byte = (alpha * 255.0) as u8;
+
+                let r = (120.0 * (1.0 - norm * 0.8)) as u8;
+                let g = (220.0 * (1.0 - norm * 0.4)) as u8;
+                let b = 255u8;
+                img.put_pixel(x, y, image::Rgba([r, g, b, a_byte]));
+            }
+        }
+    }
+
+    img.save_with_format(path, image::ImageFormat::Png)
+        .map_err(|e| format!("Failed to save sprite_orb.png: {}", e))
 }
 
 pub fn create_instance_buffer(device: &wgpu::Device, instances: &[InstanceRaw]) -> wgpu::Buffer {
@@ -1106,4 +1381,21 @@ pub fn capture_frame(
 
     let base64_png = base64::engine::general_purpose::STANDARD.encode(png_bytes.into_inner());
     Ok(base64_png)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_generate_textures() {
+        let checker_path = Path::new("assets/textures/checker.png");
+        generate_checker_texture(checker_path).expect("Failed to generate checker.png");
+        assert!(checker_path.exists());
+
+        let orb_path = Path::new("assets/textures/sprite_orb.png");
+        generate_sprite_orb_texture(orb_path).expect("Failed to generate sprite_orb.png");
+        assert!(orb_path.exists());
+    }
 }

@@ -48,6 +48,8 @@ pub struct EntityDef {
     pub rotation: [f32; 3],
     #[serde(default = "default_scale")]
     pub scale: [f32; 3],
+    #[serde(default)]
+    pub texture: Option<String>,
     pub color: [f32; 4],
     #[serde(default)]
     pub emissive: f32,
@@ -84,6 +86,7 @@ impl Default for SceneDef {
                     rotation: [0.0, 0.4, 0.0],
                     scale: [1.3, 1.3, 1.3],
                     color: [0.95, 0.25, 0.25, 1.0],
+                    texture: None,
                     emissive: 0.0,
                     script: None,
                     physics: None,
@@ -95,6 +98,7 @@ impl Default for SceneDef {
                     rotation: [0.3, 0.5, 0.0],
                     scale: [1.3, 1.3, 1.3],
                     color: [0.25, 0.85, 0.35, 1.0],
+                    texture: None,
                     emissive: 0.0,
                     script: None,
                     physics: None,
@@ -106,6 +110,7 @@ impl Default for SceneDef {
                     rotation: [-0.2, 0.6, 0.0],
                     scale: [1.3, 1.3, 1.3],
                     color: [0.25, 0.45, 0.95, 1.0],
+                    texture: None,
                     emissive: 0.0,
                     script: None,
                     physics: None,
@@ -189,6 +194,7 @@ pub fn extract_scene_from_world(
             position: [transform.position.x, transform.position.y, transform.position.z],
             rotation: [transform.rotation.x, transform.rotation.y, transform.rotation.z],
             scale: [transform.scale.x, transform.scale.y, transform.scale.z],
+            texture: mesh.texture.clone(),
             color: mesh.color,
             emissive: mesh.emissive,
             script: script_opt.map(|s| s.path.clone()),
@@ -235,6 +241,7 @@ pub fn apply_scene_to_world(
         );
         let mesh = MeshRender {
             mesh_type: entity.mesh.clone(),
+            texture: entity.texture.clone(),
             color: entity.color,
             emissive: entity.emissive,
         };

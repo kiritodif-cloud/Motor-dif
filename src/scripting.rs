@@ -129,6 +129,7 @@ impl ScriptComponent {
                     [0.8, 0.8, 0.8, 1.0]
                 };
                 let emissive: f32 = table.get("emissive").unwrap_or(0.0);
+                let texture: Option<String> = table.get("texture").ok();
                 let script: Option<String> = table.get("script").ok();
 
                 let phys_def = if let Ok(pt) = table.get::<mlua::Table>("physics") {
@@ -148,6 +149,7 @@ impl ScriptComponent {
                     position: [x, y, z],
                     rotation: [rx, ry, rz],
                     scale: [sx, sy, sz],
+                    texture,
                     color,
                     emissive,
                     script,

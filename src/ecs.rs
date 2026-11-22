@@ -51,6 +51,8 @@ pub struct EntityMeta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshRender {
     pub mesh_type: String, // "cube", "quad", "sphere", "cylinder", "plane", or path to .glb / .gltf
+    #[serde(default)]
+    pub texture: Option<String>,
     pub color: [f32; 4],   // [r, g, b, a]
     pub emissive: f32,     // 0.0 to 1.0
 }
@@ -59,14 +61,21 @@ impl MeshRender {
     pub fn new(mesh_type: impl Into<String>, color: [f32; 4], emissive: f32) -> Self {
         Self {
             mesh_type: mesh_type.into(),
+            texture: None,
             color,
             emissive,
         }
     }
 
+    pub fn with_texture(mut self, texture: impl Into<String>) -> Self {
+        self.texture = Some(texture.into());
+        self
+    }
+
     pub fn cube(color: [f32; 4]) -> Self {
         Self {
             mesh_type: "cube".to_string(),
+            texture: None,
             color,
             emissive: 0.0,
         }
@@ -75,6 +84,7 @@ impl MeshRender {
     pub fn quad(color: [f32; 4]) -> Self {
         Self {
             mesh_type: "quad".to_string(),
+            texture: None,
             color,
             emissive: 0.0,
         }

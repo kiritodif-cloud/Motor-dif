@@ -204,6 +204,16 @@ impl EngineState {
             let _ = audio::generate_bounce_wav(bounce_path);
         }
 
+        // Generate procedural textures if not present
+        let checker_path = Path::new("assets/textures/checker.png");
+        if !checker_path.exists() {
+            let _ = renderer::generate_checker_texture(checker_path);
+        }
+        let orb_path = Path::new("assets/textures/sprite_orb.png");
+        if !orb_path.exists() {
+            let _ = renderer::generate_sprite_orb_texture(orb_path);
+        }
+
         let mut world = hecs::World::new();
         let mut physics = PhysicsEngine::new();
         let mut logs = Vec::new();
@@ -400,6 +410,7 @@ impl EngineState {
         let mesh = MeshRender {
             mesh_type: mesh_type.to_string(),
             color,
+            texture: None,
             emissive: 0.0,
         };
 
@@ -669,6 +680,7 @@ impl EngineState {
                         if let Ok(mut mesh) = self.world.get::<&mut MeshRender>(e) {
                             mesh.mesh_type = entity.mesh.clone();
                             mesh.color = entity.color;
+                            mesh.texture = entity.texture.clone();
                             mesh.emissive = entity.emissive;
                         }
                         if let Some(script_path) = &entity.script {
@@ -696,6 +708,7 @@ impl EngineState {
                         let mesh = MeshRender {
                             mesh_type: entity.mesh.clone(),
                             color: entity.color,
+                            texture: entity.texture.clone(),
                             emissive: entity.emissive,
                         };
 
@@ -878,9 +891,10 @@ impl EngineState {
                         let sy: f32 = table.get("sy").unwrap_or(1.0);
                         let sz: f32 = table.get("sz").unwrap_or(1.0);
                         let color = [1.0, 1.0, 1.0, 1.0];
+                        let texture: Option<String> = table.get("texture").ok();
                         let def = assets::EntityDef {
                             id, mesh, position: [x,y,z], rotation: [rx,ry,rz], scale: [sx,sy,sz],
-                            color, emissive: 0.0, script: None, physics: None
+                            color, texture, emissive: 0.0, script: None, physics: None
                         };
                         if let Ok(mut list) = spawns_ref.lock() { list.push(def); }
                         Ok(())
@@ -1110,6 +1124,7 @@ impl EngineState {
                 let mesh = MeshRender {
                     mesh_type: def.mesh.clone(),
                     color: def.color,
+                    texture: def.texture.clone(),
                     emissive: def.emissive,
                 };
                 let e = self.world.spawn((meta, transform, mesh));
@@ -1162,19 +1177,25 @@ impl EngineState {
         // Update camera in GPU
         self.gpu.update_camera(&self.camera);
 
-        // Collect instances by mesh type
-        let mut instances_by_mesh: HashMap<String, Vec<InstanceRaw>> = HashMap::new();
+        // Collect instances by mesh type and texture
+        let mut instances_by_batch: HashMap<(String, Option<String>), Vec<InstanceRaw>> = HashMap::new();
         for (transform, mesh) in self.world.query::<(&Transform, &MeshRender)>().iter() {
             let raw = InstanceRaw {
                 model: transform.matrix().to_cols_array_2d(),
                 color: mesh.color,
                 extra: [mesh.emissive, 0.0, 0.0, 0.0],
             };
-            instances_by_mesh.entry(mesh.mesh_type.clone()).or_default().push(raw);
+            instances_by_batch
+                .entry((mesh.mesh_type.clone(), mesh.texture.clone()))
+                .or_default()
+                .push(raw);
         }
 
-        for mesh_id in instances_by_mesh.keys() {
+        for (mesh_id, tex_opt) in instances_by_batch.keys() {
             self.gpu.ensure_mesh(mesh_id);
+            if let Some(tex) = tex_opt {
+                self.gpu.get_or_load_texture(tex);
+            }
         }
 
         let output = match self.gpu.surface.get_current_texture() {
@@ -1451,6 +1472,20 @@ impl EngineState {
                                             ui.label("Custom Path:");
                                             ui.text_edit_singleline(&mut mesh.mesh_type);
                                         });
+                                        ui.horizontal(|ui| {
+                                            ui.label("Texture:");
+                                            let mut tex_str = mesh.texture.clone().unwrap_or_default();
+                                            if ui.text_edit_singleline(&mut tex_str).changed() {
+                                                mesh.texture = if tex_str.trim().is_empty() {
+                                                    None
+                                                } else {
+                                                    Some(tex_str.trim().to_string())
+                                                };
+                                            }
+                                            if mesh.texture.is_some() && ui.button("X").on_hover_text("Clear Texture").clicked() {
+                                                mesh.texture = None;
+                                            }
+                                        });
                                     }
                                 });
 
@@ -1636,6 +1671,23 @@ impl EngineState {
                                                             mesh.mesh_type = path.clone();
                                                             self.logs.push(format!("Assigned mesh '{}' to selected entity", path));
                                                         }
+                                                    }
+                                                }
+                                            } else if path.ends_with(".png") || path.ends_with(".jpg") || path.ends_with(".jpeg") {
+                                                ui.label(format!("[tex]  {}", path));
+                                                if let Some(entity) = self.selected_entity {
+                                                    if ui.button("Assign Texture to Selected").clicked() {
+                                                        if let Ok(mut mesh) = self.world.get::<&mut MeshRender>(entity) {
+                                                            mesh.texture = Some(path.clone());
+                                                            self.logs.push(format!("Assigned texture '{}' to selected entity", path));
+                                                        }
+                                                    }
+                                                }
+                                            } else if path.ends_with(".wav") || path.ends_with(".ogg") {
+                                                ui.label(format!("[sfx]  {}", path));
+                                                if ui.button("Play Preview").clicked() {
+                                                    if let Ok(audio) = self.audio.lock() {
+                                                        let _ = audio.play_sound(path, 1.0);
                                                     }
                                                 }
                                             } else {
@@ -2216,11 +2268,18 @@ impl EngineState {
             render_pass.set_pipeline(&self.gpu.render_pipeline);
             render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
 
-            for (mesh_id, instances) in &instances_by_mesh {
+            for ((mesh_id, tex_opt), instances) in &instances_by_batch {
                 if instances.is_empty() {
                     continue;
                 }
                 if let Some(mesh_gpu) = self.gpu.meshes.get(mesh_id) {
+                    let tex_bind = if let Some(tex) = tex_opt {
+                        &self.gpu.get_texture(tex).bind_group
+                    } else {
+                        &self.gpu.default_white_texture.bind_group
+                    };
+                    render_pass.set_bind_group(1, tex_bind, &[]);
+
                     let instance_buffer = create_instance_buffer(&self.gpu.device, instances);
                     render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
                     render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
