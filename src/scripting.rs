@@ -7,6 +7,91 @@ use glam::Vec3;
 use crate::assets::{EntityDef, PhysicsDef};
 use crate::ecs::Transform;
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct HudButtonDef {
+    pub id: String,
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub callback: String,
+}
+
+pub fn lua_to_json(val: &mlua::Value) -> serde_json::Value {
+    match val {
+        mlua::Value::Nil => serde_json::Value::Null,
+        mlua::Value::Boolean(b) => serde_json::Value::Bool(*b),
+        mlua::Value::Integer(i) => serde_json::json!(*i),
+        mlua::Value::Number(n) => serde_json::json!(*n),
+        mlua::Value::String(s) => {
+            if let Ok(str_val) = s.to_str() {
+                serde_json::Value::String(str_val.to_string())
+            } else {
+                serde_json::Value::Null
+            }
+        }
+        mlua::Value::Table(t) => {
+            let mut is_array = true;
+            let mut max_idx = 0;
+            for pair in t.clone().pairs::<mlua::Value, mlua::Value>() {
+                if let Ok((mlua::Value::Integer(idx), _)) = pair {
+                    if idx > 0 {
+                        max_idx = max_idx.max(idx as usize);
+                        continue;
+                    }
+                }
+                is_array = false;
+                break;
+            }
+            if is_array && max_idx > 0 {
+                let mut arr = Vec::with_capacity(max_idx);
+                for i in 1..=max_idx {
+                    let v: mlua::Value = t.get(i).unwrap_or(mlua::Value::Nil);
+                    arr.push(lua_to_json(&v));
+                }
+                serde_json::Value::Array(arr)
+            } else {
+                let mut map = serde_json::Map::new();
+                for pair in t.clone().pairs::<String, mlua::Value>() {
+                    if let Ok((k, v)) = pair {
+                        map.insert(k, lua_to_json(&v));
+                    }
+                }
+                serde_json::Value::Object(map)
+            }
+        }
+        _ => serde_json::Value::Null,
+    }
+}
+
+pub fn json_to_lua(lua: &mlua::Lua, val: &serde_json::Value) -> mlua::Result<mlua::Value> {
+    match val {
+        serde_json::Value::Null => Ok(mlua::Value::Nil),
+        serde_json::Value::Bool(b) => Ok(mlua::Value::Boolean(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(mlua::Value::Integer(i))
+            } else {
+                Ok(mlua::Value::Number(n.as_f64().unwrap_or(0.0)))
+            }
+        }
+        serde_json::Value::String(s) => Ok(mlua::Value::String(lua.create_string(s)?)),
+        serde_json::Value::Array(arr) => {
+            let tbl = lua.create_table()?;
+            for (idx, item) in arr.iter().enumerate() {
+                tbl.set(idx + 1, json_to_lua(lua, item)?)?;
+            }
+            Ok(mlua::Value::Table(tbl))
+        }
+        serde_json::Value::Object(map) => {
+            let tbl = lua.create_table()?;
+            for (k, v) in map {
+                tbl.set(k.as_str(), json_to_lua(lua, v)?)?;
+            }
+            Ok(mlua::Value::Table(tbl))
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct LuaEngineContext {
     pub pressed_keys: Arc<RwLock<HashSet<String>>>,
@@ -19,6 +104,10 @@ pub struct LuaEngineContext {
     pub pending_camera_follows: Arc<Mutex<Vec<(Option<String>, [f32; 3], f32)>>>,
     pub pending_camera_shakes: Arc<Mutex<Vec<(f32, f32)>>>,
     pub pending_tweens: Arc<Mutex<Vec<crate::tweens::TweenRequest>>>,
+    pub pending_scene_load: Arc<Mutex<Option<String>>>,
+    pub save_data_store: Arc<RwLock<HashMap<String, serde_json::Value>>>,
+    pub hud_buttons: Arc<RwLock<HashMap<String, HudButtonDef>>>,
+    pub pending_button_clicks: Arc<Mutex<Vec<String>>>,
     pub hud_texts: Arc<RwLock<HashMap<String, String>>>,
     pub world_entities: Arc<RwLock<HashMap<String, [f32; 9]>>>,
     pub audio: Arc<Mutex<crate::audio::AudioManager>>,
@@ -29,6 +118,20 @@ impl LuaEngineContext {
         pressed_keys: Arc<RwLock<HashSet<String>>>,
         audio: Arc<Mutex<crate::audio::AudioManager>>,
     ) -> Self {
+        let save_data_store = {
+            let p = Path::new("assets/save_data.json");
+            let map = if p.exists() {
+                if let Ok(c) = fs::read_to_string(p) {
+                    serde_json::from_str::<HashMap<String, serde_json::Value>>(&c).unwrap_or_default()
+                } else {
+                    HashMap::new()
+                }
+            } else {
+                HashMap::new()
+            };
+            Arc::new(RwLock::new(map))
+        };
+
         Self {
             pressed_keys,
             pending_spawns: Arc::new(Mutex::new(Vec::new())),
@@ -40,6 +143,10 @@ impl LuaEngineContext {
             pending_camera_follows: Arc::new(Mutex::new(Vec::new())),
             pending_camera_shakes: Arc::new(Mutex::new(Vec::new())),
             pending_tweens: Arc::new(Mutex::new(Vec::new())),
+            pending_scene_load: Arc::new(Mutex::new(None)),
+            save_data_store,
+            hud_buttons: Arc::new(RwLock::new(HashMap::new())),
+            pending_button_clicks: Arc::new(Mutex::new(Vec::new())),
             hud_texts: Arc::new(RwLock::new(HashMap::new())),
             world_entities: Arc::new(RwLock::new(HashMap::new())),
             audio,
@@ -477,6 +584,79 @@ impl ScriptComponent {
             .set("tween_scale", tween_scale)
             .map_err(|e| e.to_string())?;
 
+        // 20. load_scene(path)
+        let scene_load_ref = ctx.pending_scene_load.clone();
+        let load_scene = lua
+            .create_function(move |_, path: String| {
+                if let Ok(mut pending) = scene_load_ref.lock() {
+                    *pending = Some(path);
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register load_scene: {}", e))?;
+        lua.globals()
+            .set("load_scene", load_scene)
+            .map_err(|e| e.to_string())?;
+
+        // 21. save_data(key, value)
+        let save_store_ref = ctx.save_data_store.clone();
+        let save_data = lua
+            .create_function(move |_, (key, val): (String, mlua::Value)| {
+                let json_val = lua_to_json(&val);
+                if let Ok(mut store) = save_store_ref.write() {
+                    store.insert(key, json_val);
+                    if let Ok(serialized) = serde_json::to_string_pretty(&*store) {
+                        let _ = std::fs::write("assets/save_data.json", serialized);
+                    }
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register save_data: {}", e))?;
+        lua.globals()
+            .set("save_data", save_data)
+            .map_err(|e| e.to_string())?;
+
+        // 22. load_data(key)
+        let load_store_ref = ctx.save_data_store.clone();
+        let load_data = lua
+            .create_function(move |lua, key: String| {
+                if let Ok(store) = load_store_ref.read() {
+                    if let Some(val) = store.get(&key) {
+                        return json_to_lua(lua, val);
+                    }
+                }
+                Ok(mlua::Value::Nil)
+            })
+            .map_err(|e| format!("Failed to register load_data: {}", e))?;
+        lua.globals()
+            .set("load_data", load_data)
+            .map_err(|e| e.to_string())?;
+
+        // 23. set_hud_button(id, text, x, y, callback_name)
+        let buttons_ref = ctx.hud_buttons.clone();
+        let set_hud_button = lua
+            .create_function(
+                move |_, (id, text, x, y, callback): (String, String, f32, f32, String)| {
+                    if let Ok(mut btns) = buttons_ref.write() {
+                        btns.insert(
+                            id.clone(),
+                            HudButtonDef {
+                                id,
+                                text,
+                                x,
+                                y,
+                                callback,
+                            },
+                        );
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register set_hud_button: {}", e))?;
+        lua.globals()
+            .set("set_hud_button", set_hud_button)
+            .map_err(|e| e.to_string())?;
+
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
             .exec()
@@ -600,6 +780,33 @@ impl ScriptComponent {
             }
         } else {
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lua_json_roundtrip() {
+        let lua = mlua::Lua::new();
+        let val: mlua::Value = lua.load("return { score = 100, player = 'Hero', active = true }").eval().unwrap();
+        let json = lua_to_json(&val);
+        assert_eq!(json["score"], 100);
+        assert_eq!(json["player"], "Hero");
+        assert_eq!(json["active"], true);
+
+        let lua_back = json_to_lua(&lua, &json).unwrap();
+        if let mlua::Value::Table(tbl) = lua_back {
+            let score: i64 = tbl.get("score").unwrap();
+            let player: String = tbl.get("player").unwrap();
+            let active: bool = tbl.get("active").unwrap();
+            assert_eq!(score, 100);
+            assert_eq!(player, "Hero");
+            assert!(active);
+        } else {
+            panic!("Expected Lua table");
         }
     }
 }

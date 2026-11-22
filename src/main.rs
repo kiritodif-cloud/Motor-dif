@@ -1187,6 +1187,48 @@ impl EngineState {
                     });
                     if let Ok(f) = tween_scale { let _ = lua.globals().set("tween_scale", f); }
 
+                    let scene_load_s = self.lua_ctx.pending_scene_load.clone();
+                    let load_scene = lua.create_function(move |_, path: String| {
+                        if let Ok(mut pending) = scene_load_s.lock() {
+                            *pending = Some(path);
+                        }
+                        Ok(true)
+                    });
+                    if let Ok(f) = load_scene { let _ = lua.globals().set("load_scene", f); }
+
+                    let save_store_s = self.lua_ctx.save_data_store.clone();
+                    let save_data = lua.create_function(move |_, (key, val): (String, mlua::Value)| {
+                        let json_val = scripting::lua_to_json(&val);
+                        if let Ok(mut store) = save_store_s.write() {
+                            store.insert(key, json_val);
+                            if let Ok(serialized) = serde_json::to_string_pretty(&*store) {
+                                let _ = std::fs::write("assets/save_data.json", serialized);
+                            }
+                        }
+                        Ok(true)
+                    });
+                    if let Ok(f) = save_data { let _ = lua.globals().set("save_data", f); }
+
+                    let load_store_s = self.lua_ctx.save_data_store.clone();
+                    let load_data = lua.create_function(move |lua, key: String| {
+                        if let Ok(store) = load_store_s.read() {
+                            if let Some(val) = store.get(&key) {
+                                return scripting::json_to_lua(lua, val);
+                            }
+                        }
+                        Ok(mlua::Value::Nil)
+                    });
+                    if let Ok(f) = load_data { let _ = lua.globals().set("load_data", f); }
+
+                    let btns_s = self.lua_ctx.hud_buttons.clone();
+                    let set_hud_button = lua.create_function(move |_, (id, text, x, y, callback): (String, String, f32, f32, String)| {
+                        if let Ok(mut btns) = btns_s.write() {
+                            btns.insert(id.clone(), scripting::HudButtonDef { id, text, x, y, callback });
+                        }
+                        Ok(true)
+                    });
+                    if let Ok(f) = set_hud_button { let _ = lua.globals().set("set_hud_button", f); }
+
                     let chunk = lua.load(&code);
                     let result_str = match chunk.eval::<mlua::Value>() {
                         Ok(val) => format!("{:?}", val),
@@ -1495,6 +1537,48 @@ impl EngineState {
             }
         }
 
+        // Check for pending scene transition from Lua
+        let pending_scene = if let Ok(mut s) = self.lua_ctx.pending_scene_load.lock() {
+            s.take()
+        } else {
+            None
+        };
+        if let Some(scene_file) = pending_scene {
+            let p = Path::new(&scene_file);
+            match assets::load_scene_from_file(p) {
+                Ok(scene) => {
+                    self.world.clear();
+                    self.physics.clear();
+                    self.particles.clear();
+                    self.selected_entity = None;
+                    assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
+                    let msg = format!("Scene transitioned to '{}'", scene_file);
+                    self.logs.push(msg);
+                }
+                Err(e) => {
+                    self.logs.push(format!("Failed to transition to scene '{}': {}", scene_file, e));
+                }
+            }
+        }
+
+        // Dispatch pending HUD button clicks to Lua scripts
+        let pending_clicks = if let Ok(mut c) = self.lua_ctx.pending_button_clicks.lock() {
+            std::mem::take(&mut *c)
+        } else {
+            Vec::new()
+        };
+        for callback_name in pending_clicks {
+            for (_, script) in self.world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
+                if let Some(lua_arc) = &script.lua {
+                    if let Ok(lua) = lua_arc.lock() {
+                        if let Ok(func) = lua.globals().get::<mlua::Function>(callback_name.as_str()) {
+                            let _ = func.call::<()>(());
+                        }
+                    }
+                }
+            }
+        }
+
         // Drain and apply pending parents from Lua
         let pending_parents = if let Ok(mut parents) = self.lua_ctx.pending_parents.lock() {
             std::mem::take(&mut *parents)
@@ -1763,6 +1847,20 @@ impl EngineState {
                                             );
                                         }
                                     });
+                            });
+                        }
+                    }
+
+                    if let Ok(btns) = self.lua_ctx.hud_buttons.read() {
+                        for btn in btns.values() {
+                            let btn_area = egui::Area::new(ui.make_persistent_id(format!("hud_btn_std_{}", btn.id)))
+                                .fixed_pos(egui::pos2(btn.x, btn.y));
+                            btn_area.show(ui.ctx(), |ui| {
+                                if ui.button(egui::RichText::new(&btn.text).size(15.0).strong()).clicked() {
+                                    if let Ok(mut clicks) = self.lua_ctx.pending_button_clicks.lock() {
+                                        clicks.push(btn.callback.clone());
+                                    }
+                                }
                             });
                         }
                     }
@@ -2819,6 +2917,21 @@ impl EngineState {
                                                 ui.colored_label(egui::Color32::from_rgb(100, 220, 255), format!("{}: {}", k, v));
                                             }
                                         });
+                                });
+                            }
+                        }
+
+                        // 5. In-Game Interactive HUD Buttons from Lua (set_hud_button)
+                        if let Ok(btns) = self.lua_ctx.hud_buttons.read() {
+                            for btn in btns.values() {
+                                let btn_area = egui::Area::new(ui.make_persistent_id(format!("hud_btn_ed_{}", btn.id)))
+                                    .fixed_pos(egui::pos2(btn.x, btn.y));
+                                btn_area.show(ui.ctx(), |ui| {
+                                    if ui.button(egui::RichText::new(&btn.text).size(14.0).strong()).clicked() {
+                                        if let Ok(mut clicks) = self.lua_ctx.pending_button_clicks.lock() {
+                                            clicks.push(btn.callback.clone());
+                                        }
+                                    }
                                 });
                             }
                         }
