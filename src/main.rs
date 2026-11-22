@@ -2025,23 +2025,26 @@ impl EngineState {
                         // Entity List with Tree Hierarchy
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             let mut all_entities = Vec::new();
-                            let mut children_map: HashMap<String, Vec<(hecs::Entity, String, String)>> = HashMap::new();
+                            let mut children_map: HashMap<String, Vec<(hecs::Entity, String, String, bool, bool, bool)>> = HashMap::new();
                             let mut known_ids = HashSet::new();
 
                             for entity_ref in self.world.iter() {
                                 let entity = entity_ref.entity();
                                 if let (Some(meta), Some(mesh)) = (entity_ref.get::<&EntityMeta>(), entity_ref.get::<&MeshRender>()) {
                                     if self.hierarchy_search.is_empty() || meta.id.to_lowercase().contains(&self.hierarchy_search.to_lowercase()) {
-                                        all_entities.push((entity, meta.id.clone(), meta.parent.clone(), mesh.mesh_type.clone()));
+                                        let has_physics = entity_ref.get::<&RigidBodyComponent>().is_some();
+                                        let has_light = entity_ref.get::<&ecs::PointLight>().is_some();
+                                        let has_script = entity_ref.get::<&ScriptComponent>().is_some();
+                                        all_entities.push((entity, meta.id.clone(), meta.parent.clone(), mesh.mesh_type.clone(), has_physics, has_light, has_script));
                                         known_ids.insert(meta.id.clone());
                                     }
                                 }
                             }
 
-                            for (entity, id, parent, mesh_type) in &all_entities {
+                            for (entity, id, parent, mesh_type, has_physics, has_light, has_script) in &all_entities {
                                 if let Some(pid) = parent {
                                     if known_ids.contains(pid) && pid != id {
-                                        children_map.entry(pid.clone()).or_default().push((*entity, id.clone(), mesh_type.clone()));
+                                        children_map.entry(pid.clone()).or_default().push((*entity, id.clone(), mesh_type.clone(), *has_physics, *has_light, *has_script));
                                     }
                                 }
                             }
@@ -2051,30 +2054,49 @@ impl EngineState {
                                 entity: hecs::Entity,
                                 id: &str,
                                 mesh_type: &str,
+                                has_physics: bool,
+                                has_light: bool,
+                                has_script: bool,
                                 selected: &mut Option<hecs::Entity>,
-                                children_map: &HashMap<String, Vec<(hecs::Entity, String, String)>>,
+                                children_map: &HashMap<String, Vec<(hecs::Entity, String, String, bool, bool, bool)>>,
                                 depth: usize,
                             ) {
                                 let is_selected = *selected == Some(entity);
                                 let indent_str = if depth == 0 { "* " } else { "|- " };
                                 let label = format!("{}{}{} ({})", "  ".repeat(depth), indent_str, id, mesh_type);
-                                if ui.selectable_label(is_selected, label).clicked() {
-                                    *selected = Some(entity);
-                                }
+                                
+                                ui.horizontal(|ui| {
+                                    if ui.selectable_label(is_selected, label).clicked() {
+                                        *selected = Some(entity);
+                                    }
+                                    if has_physics {
+                                        ui.label(egui::RichText::new("[P]").color(egui::Color32::from_rgb(251, 146, 60)).small())
+                                            .on_hover_text("RigidBody Physics Active");
+                                    }
+                                    if has_light {
+                                        ui.label(egui::RichText::new("[L]").color(egui::Color32::from_rgb(250, 204, 21)).small())
+                                            .on_hover_text("Point Light Active");
+                                    }
+                                    if has_script {
+                                        ui.label(egui::RichText::new("[S]").color(egui::Color32::from_rgb(56, 189, 248)).small())
+                                            .on_hover_text("Lua Script Attached");
+                                    }
+                                });
+
                                 if let Some(children) = children_map.get(id) {
-                                    for (c_e, c_id, c_mesh) in children {
-                                        render_node(ui, *c_e, c_id, c_mesh, selected, children_map, depth + 1);
+                                    for (c_e, c_id, c_mesh, c_phys, c_light, c_script) in children {
+                                        render_node(ui, *c_e, c_id, c_mesh, *c_phys, *c_light, *c_script, selected, children_map, depth + 1);
                                     }
                                 }
                             }
 
-                            for (entity, id, parent, mesh_type) in &all_entities {
+                            for (entity, id, parent, mesh_type, has_physics, has_light, has_script) in &all_entities {
                                 let is_root = match parent {
                                     None => true,
                                     Some(pid) => !known_ids.contains(pid) || pid == id,
                                 };
                                 if is_root {
-                                    render_node(ui, *entity, id, mesh_type, &mut self.selected_entity, &children_map, 0);
+                                    render_node(ui, *entity, id, mesh_type, *has_physics, *has_light, *has_script, &mut self.selected_entity, &children_map, 0);
                                 }
                             }
                         });
@@ -2090,272 +2112,273 @@ impl EngineState {
 
                         if let Some(entity) = self.selected_entity {
                             if self.world.contains(entity) {
-                                // 1. Identity
-                                ui.group(|ui| {
-                                    ui.label(egui::RichText::new("Entity Identity").strong());
-                                    let mut all_other_ids: Vec<String> = Vec::new();
-                                    for other_ref in self.world.iter() {
-                                        if other_ref.entity() != entity {
-                                            if let Some(m) = other_ref.get::<&EntityMeta>() {
-                                                all_other_ids.push(m.id.clone());
+                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                    // 1. Identity
+                                    ui_theme::collapsible_card(ui, "insp_identity", "Entity Identity", true, |ui| {
+                                        let mut all_other_ids: Vec<String> = Vec::new();
+                                        for other_ref in self.world.iter() {
+                                            if other_ref.entity() != entity {
+                                                if let Some(m) = other_ref.get::<&EntityMeta>() {
+                                                    all_other_ids.push(m.id.clone());
+                                                }
                                             }
                                         }
-                                    }
 
-                                    if let Ok(mut meta) = self.world.get::<&mut EntityMeta>(entity) {
-                                        ui.horizontal(|ui| {
-                                            ui.label("ID:");
-                                            ui.text_edit_singleline(&mut meta.id);
-                                        });
+                                        if let Ok(mut meta) = self.world.get::<&mut EntityMeta>(entity) {
+                                            ui.horizontal(|ui| {
+                                                ui.label("ID:");
+                                                ui.text_edit_singleline(&mut meta.id);
+                                            });
 
-                                        ui.horizontal(|ui| {
-                                            ui.label("Parent:");
-                                            let current_parent_text = meta.parent.clone().unwrap_or_else(|| "None (Root)".to_string());
-                                            egui::ComboBox::from_id_salt("parent_select")
-                                                .selected_text(&current_parent_text)
-                                                .show_ui(ui, |ui| {
-                                                    let is_none = meta.parent.is_none();
-                                                    if ui.selectable_label(is_none, "None (Root)").clicked() {
-                                                        meta.parent = None;
-                                                    }
-                                                    for pid in &all_other_ids {
-                                                        let is_selected = meta.parent.as_ref() == Some(pid);
-                                                        if ui.selectable_label(is_selected, pid).clicked() {
-                                                            meta.parent = Some(pid.clone());
+                                            ui.horizontal(|ui| {
+                                                ui.label("Parent:");
+                                                let current_parent_text = meta.parent.clone().unwrap_or_else(|| "None (Root)".to_string());
+                                                egui::ComboBox::from_id_salt("parent_select")
+                                                    .selected_text(&current_parent_text)
+                                                    .show_ui(ui, |ui| {
+                                                        let is_none = meta.parent.is_none();
+                                                        if ui.selectable_label(is_none, "None (Root)").clicked() {
+                                                            meta.parent = None;
                                                         }
-                                                    }
-                                                });
-                                        });
-                                    }
-                                });
-
-                                // 2. Transform
-                                ui.group(|ui| {
-                                    ui.label(egui::RichText::new("Transform").strong());
-                                    let mut transform_changed = false;
-                                    if let Ok(mut transform) = self.world.get::<&mut Transform>(entity) {
-                                        ui.label("Position:");
-                                        ui.horizontal(|ui| {
-                                            if ui.add(egui::DragValue::new(&mut transform.position.x).speed(0.05).prefix("X: ")).changed()
-                                                || ui.add(egui::DragValue::new(&mut transform.position.y).speed(0.05).prefix("Y: ")).changed()
-                                                || ui.add(egui::DragValue::new(&mut transform.position.z).speed(0.05).prefix("Z: ")).changed()
-                                            {
-                                                transform_changed = true;
-                                            }
-                                        });
-
-                                        ui.label("Rotation (Degrees):");
-                                        let mut deg_x = transform.rotation.x.to_degrees();
-                                        let mut deg_y = transform.rotation.y.to_degrees();
-                                        let mut deg_z = transform.rotation.z.to_degrees();
-                                        ui.horizontal(|ui| {
-                                            if ui.add(egui::DragValue::new(&mut deg_x).speed(1.0).prefix("X: ").suffix(" deg")).changed() {
-                                                transform.rotation.x = deg_x.to_radians();
-                                                transform_changed = true;
-                                            }
-                                            if ui.add(egui::DragValue::new(&mut deg_y).speed(1.0).prefix("Y: ").suffix(" deg")).changed() {
-                                                transform.rotation.y = deg_y.to_radians();
-                                                transform_changed = true;
-                                            }
-                                            if ui.add(egui::DragValue::new(&mut deg_z).speed(1.0).prefix("Z: ").suffix(" deg")).changed() {
-                                                transform.rotation.z = deg_z.to_radians();
-                                                transform_changed = true;
-                                            }
-                                        });
-
-                                        ui.label("Scale:");
-                                        ui.horizontal(|ui| {
-                                            ui.add(egui::DragValue::new(&mut transform.scale.x).speed(0.05).prefix("X: ").range(0.01..=100.0));
-                                            ui.add(egui::DragValue::new(&mut transform.scale.y).speed(0.05).prefix("Y: ").range(0.01..=100.0));
-                                            ui.add(egui::DragValue::new(&mut transform.scale.z).speed(0.05).prefix("Z: ").range(0.01..=100.0));
-                                        });
-                                    }
-                                    if transform_changed {
-                                        self.sync_entity_to_physics(entity);
-                                    }
-                                });
-
-                                // 3. Render & Material
-                                ui.group(|ui| {
-                                    ui.label(egui::RichText::new("Render & Material").strong());
-                                    if let Ok(mut mesh) = self.world.get::<&mut MeshRender>(entity) {
-                                        ui.horizontal(|ui| {
-                                            ui.label("Color:");
-                                            ui.color_edit_button_rgba_unmultiplied(&mut mesh.color);
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label("Emissive:");
-                                            ui.add(egui::Slider::new(&mut mesh.emissive, 0.0..=1.0));
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label("Mesh:");
-                                            egui::ComboBox::from_id_salt("mesh_select")
-                                                .selected_text(&mesh.mesh_type)
-                                                .show_ui(ui, |ui| {
-                                                    ui.selectable_value(&mut mesh.mesh_type, "cube".to_string(), "Cube");
-                                                    ui.selectable_value(&mut mesh.mesh_type, "sphere".to_string(), "Sphere");
-                                                    ui.selectable_value(&mut mesh.mesh_type, "cylinder".to_string(), "Cylinder");
-                                                    ui.selectable_value(&mut mesh.mesh_type, "quad".to_string(), "Quad");
-                                                    ui.selectable_value(&mut mesh.mesh_type, "plane".to_string(), "Plane");
-                                                });
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label("Custom Path:");
-                                            ui.text_edit_singleline(&mut mesh.mesh_type);
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label("Texture:");
-                                            let mut tex_str = mesh.texture.clone().unwrap_or_default();
-                                            if ui.text_edit_singleline(&mut tex_str).changed() {
-                                                mesh.texture = if tex_str.trim().is_empty() {
-                                                    None
-                                                } else {
-                                                    Some(tex_str.trim().to_string())
-                                                };
-                                            }
-                                            if mesh.texture.is_some() && ui.button("X").on_hover_text("Clear Texture").clicked() {
-                                                mesh.texture = None;
-                                            }
-                                        });
-                                    }
-                                });
-
-                                // 4. Scripting
-                                ui.group(|ui| {
-                                    ui.label(egui::RichText::new("Scripting (Lua)").strong());
-                                    let mut current_script = self.world.get::<&ScriptComponent>(entity).map(|s| s.path.clone()).unwrap_or_default();
-                                    let mut script_changed = false;
-                                    ui.horizontal(|ui| {
-                                        ui.label("Path:");
-                                        if ui.text_edit_singleline(&mut current_script).changed() {
-                                            script_changed = true;
+                                                        for pid in &all_other_ids {
+                                                            let is_selected = meta.parent.as_ref() == Some(pid);
+                                                            if ui.selectable_label(is_selected, pid).clicked() {
+                                                                meta.parent = Some(pid.clone());
+                                                            }
+                                                        }
+                                                    });
+                                            });
                                         }
                                     });
 
-                                    if !current_script.is_empty() {
-                                        if ui.button("[Edit] Edit Script").clicked() {
-                                            script_to_open = Some(current_script.clone());
-                                        }
-                                    }
+                                    ui.add_space(4.0);
 
-                                    if script_changed {
-                                        if current_script.trim().is_empty() {
-                                            let _ = self.world.remove_one::<ScriptComponent>(entity);
-                                        } else {
-                                            let mut comp = ScriptComponent::new(current_script);
-                                            let _ = comp.init_or_reload(self.lua_ctx.clone());
-                                            let _ = self.world.insert_one(entity, comp);
-                                        }
-                                    }
-                                });
-
-                                // 5. Physics
-                                ui.group(|ui| {
-                                    ui.label(egui::RichText::new("Physics (Rapier3D)").strong());
-                                    let has_physics = self.world.get::<&RigidBodyComponent>(entity).is_ok();
-                                    let mut enable_physics = has_physics;
-
-                                    if ui.checkbox(&mut enable_physics, "Enable Physics").changed() {
-                                        if enable_physics {
-                                            let trans_opt = if let Ok(trans) = self.world.get::<&Transform>(entity) {
-                                                Some(*trans)
-                                            } else {
-                                                None
-                                            };
-                                            if let Some(trans) = trans_opt {
-                                                let phys_def = assets::PhysicsDef {
-                                                    body: "dynamic".to_string(),
-                                                    collider: "cuboid".to_string(),
-                                                    mass: 1.0,
-                                                    restitution: 0.4,
-                                                };
-                                                let handle = self.physics.add_body(&trans, &phys_def);
-                                                let _ = self.world.insert_one(entity, RigidBodyComponent { handle });
-                                            }
-                                        } else {
-                                            let rb_handle = if let Ok(rb) = self.world.get::<&RigidBodyComponent>(entity) {
-                                                Some(rb.handle)
-                                            } else {
-                                                None
-                                            };
-                                            if let Some(handle) = rb_handle {
-                                                self.physics.remove_body(handle);
-                                            }
-                                            let _ = self.world.remove_one::<RigidBodyComponent>(entity);
-                                        }
-                                    }
-
-                                    if let Ok(rb) = self.world.get::<&RigidBodyComponent>(entity) {
-                                        if let Some(body) = self.physics.rigid_body_set.get_mut(rb.handle) {
-                                            let mut is_dynamic = body.is_dynamic();
-                                            if ui.checkbox(&mut is_dynamic, "Dynamic Body").changed() {
-                                                if is_dynamic {
-                                                    body.set_body_type(rapier3d::prelude::RigidBodyType::Dynamic, true);
-                                                } else {
-                                                    body.set_body_type(rapier3d::prelude::RigidBodyType::Fixed, true);
-                                                }
+                                    // 2. Transform
+                                    let mut transform_changed = false;
+                                    ui_theme::collapsible_card(ui, "insp_transform", "Transform", true, |ui| {
+                                        if let Ok(mut transform) = self.world.get::<&mut Transform>(entity) {
+                                            let mut pos = [transform.position.x, transform.position.y, transform.position.z];
+                                            if ui_theme::ui_vec3_colored(ui, "Position", &mut pos, [0.0, 0.0, 0.0], 0.05, None) {
+                                                transform.position = glam::Vec3::new(pos[0], pos[1], pos[2]);
+                                                transform_changed = true;
                                             }
 
-                                            let mut mass = body.mass();
-                                            if ui.add(egui::DragValue::new(&mut mass).speed(0.1).prefix("Mass: ").range(0.01..=1000.0)).changed() {
-                                                // mass updated
+                                            ui.add_space(4.0);
+
+                                            let mut rot_deg = [
+                                                transform.rotation.x.to_degrees(),
+                                                transform.rotation.y.to_degrees(),
+                                                transform.rotation.z.to_degrees(),
+                                            ];
+                                            if ui_theme::ui_vec3_colored(ui, "Rotation (Deg)", &mut rot_deg, [0.0, 0.0, 0.0], 1.0, None) {
+                                                transform.rotation = glam::Vec3::new(
+                                                    rot_deg[0].to_radians(),
+                                                    rot_deg[1].to_radians(),
+                                                    rot_deg[2].to_radians(),
+                                                );
+                                                transform_changed = true;
+                                            }
+
+                                            ui.add_space(4.0);
+
+                                            let mut scl = [transform.scale.x, transform.scale.y, transform.scale.z];
+                                            if ui_theme::ui_vec3_colored(ui, "Scale", &mut scl, [1.0, 1.0, 1.0], 0.05, Some(0.01..=100.0)) {
+                                                transform.scale = glam::Vec3::new(scl[0], scl[1], scl[2]);
+                                                transform_changed = true;
                                             }
                                         }
+                                    });
+                                    if transform_changed {
+                                        self.sync_entity_to_physics(entity);
                                     }
-                                });
 
-                                // 6. Point Light
-                                ui.group(|ui| {
-                                    ui.label(egui::RichText::new("Point Light").strong());
-                                    let has_light = self.world.get::<&ecs::PointLight>(entity).is_ok();
-                                    let mut enable_light = has_light;
-                                    if ui.checkbox(&mut enable_light, "Enable Light").changed() {
-                                        if enable_light {
-                                            let _ = self.world.insert_one(entity, ecs::PointLight {
-                                                color: [1.0, 0.9, 0.7],
-                                                intensity: 2.0,
-                                                radius: 8.0,
+                                    ui.add_space(4.0);
+
+                                    // 3. Render & Material
+                                    ui_theme::collapsible_card(ui, "insp_render", "Render & Material", true, |ui| {
+                                        if let Ok(mut mesh) = self.world.get::<&mut MeshRender>(entity) {
+                                            ui.horizontal(|ui| {
+                                                ui.label("Color:");
+                                                ui.color_edit_button_rgba_unmultiplied(&mut mesh.color);
                                             });
-                                        } else {
-                                            let _ = self.world.remove_one::<ecs::PointLight>(entity);
+                                            ui.horizontal(|ui| {
+                                                ui.label("Emissive:");
+                                                ui.add(egui::Slider::new(&mut mesh.emissive, 0.0..=1.0));
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Mesh:");
+                                                egui::ComboBox::from_id_salt("mesh_select")
+                                                    .selected_text(&mesh.mesh_type)
+                                                    .show_ui(ui, |ui| {
+                                                        ui.selectable_value(&mut mesh.mesh_type, "cube".to_string(), "Cube");
+                                                        ui.selectable_value(&mut mesh.mesh_type, "sphere".to_string(), "Sphere");
+                                                        ui.selectable_value(&mut mesh.mesh_type, "cylinder".to_string(), "Cylinder");
+                                                        ui.selectable_value(&mut mesh.mesh_type, "quad".to_string(), "Quad");
+                                                        ui.selectable_value(&mut mesh.mesh_type, "plane".to_string(), "Plane");
+                                                    });
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Custom Path:");
+                                                ui.text_edit_singleline(&mut mesh.mesh_type);
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Texture:");
+                                                let mut tex_str = mesh.texture.clone().unwrap_or_default();
+                                                if ui.text_edit_singleline(&mut tex_str).changed() {
+                                                    mesh.texture = if tex_str.trim().is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(tex_str.trim().to_string())
+                                                    };
+                                                }
+                                                if mesh.texture.is_some() && ui.button("X").on_hover_text("Clear Texture").clicked() {
+                                                    mesh.texture = None;
+                                                }
+                                            });
                                         }
-                                    }
+                                    });
 
-                                    if let Ok(mut light) = self.world.get::<&mut ecs::PointLight>(entity) {
+                                    ui.add_space(4.0);
+
+                                    // 4. Point Light
+                                    ui_theme::collapsible_card(ui, "insp_light", "Point Light", true, |ui| {
+                                        let has_light = self.world.get::<&ecs::PointLight>(entity).is_ok();
+                                        let mut enable_light = has_light;
+                                        if ui.checkbox(&mut enable_light, "Enable Light").changed() {
+                                            if enable_light {
+                                                let _ = self.world.insert_one(entity, ecs::PointLight {
+                                                    color: [1.0, 0.9, 0.7],
+                                                    intensity: 2.0,
+                                                    radius: 8.0,
+                                                });
+                                            } else {
+                                                let _ = self.world.remove_one::<ecs::PointLight>(entity);
+                                            }
+                                        }
+
+                                        if let Ok(mut light) = self.world.get::<&mut ecs::PointLight>(entity) {
+                                            ui.horizontal(|ui| {
+                                                ui.label("Color:");
+                                                let mut rgb = [light.color[0], light.color[1], light.color[2]];
+                                                if ui.color_edit_button_rgb(&mut rgb).changed() {
+                                                    light.color = rgb;
+                                                }
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Intensity:");
+                                                ui.add(egui::DragValue::new(&mut light.intensity).speed(0.1).range(0.0..=50.0));
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Radius:");
+                                                ui.add(egui::DragValue::new(&mut light.radius).speed(0.2).range(0.1..=100.0));
+                                            });
+                                        }
+                                    });
+
+                                    ui.add_space(4.0);
+
+                                    // 5. Physics
+                                    ui_theme::collapsible_card(ui, "insp_physics", "Physics (Rapier3D)", true, |ui| {
+                                        let has_physics = self.world.get::<&RigidBodyComponent>(entity).is_ok();
+                                        let mut enable_physics = has_physics;
+
+                                        if ui.checkbox(&mut enable_physics, "Enable Physics").changed() {
+                                            if enable_physics {
+                                                let trans_opt = if let Ok(trans) = self.world.get::<&Transform>(entity) {
+                                                    Some(*trans)
+                                                } else {
+                                                    None
+                                                };
+                                                if let Some(trans) = trans_opt {
+                                                    let phys_def = assets::PhysicsDef {
+                                                        body: "dynamic".to_string(),
+                                                        collider: "cuboid".to_string(),
+                                                        mass: 1.0,
+                                                        restitution: 0.4,
+                                                    };
+                                                    let handle = self.physics.add_body(&trans, &phys_def);
+                                                    let _ = self.world.insert_one(entity, RigidBodyComponent { handle });
+                                                }
+                                            } else {
+                                                let rb_handle = if let Ok(rb) = self.world.get::<&RigidBodyComponent>(entity) {
+                                                    Some(rb.handle)
+                                                } else {
+                                                    None
+                                                };
+                                                if let Some(handle) = rb_handle {
+                                                    self.physics.remove_body(handle);
+                                                }
+                                                let _ = self.world.remove_one::<RigidBodyComponent>(entity);
+                                            }
+                                        }
+
+                                        if let Ok(rb) = self.world.get::<&RigidBodyComponent>(entity) {
+                                            if let Some(body) = self.physics.rigid_body_set.get_mut(rb.handle) {
+                                                let mut is_dynamic = body.is_dynamic();
+                                                if ui.checkbox(&mut is_dynamic, "Dynamic Body").changed() {
+                                                    if is_dynamic {
+                                                        body.set_body_type(rapier3d::prelude::RigidBodyType::Dynamic, true);
+                                                    } else {
+                                                        body.set_body_type(rapier3d::prelude::RigidBodyType::Fixed, true);
+                                                    }
+                                                }
+
+                                                let mut mass = body.mass();
+                                                if ui.add(egui::DragValue::new(&mut mass).speed(0.1).prefix("Mass: ").range(0.01..=1000.0)).changed() {
+                                                    // mass updated
+                                                }
+                                            }
+                                        }
+                                    });
+
+                                    ui.add_space(4.0);
+
+                                    // 6. Scripting
+                                    ui_theme::collapsible_card(ui, "insp_scripting", "Scripting (Lua)", true, |ui| {
+                                        let mut current_script = self.world.get::<&ScriptComponent>(entity).map(|s| s.path.clone()).unwrap_or_default();
+                                        let mut script_changed = false;
                                         ui.horizontal(|ui| {
-                                            ui.label("Color:");
-                                            let mut rgb = [light.color[0], light.color[1], light.color[2]];
-                                            if ui.color_edit_button_rgb(&mut rgb).changed() {
-                                                light.color = rgb;
+                                            ui.label("Path:");
+                                            if ui.text_edit_singleline(&mut current_script).changed() {
+                                                script_changed = true;
                                             }
                                         });
-                                        ui.horizontal(|ui| {
-                                            ui.label("Intensity:");
-                                            ui.add(egui::DragValue::new(&mut light.intensity).speed(0.1).range(0.0..=50.0));
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label("Radius:");
-                                            ui.add(egui::DragValue::new(&mut light.radius).speed(0.2).range(0.1..=100.0));
-                                        });
-                                    }
-                                });
 
-                                // 7. Prefab Export
-                                ui.group(|ui| {
-                                    ui.label(egui::RichText::new("Prefab Export").strong());
-                                    if ui.button("[*] Save as Prefab").clicked() {
-                                        if let Some(def) = assets::extract_entity_def(&self.world, &self.physics, entity) {
-                                            let prefab_path = format!("assets/prefabs/{}.json", def.id);
-                                            match assets::save_prefab_to_file(&prefab_path, &def) {
-                                                Ok(()) => {
-                                                    self.logs.push(format!("Saved prefab to '{}'", prefab_path));
-                                                }
-                                                Err(e) => {
-                                                    self.logs.push(format!("Failed to save prefab '{}': {}", prefab_path, e));
+                                        if !current_script.is_empty() {
+                                            if ui.button("[Edit] Edit Script").clicked() {
+                                                script_to_open = Some(current_script.clone());
+                                            }
+                                        }
+
+                                        if script_changed {
+                                            if current_script.trim().is_empty() {
+                                                let _ = self.world.remove_one::<ScriptComponent>(entity);
+                                            } else {
+                                                let mut comp = ScriptComponent::new(current_script);
+                                                let _ = comp.init_or_reload(self.lua_ctx.clone());
+                                                let _ = self.world.insert_one(entity, comp);
+                                            }
+                                        }
+                                    });
+
+                                    ui.add_space(4.0);
+
+                                    // 7. Prefab Export
+                                    ui_theme::collapsible_card(ui, "insp_prefab", "Prefab Export", false, |ui| {
+                                        if ui.button("[*] Save as Prefab").clicked() {
+                                            if let Some(def) = assets::extract_entity_def(&self.world, &self.physics, entity) {
+                                                let prefab_path = format!("assets/prefabs/{}.json", def.id);
+                                                match assets::save_prefab_to_file(&prefab_path, &def) {
+                                                    Ok(()) => {
+                                                        self.logs.push(format!("Saved prefab to '{}'", prefab_path));
+                                                    }
+                                                    Err(e) => {
+                                                        self.logs.push(format!("Failed to save prefab '{}': {}", prefab_path, e));
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
+                                    });
                                 });
                             } else {
                                 self.selected_entity = None;

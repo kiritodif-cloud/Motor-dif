@@ -150,6 +150,91 @@ pub fn studio_card<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui
         .inner
 }
 
+/// Helper to render collapsible studio-style card
+pub fn collapsible_card<R>(
+    ui: &mut egui::Ui,
+    id: &str,
+    title: &str,
+    default_open: bool,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> Option<R> {
+    studio_card(ui, |ui| {
+        egui::CollapsingHeader::new(egui::RichText::new(title).strong().color(COLOR_TEXT_MAIN))
+            .id_salt(id)
+            .default_open(default_open)
+            .show(ui, add_contents)
+            .body_returned
+    })
+}
+
+/// Studio Vector3 controls with color badges (X=Red, Y=Green, Z=Blue) and Reset button
+pub fn ui_vec3_colored(
+    ui: &mut egui::Ui,
+    label: &str,
+    values: &mut [f32; 3],
+    reset_val: [f32; 3],
+    speed: f32,
+    range: Option<std::ops::RangeInclusive<f32>>,
+) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).strong().color(COLOR_TEXT_MAIN));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .small_button("[R]")
+                .on_hover_text(format!(
+                    "Reset to [{:.1}, {:.1}, {:.1}]",
+                    reset_val[0], reset_val[1], reset_val[2]
+                ))
+                .clicked()
+            {
+                *values = reset_val;
+                changed = true;
+            }
+        });
+    });
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+
+        // X Component (Red badge)
+        ui.label(egui::RichText::new("X").color(COLOR_AXIS_X).strong().size(11.0));
+        let mut drag_x = egui::DragValue::new(&mut values[0]).speed(speed);
+        if let Some(r) = &range {
+            drag_x = drag_x.range(r.clone());
+        }
+        if ui.add(drag_x).changed() {
+            changed = true;
+        }
+
+        ui.add_space(4.0);
+
+        // Y Component (Green badge)
+        ui.label(egui::RichText::new("Y").color(COLOR_AXIS_Y).strong().size(11.0));
+        let mut drag_y = egui::DragValue::new(&mut values[1]).speed(speed);
+        if let Some(r) = &range {
+            drag_y = drag_y.range(r.clone());
+        }
+        if ui.add(drag_y).changed() {
+            changed = true;
+        }
+
+        ui.add_space(4.0);
+
+        // Z Component (Blue badge)
+        ui.label(egui::RichText::new("Z").color(COLOR_AXIS_Z).strong().size(11.0));
+        let mut drag_z = egui::DragValue::new(&mut values[2]).speed(speed);
+        if let Some(r) = &range {
+            drag_z = drag_z.range(r.clone());
+        }
+        if ui.add(drag_z).changed() {
+            changed = true;
+        }
+    });
+
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
