@@ -1,0 +1,17 @@
+{
+  "id": "cosmos_bot",
+  "mesh": "sphere",
+  "position": [0.0, 0.8, 0.0],
+  "rotation": [0.0, 0.0, 0.0],
+  "scale": [1.0, 1.0, 1.0],
+  "texture": null,
+  "color": [0.9, 0.3, 0.4, 1.0],
+  "emissive": 0.5,
+  "script": null,
+  "physics": null,
+  "point_light": {
+    "color": [1.0, 0.3, 0.4],
+    "intensity": 2.0,
+    "radius": 8.0
+  }
+}

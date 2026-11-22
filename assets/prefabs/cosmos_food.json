@@ -1,0 +1,13 @@
+{
+  "id": "cosmos_food",
+  "mesh": "sphere",
+  "position": [0.0, 0.4, 0.0],
+  "rotation": [0.0, 0.0, 0.0],
+  "scale": [0.35, 0.35, 0.35],
+  "texture": null,
+  "color": [1.0, 0.95, 0.4, 1.0],
+  "emissive": 0.8,
+  "script": null,
+  "physics": null,
+  "point_light": null
+}

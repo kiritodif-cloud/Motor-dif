@@ -1,0 +1,17 @@
+{
+  "id": "cosmos_boss",
+  "mesh": "sphere",
+  "position": [0.0, 3.5, -45.0],
+  "rotation": [0.0, 0.0, 0.0],
+  "scale": [6.0, 6.0, 6.0],
+  "texture": null,
+  "color": [1.0, 0.25, 0.05, 1.0],
+  "emissive": 0.9,
+  "script": null,
+  "physics": null,
+  "point_light": {
+    "color": [1.0, 0.2, 0.0],
+    "intensity": 12.0,
+    "radius": 35.0
+  }
+}
