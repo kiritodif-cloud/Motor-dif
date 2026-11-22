@@ -1,0 +1,27 @@
+[package]
+name = "motor_dif"
+version = "0.1.0"
+edition = "2024"
+
+[lints.cargo]
+unused_dependencies = "allow"
+
+[dependencies]
+base64 = "0.23.1"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+egui = { version = "0.37.0", features = ["default_fonts"] }
+egui-wgpu = "0.37.0"
+egui-winit = "0.37.0"
+glam = { version = "0.33.12", features = ["serde", "bytemuck"] }
+gltf = "1.4.1"
+hecs = "0.11.2"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+mlua = { version = "0.12.2", features = ["lua54", "vendored", "send"] }
+notify = "9.0.0"
+pollster = "1.0.3"
+rapier3d = "0.36.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["full"] }
+wgpu = "30.0.2"
+winit = "0.30.13"
