@@ -1567,6 +1567,75 @@ impl EngineState {
                                 }
                             }
                         }
+
+                        // 3. Debug Colliders Wireframe (Rapier3D)
+                        if self.debug_colliders {
+                            let green_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(60, 255, 60));
+                            for (_handle, collider) in self.physics.collider_set.iter() {
+                                let pos = collider.position();
+                                let (rx, ry, rz) = pos.rotation.to_euler(glam::EulerRot::XYZ);
+                                let trans_mat = glam::Mat4::from_translation(pos.translation)
+                                    * glam::Mat4::from_euler(glam::EulerRot::XYZ, rx, ry, rz);
+
+                                if let Some(cuboid) = collider.shape().as_cuboid() {
+                                    let hx = cuboid.half_extents.x;
+                                    let hy = cuboid.half_extents.y;
+                                    let hz = cuboid.half_extents.z;
+
+                                    let corners = [
+                                        Vec3::new(-hx, -hy, -hz),
+                                        Vec3::new( hx, -hy, -hz),
+                                        Vec3::new( hx,  hy, -hz),
+                                        Vec3::new(-hx,  hy, -hz),
+                                        Vec3::new(-hx, -hy,  hz),
+                                        Vec3::new( hx, -hy,  hz),
+                                        Vec3::new( hx,  hy,  hz),
+                                        Vec3::new(-hx,  hy,  hz),
+                                    ];
+
+                                    let mut scr = [None; 8];
+                                    for i in 0..8 {
+                                        let wp = trans_mat.transform_point3(corners[i]);
+                                        scr[i] = self.camera.world_to_screen(wp, screen_size);
+                                    }
+
+                                    let edges = [
+                                        (0, 1), (1, 2), (2, 3), (3, 0),
+                                        (4, 5), (5, 6), (6, 7), (7, 4),
+                                        (0, 4), (1, 5), (2, 6), (3, 7),
+                                    ];
+                                    for (a, b) in edges {
+                                        if let (Some(pa), Some(pb)) = (scr[a], scr[b]) {
+                                            painter.line_segment([egui::pos2(pa[0], pa[1]), egui::pos2(pb[0], pb[1])], green_stroke);
+                                        }
+                                    }
+                                } else if let Some(ball) = collider.shape().as_ball() {
+                                    let r = ball.radius;
+                                    let segs = 16;
+                                    for plane in 0..3 {
+                                        let mut prev = None;
+                                        for i in 0..=segs {
+                                            let angle = 2.0 * std::f32::consts::PI * (i as f32 / segs as f32);
+                                            let lp = match plane {
+                                                0 => Vec3::new(r * angle.cos(), r * angle.sin(), 0.0),
+                                                1 => Vec3::new(r * angle.cos(), 0.0, r * angle.sin()),
+                                                _ => Vec3::new(0.0, r * angle.cos(), r * angle.sin()),
+                                            };
+                                            let wp = trans_mat.transform_point3(lp);
+                                            if let Some(sp) = self.camera.world_to_screen(wp, screen_size) {
+                                                let cur_pos = egui::pos2(sp[0], sp[1]);
+                                                if let Some(p) = prev {
+                                                    painter.line_segment([p, cur_pos], green_stroke);
+                                                }
+                                                prev = Some(cur_pos);
+                                            } else {
+                                                prev = None;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     });
             });
 

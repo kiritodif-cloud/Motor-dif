@@ -146,6 +146,7 @@ struct VertexOutput {
     @location(0) world_normal: vec3<f32>,
     @location(1) color: vec4<f32>,
     @location(2) emissive: f32,
+    @location(3) world_pos: vec3<f32>,
 };
 
 @vertex
@@ -173,21 +174,44 @@ fn vs_main(
     out.world_normal = world_normal;
     out.color = vertex.vert_color * instance.inst_color;
     out.emissive = instance.inst_extra.x;
+    out.world_pos = world_pos.xyz;
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Lightweight directional lighting (no heavy PBR)
+    // 1. Hemispheric Ambient Lighting (Sky/Ground)
+    let sky_ambient = vec3<f32>(0.28, 0.32, 0.40);
+    let ground_ambient = vec3<f32>(0.12, 0.13, 0.16);
+    let hemi_blend = in.world_normal.y * 0.5 + 0.5;
+    let ambient = mix(ground_ambient, sky_ambient, hemi_blend);
+
+    // 2. Directional Diffuse Lighting
     let light_dir = normalize(vec3<f32>(0.5, 0.8, 0.4));
-    let ambient = 0.35;
     let n_dot_l = max(dot(in.world_normal, light_dir), 0.0);
-    let diffuse = n_dot_l * 0.65;
-    let lighting = ambient + diffuse;
-    
-    let base_lit = in.color.rgb * lighting;
-    let emissive_boost = in.color.rgb * in.emissive * 1.5;
-    return vec4<f32>(base_lit + emissive_boost, in.color.a);
+    let light_color = vec3<f32>(1.0, 0.98, 0.92);
+    let diffuse = light_color * n_dot_l * 0.70;
+
+    // 3. Blinn-Phong Specular
+    let view_dir = normalize(camera.camera_pos.xyz - in.world_pos);
+    let half_dir = normalize(light_dir + view_dir);
+    let n_dot_h = max(dot(in.world_normal, half_dir), 0.0);
+    let spec_factor = pow(n_dot_h, 32.0) * step(0.001, n_dot_l) * 0.35;
+    let specular = vec3<f32>(1.0, 1.0, 1.0) * spec_factor;
+
+    // 4. Emissive Material Glow
+    let emissive = in.color.rgb * in.emissive * 2.0;
+
+    // 5. Combined Lighting
+    let lit_color = in.color.rgb * (ambient + diffuse) + specular + emissive;
+
+    // 6. Horizon Gradient & Soft Distance Fog
+    let fog_color = vec3<f32>(0.08, 0.09, 0.12);
+    let dist = length(camera.camera_pos.xyz - in.world_pos);
+    let fog_factor = clamp((dist - 15.0) / 60.0, 0.0, 0.85);
+    let final_color = mix(lit_color, fog_color, fog_factor);
+
+    return vec4<f32>(final_color, in.color.a);
 }
 "#;
 
