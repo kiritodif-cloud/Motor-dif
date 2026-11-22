@@ -80,7 +80,11 @@ impl TweenManager {
             let (entity_id, is_scale, current, finished) = {
                 let tween = &mut self.active_tweens[i];
                 tween.elapsed += dt;
-                let t = (tween.elapsed / tween.duration).clamp(0.0, 1.0);
+                let t = if tween.duration <= 1e-4 {
+                    1.0
+                } else {
+                    (tween.elapsed / tween.duration).clamp(0.0, 1.0)
+                };
                 let smooth_t = t * t * (3.0 - 2.0 * t); // Smoothstep ease_in_out
                 let current = tween.start.lerp(tween.target, smooth_t);
                 let finished = tween.elapsed >= tween.duration;

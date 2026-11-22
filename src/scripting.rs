@@ -95,6 +95,7 @@ pub fn json_to_lua(lua: &mlua::Lua, val: &serde_json::Value) -> mlua::Result<mlu
 #[derive(Clone)]
 pub struct LuaEngineContext {
     pub pressed_keys: Arc<RwLock<HashSet<String>>>,
+    pub just_pressed_keys: Arc<RwLock<HashSet<String>>>,
     pub pending_spawns: Arc<Mutex<Vec<EntityDef>>>,
     pub pending_destroys: Arc<Mutex<Vec<String>>>,
     pub pending_parents: Arc<Mutex<Vec<(String, Option<String>)>>>,
@@ -112,6 +113,21 @@ pub struct LuaEngineContext {
     pub hud_texts: Arc<RwLock<HashMap<String, String>>>,
     pub world_entities: Arc<RwLock<HashMap<String, [f32; 9]>>>,
     pub audio: Arc<Mutex<crate::audio::AudioManager>>,
+}
+
+pub fn check_key_match(keys: &HashSet<String>, clean: &str) -> bool {
+    if keys.contains(clean) {
+        return true;
+    }
+    match clean {
+        " " | "SPACE" => keys.contains("SPACE"),
+        "SHIFT" => keys.contains("SHIFT") || keys.contains("SHIFTLEFT") || keys.contains("SHIFTRIGHT"),
+        "CTRL" | "CONTROL" => keys.contains("CONTROL") || keys.contains("CONTROLLEFT") || keys.contains("CONTROLRIGHT"),
+        "1" => keys.contains("DIGIT1") || keys.contains("NUMPAD1"),
+        "2" => keys.contains("DIGIT2") || keys.contains("NUMPAD2"),
+        "3" => keys.contains("DIGIT3") || keys.contains("NUMPAD3"),
+        _ => false,
+    }
 }
 
 impl LuaEngineContext {
@@ -135,6 +151,7 @@ impl LuaEngineContext {
 
         Self {
             pressed_keys,
+            just_pressed_keys: Arc::new(RwLock::new(HashSet::new())),
             pending_spawns: Arc::new(Mutex::new(Vec::new())),
             pending_destroys: Arc::new(Mutex::new(Vec::new())),
             pending_parents: Arc::new(Mutex::new(Vec::new())),
@@ -197,10 +214,21 @@ impl ScriptComponent {
             .create_function(move |_, key: String| {
                 let keys = keys_ref.read().unwrap();
                 let clean = key.trim().to_uppercase();
-                Ok(keys.contains(&clean))
+                Ok(check_key_match(&keys, &clean))
             })
             .map_err(|e| format!("Failed to register is_key_down: {}", e))?;
         lua.globals().set("is_key_down", is_key_down).map_err(|e| e.to_string())?;
+
+        // 1b. is_key_just_pressed(key)
+        let just_pressed_ref = ctx.just_pressed_keys.clone();
+        let is_key_just_pressed = lua
+            .create_function(move |_, key: String| {
+                let keys = just_pressed_ref.read().unwrap();
+                let clean = key.trim().to_uppercase();
+                Ok(check_key_match(&keys, &clean))
+            })
+            .map_err(|e| format!("Failed to register is_key_just_pressed: {}", e))?;
+        lua.globals().set("is_key_just_pressed", is_key_just_pressed).map_err(|e| e.to_string())?;
 
         // 2. apply_force(fx, fy, fz)
         let forces_ref = self.pending_forces.clone();
@@ -329,6 +357,32 @@ impl ScriptComponent {
             })
             .map_err(|e| format!("Failed to register get_entity: {}", e))?;
         lua.globals().set("get_entity", get_entity).map_err(|e| e.to_string())?;
+
+        // 6b. get_all_entities() -> table with [id] = { id, x, y, z, rx, ry, rz, sx, sy, sz }
+        let entities_ref_all = ctx.world_entities.clone();
+        let get_all_entities = lua
+            .create_function(move |lua, ()| {
+                let tbl = lua.create_table()?;
+                if let Ok(map) = entities_ref_all.read() {
+                    for (id, t) in map.iter() {
+                        let etbl = lua.create_table()?;
+                        etbl.set("id", id.as_str())?;
+                        etbl.set("x", t[0])?;
+                        etbl.set("y", t[1])?;
+                        etbl.set("z", t[2])?;
+                        etbl.set("rx", t[3])?;
+                        etbl.set("ry", t[4])?;
+                        etbl.set("rz", t[5])?;
+                        etbl.set("sx", t[6])?;
+                        etbl.set("sy", t[7])?;
+                        etbl.set("sz", t[8])?;
+                        tbl.set(id.as_str(), etbl)?;
+                    }
+                }
+                Ok(tbl)
+            })
+            .map_err(|e| format!("Failed to register get_all_entities: {}", e))?;
+        lua.globals().set("get_all_entities", get_all_entities).map_err(|e| e.to_string())?;
 
         // 7. set_hud_text(key, text)
         let hud_ref = ctx.hud_texts.clone();
@@ -736,6 +790,15 @@ impl ScriptComponent {
                     entity_table
                         .set("rz", transform.rotation.z)
                         .map_err(|e| e.to_string())?;
+                    entity_table
+                        .set("sx", transform.scale.x)
+                        .map_err(|e| e.to_string())?;
+                    entity_table
+                        .set("sy", transform.scale.y)
+                        .map_err(|e| e.to_string())?;
+                    entity_table
+                        .set("sz", transform.scale.z)
+                        .map_err(|e| e.to_string())?;
 
                     let forces_ref = self.pending_forces.clone();
                     let entity_apply_force = lua
@@ -783,6 +846,15 @@ impl ScriptComponent {
                             }
                             if let Ok(rz) = entity_table.get("rz") {
                                 transform.rotation.z = rz;
+                            }
+                            if let Ok(sx) = entity_table.get("sx") {
+                                transform.scale.x = sx;
+                            }
+                            if let Ok(sy) = entity_table.get("sy") {
+                                transform.scale.y = sy;
+                            }
+                            if let Ok(sz) = entity_table.get("sz") {
+                                transform.scale.z = sz;
                             }
                             Ok(())
                         }

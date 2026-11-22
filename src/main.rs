@@ -693,8 +693,14 @@ impl EngineState {
                 }
 
                 if let Ok(mut set) = self.pressed_keys.write() {
+                    let mut jp_opt = self.lua_ctx.just_pressed_keys.write().ok();
                     for k in keys_to_update {
                         if is_pressed {
+                            if !set.contains(&k) {
+                                if let Some(jp) = &mut jp_opt {
+                                    jp.insert(k.clone());
+                                }
+                            }
                             set.insert(k);
                         } else {
                             set.remove(&k);
@@ -1030,9 +1036,17 @@ impl EngineState {
                     let is_key_down = lua.create_function(move |_, key: String| {
                         let keys = keys_ref.read().unwrap();
                         let clean = key.trim().to_uppercase();
-                        Ok(keys.contains(&clean))
+                        Ok(scripting::check_key_match(&keys, &clean))
                     });
                     if let Ok(f) = is_key_down { let _ = lua.globals().set("is_key_down", f); }
+
+                    let just_pressed_ref = self.lua_ctx.just_pressed_keys.clone();
+                    let is_key_just_pressed = lua.create_function(move |_, key: String| {
+                        let keys = just_pressed_ref.read().unwrap();
+                        let clean = key.trim().to_uppercase();
+                        Ok(scripting::check_key_match(&keys, &clean))
+                    });
+                    if let Ok(f) = is_key_just_pressed { let _ = lua.globals().set("is_key_just_pressed", f); }
 
                     let spawns_ref = self.lua_ctx.pending_spawns.clone();
                     let spawn_entity = lua.create_function(move |_, table: mlua::Table| {
@@ -1781,6 +1795,11 @@ impl EngineState {
 
         // Update active particles
         self.particles.update(dt);
+
+        // Clear just_pressed_keys at end of frame
+        if let Ok(mut jp) = self.lua_ctx.just_pressed_keys.write() {
+            jp.clear();
+        }
 
         // Compute world transforms (ParentWorld * Local) with cycle detection
         let world_transforms = compute_world_transforms(&self.world);
