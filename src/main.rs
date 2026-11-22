@@ -865,6 +865,222 @@ impl EngineState {
                 McpCommand::CaptureViewport { respond_to } => {
                     self.pending_viewport_capture = Some(respond_to);
                 }
+                McpCommand::DeleteEntity { id, respond_to } => {
+                    self.push_history();
+                    let to_remove: Option<(hecs::Entity, Option<rapier3d::prelude::RigidBodyHandle>)> = {
+                        let mut found = None;
+                        for entity_ref in self.world.iter() {
+                            let entity = entity_ref.entity();
+                            if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                                if meta.id == id {
+                                    let rb_handle = entity_ref.get::<&RigidBodyComponent>().map(|r| r.handle);
+                                    found = Some((entity, rb_handle));
+                                    break;
+                                }
+                            }
+                        }
+                        found
+                    };
+                    if let Some((e, rb_opt)) = to_remove {
+                        if let Some(handle) = rb_opt {
+                            self.physics.remove_body(handle);
+                        }
+                        let _ = self.world.despawn(e);
+                        if self.selected_entity == Some(e) {
+                            self.selected_entity = None;
+                        }
+                        let msg = format!("Entity '{}' successfully deleted", id);
+                        self.logs.push(msg.clone());
+                        let _ = respond_to.send(Ok(msg));
+                    } else {
+                        let err = format!("Entity '{}' not found", id);
+                        let _ = respond_to.send(Err(err));
+                    }
+                }
+                McpCommand::SetCamera { mode, position, target, ortho_size, respond_to } => {
+                    if let Some(m) = mode {
+                        match m.to_lowercase().as_str() {
+                            "2d" | "orthographic" => self.camera.mode = CameraMode::Orthographic,
+                            "3d" | "perspective" => self.camera.mode = CameraMode::Perspective,
+                            _ => {}
+                        }
+                    }
+                    if let Some(pos) = position {
+                        self.camera.eye = Vec3::from(pos);
+                    }
+                    if let Some(tgt) = target {
+                        self.camera.target = Vec3::from(tgt);
+                    }
+                    if let Some(size) = ortho_size {
+                        self.camera.ortho_size = size;
+                    }
+                    self.gpu.update_camera(&self.camera);
+                    let msg = format!("Camera updated: mode={:?}, eye={}, target={}", self.camera.mode, self.camera.eye, self.camera.target);
+                    self.logs.push(msg.clone());
+                    let _ = respond_to.send(Ok(msg));
+                }
+                McpCommand::SetPlayMode { mode, respond_to } => {
+                    match mode.to_lowercase().as_str() {
+                        "play" => {
+                            if self.play_mode == PlayMode::Edit {
+                                self.play_snapshot = Some(assets::extract_scene_from_world(&self.world, &self.camera, &self.physics));
+                            }
+                            self.play_mode = PlayMode::Play;
+                            let msg = "Play mode set to Play".to_string();
+                            self.logs.push(msg.clone());
+                            let _ = respond_to.send(Ok(msg));
+                        }
+                        "pause" => {
+                            self.play_mode = PlayMode::Pause;
+                            let msg = "Play mode set to Pause".to_string();
+                            self.logs.push(msg.clone());
+                            let _ = respond_to.send(Ok(msg));
+                        }
+                        "stop" => {
+                            if let Some(snapshot) = self.play_snapshot.take() {
+                                assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
+                            }
+                            self.play_mode = PlayMode::Edit;
+                            let msg = "Play mode set to Stop (Scene restored)".to_string();
+                            self.logs.push(msg.clone());
+                            let _ = respond_to.send(Ok(msg));
+                        }
+                        _ => {
+                            let err = format!("Unknown play mode '{}'. Valid modes: 'play', 'pause', 'stop'", mode);
+                            let _ = respond_to.send(Err(err));
+                        }
+                    }
+                }
+                McpCommand::StepSimulation { dt, respond_to } => {
+                    let step_dt = if dt <= 0.0 { 1.0 / 60.0 } else { dt };
+                    if let Ok(mut we) = self.lua_ctx.world_entities.write() {
+                        we.clear();
+                        for (meta, transform) in self.world.query::<(&EntityMeta, &Transform)>().iter() {
+                            we.insert(
+                                meta.id.clone(),
+                                [
+                                    transform.position.x, transform.position.y, transform.position.z,
+                                    transform.rotation.x, transform.rotation.y, transform.rotation.z,
+                                    transform.scale.x, transform.scale.y, transform.scale.z,
+                                ],
+                            );
+                        }
+                    }
+
+                    for (_meta, transform, script) in self.world.query_mut::<(&EntityMeta, &mut Transform, &mut ScriptComponent)>() {
+                        let _ = script.update(transform, step_dt);
+                    }
+
+                    for (rb, script) in self.world.query_mut::<(&RigidBodyComponent, &mut ScriptComponent)>() {
+                        if let Ok(mut forces) = script.pending_forces.lock() {
+                            for f in forces.drain(..) {
+                                self.physics.apply_force(rb.handle, f);
+                            }
+                        }
+                        if let Ok(mut impulses) = script.pending_impulses.lock() {
+                            for i in impulses.drain(..) {
+                                self.physics.apply_impulse(rb.handle, i);
+                            }
+                        }
+                    }
+
+                    self.physics.step(step_dt);
+                    self.physics.sync_to_ecs(&mut self.world);
+
+                    let msg = format!("Simulation stepped by {:.4}s", step_dt);
+                    self.logs.push(msg.clone());
+                    let _ = respond_to.send(Ok(msg));
+                }
+                McpCommand::RunLuaSnippet { code, respond_to } => {
+                    let lua = mlua::Lua::new();
+                    let keys_ref = self.pressed_keys.clone();
+                    let is_key_down = lua.create_function(move |_, key: String| {
+                        let keys = keys_ref.read().unwrap();
+                        let clean = key.trim().to_uppercase();
+                        Ok(keys.contains(&clean))
+                    });
+                    if let Ok(f) = is_key_down { let _ = lua.globals().set("is_key_down", f); }
+
+                    let spawns_ref = self.lua_ctx.pending_spawns.clone();
+                    let spawn_entity = lua.create_function(move |_, table: mlua::Table| {
+                        let id: String = table.get("id").unwrap_or_else(|_| "spawned".to_string());
+                        let mesh: String = table.get("mesh").unwrap_or_else(|_| "cube".to_string());
+                        let x: f32 = table.get("x").unwrap_or(0.0);
+                        let y: f32 = table.get("y").unwrap_or(0.0);
+                        let z: f32 = table.get("z").unwrap_or(0.0);
+                        let rx: f32 = table.get("rx").unwrap_or(0.0);
+                        let ry: f32 = table.get("ry").unwrap_or(0.0);
+                        let rz: f32 = table.get("rz").unwrap_or(0.0);
+                        let sx: f32 = table.get("sx").unwrap_or(1.0);
+                        let sy: f32 = table.get("sy").unwrap_or(1.0);
+                        let sz: f32 = table.get("sz").unwrap_or(1.0);
+                        let color = [1.0, 1.0, 1.0, 1.0];
+                        let def = assets::EntityDef {
+                            id, mesh, position: [x,y,z], rotation: [rx,ry,rz], scale: [sx,sy,sz],
+                            color, emissive: 0.0, script: None, physics: None
+                        };
+                        if let Ok(mut list) = spawns_ref.lock() { list.push(def); }
+                        Ok(())
+                    });
+                    if let Ok(f) = spawn_entity { let _ = lua.globals().set("spawn_entity", f); }
+
+                    let destroys_ref = self.lua_ctx.pending_destroys.clone();
+                    let destroy_entity = lua.create_function(move |_, id: String| {
+                        if let Ok(mut list) = destroys_ref.lock() { list.push(id); }
+                        Ok(())
+                    });
+                    if let Ok(f) = destroy_entity { let _ = lua.globals().set("destroy_entity", f); }
+
+                    let entities_ref = self.lua_ctx.world_entities.clone();
+                    let get_entity = lua.create_function(move |lua, id: String| {
+                        let map = entities_ref.read().unwrap();
+                        if let Some(t) = map.get(&id) {
+                            let tbl = lua.create_table()?;
+                            tbl.set("x", t[0])?;
+                            tbl.set("y", t[1])?;
+                            tbl.set("z", t[2])?;
+                            tbl.set("rx", t[3])?;
+                            tbl.set("ry", t[4])?;
+                            tbl.set("rz", t[5])?;
+                            tbl.set("sx", t[6])?;
+                            tbl.set("sy", t[7])?;
+                            tbl.set("sz", t[8])?;
+                            Ok(Some(tbl))
+                        } else {
+                            Ok(None)
+                        }
+                    });
+                    if let Ok(f) = get_entity { let _ = lua.globals().set("get_entity", f); }
+
+                    let hud_ref = self.lua_ctx.hud_texts.clone();
+                    let set_hud_text = lua.create_function(move |_, (k, v): (String, String)| {
+                        if let Ok(mut h) = hud_ref.write() { h.insert(k, v); }
+                        Ok(())
+                    });
+                    if let Ok(f) = set_hud_text { let _ = lua.globals().set("set_hud_text", f); }
+
+                    let chunk = lua.load(&code);
+                    let result_str = match chunk.eval::<mlua::Value>() {
+                        Ok(val) => format!("{:?}", val),
+                        Err(_) => match lua.load(&code).exec() {
+                            Ok(()) => "Code executed successfully (no return value)".to_string(),
+                            Err(e) => {
+                                let err_msg = format!("Lua snippet error: {}", e);
+                                self.logs.push(err_msg.clone());
+                                let _ = respond_to.send(Err(err_msg));
+                                return;
+                            }
+                        },
+                    };
+                    self.logs.push(format!("Executed Lua snippet: {}", code));
+                    let _ = respond_to.send(Ok(result_str));
+                }
+                McpCommand::SaveScene { path, respond_to } => {
+                    let target_path = path.unwrap_or_else(|| "assets/scene.json".to_string());
+                    self.save_scene_to_file(&target_path);
+                    let msg = format!("Scene saved to '{}'", target_path);
+                    let _ = respond_to.send(Ok(msg));
+                }
             }
         }
     }

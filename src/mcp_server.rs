@@ -35,6 +35,33 @@ pub enum McpCommand {
     CaptureViewport {
         respond_to: oneshot::Sender<Result<String, String>>,
     },
+    DeleteEntity {
+        id: String,
+        respond_to: oneshot::Sender<Result<String, String>>,
+    },
+    SetCamera {
+        mode: Option<String>,
+        position: Option<[f32; 3]>,
+        target: Option<[f32; 3]>,
+        ortho_size: Option<f32>,
+        respond_to: oneshot::Sender<Result<String, String>>,
+    },
+    SetPlayMode {
+        mode: String,
+        respond_to: oneshot::Sender<Result<String, String>>,
+    },
+    StepSimulation {
+        dt: f32,
+        respond_to: oneshot::Sender<Result<String, String>>,
+    },
+    RunLuaSnippet {
+        code: String,
+        respond_to: oneshot::Sender<Result<String, String>>,
+    },
+    SaveScene {
+        path: Option<String>,
+        respond_to: oneshot::Sender<Result<String, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,6 +208,84 @@ pub async fn handle_jsonrpc(
                                 "type": "object",
                                 "properties": {}
                             }
+                        },
+                        {
+                            "name": "delete_entity",
+                            "description": "Elimina una entidad del mundo ECS y sus fisicas en tiempo real",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "id": { "type": "string", "description": "ID de la entidad a eliminar" }
+                                },
+                                "required": ["id"]
+                            }
+                        },
+                        {
+                            "name": "set_camera",
+                            "description": "Controla la camara del motor (modo 2D/3D, posicion, objetivo y tamano ortografico)",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "mode": { "type": "string", "enum": ["3d", "2d"], "description": "Modo de camara ('3d' o '2d')" },
+                                    "position": {
+                                        "type": "array",
+                                        "items": { "type": "number" },
+                                        "minItems": 3,
+                                        "maxItems": 3,
+                                        "description": "Posicion [x, y, z]"
+                                    },
+                                    "target": {
+                                        "type": "array",
+                                        "items": { "type": "number" },
+                                        "minItems": 3,
+                                        "maxItems": 3,
+                                        "description": "Punto objetivo [x, y, z]"
+                                    },
+                                    "ortho_size": { "type": "number", "description": "Tamano ortografico (modo 2D)" }
+                                }
+                            }
+                        },
+                        {
+                            "name": "set_play_mode",
+                            "description": "Inicia ('play'), pausa ('pause') o resetea/detiene ('stop') la simulacion",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "mode": { "type": "string", "enum": ["play", "pause", "stop"], "description": "Modo deseado" }
+                                },
+                                "required": ["mode"]
+                            }
+                        },
+                        {
+                            "name": "step_simulation",
+                            "description": "Ejecuta un paso determinista del motor por el delta time especificado",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "dt": { "type": "number", "description": "Paso de tiempo en segundos (por defecto 0.01666)" }
+                                }
+                            }
+                        },
+                        {
+                            "name": "run_lua_snippet",
+                            "description": "Ejecuta un fragmento de codigo Lua en caliente sobre el motor y devuelve el resultado",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "code": { "type": "string", "description": "Codigo Lua a evaluar" }
+                                },
+                                "required": ["code"]
+                            }
+                        },
+                        {
+                            "name": "save_scene",
+                            "description": "Persiste la escena actual a un archivo JSON en disco",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "path": { "type": "string", "description": "Ruta del archivo (por defecto 'assets/scene.json')" }
+                                }
+                            }
                         }
                     ]
                 }),
@@ -288,6 +393,111 @@ pub async fn handle_jsonrpc(
                         }
                         Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, format!("Error capturando viewport: {}", err))),
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout o canal cerrado al capturar viewport")),
+                    }
+                }
+                "delete_entity" => {
+                    let entity_id = match args.get("id").and_then(|v| v.as_str()) {
+                        Some(s) => s.to_string(),
+                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'id'")),
+                    };
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::DeleteEntity { id: entity_id, respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(msg)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": msg }] }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al eliminar entidad")),
+                    }
+                }
+                "set_camera" => {
+                    let mode = args.get("mode").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let position = args.get("position").and_then(|v| v.as_array()).and_then(|arr| {
+                        if arr.len() == 3 {
+                            Some([
+                                arr[0].as_f64()? as f32,
+                                arr[1].as_f64()? as f32,
+                                arr[2].as_f64()? as f32,
+                            ])
+                        } else {
+                            None
+                        }
+                    });
+                    let target = args.get("target").and_then(|v| v.as_array()).and_then(|arr| {
+                        if arr.len() == 3 {
+                            Some([
+                                arr[0].as_f64()? as f32,
+                                arr[1].as_f64()? as f32,
+                                arr[2].as_f64()? as f32,
+                            ])
+                        } else {
+                            None
+                        }
+                    });
+                    let ortho_size = args.get("ortho_size").and_then(|v| v.as_f64()).map(|s| s as f32);
+
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::SetCamera { mode, position, target, ortho_size, respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(msg)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": msg }] }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al configurar camara")),
+                    }
+                }
+                "set_play_mode" => {
+                    let mode = match args.get("mode").and_then(|v| v.as_str()) {
+                        Some(m) => m.to_string(),
+                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'mode'")),
+                    };
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::SetPlayMode { mode, respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(msg)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": msg }] }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al cambiar modo de simulacion")),
+                    }
+                }
+                "step_simulation" => {
+                    let dt = args.get("dt").and_then(|v| v.as_f64()).unwrap_or(1.0 / 60.0) as f32;
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::StepSimulation { dt, respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(msg)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": msg }] }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al avanzar simulacion")),
+                    }
+                }
+                "run_lua_snippet" => {
+                    let code = match args.get("code").and_then(|v| v.as_str()) {
+                        Some(c) => c.to_string(),
+                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'code'")),
+                    };
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::RunLuaSnippet { code, respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(output)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": output }] }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al ejecutar fragmento Lua")),
+                    }
+                }
+                "save_scene" => {
+                    let path = args.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::SaveScene { path, respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(msg)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": msg }] }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al guardar escena")),
                     }
                 }
                 _ => Some(JsonRpcResponse::error(id, -32601, format!("Herramienta desconocida: {}", tool_name))),
