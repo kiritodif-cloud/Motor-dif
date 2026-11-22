@@ -8,6 +8,7 @@ pub mod particles;
 pub mod physics;
 pub mod renderer;
 pub mod scripting;
+pub mod tweens;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -24,6 +25,7 @@ use mcp_server::{EngineLogsResponse, McpCommand, WorldInspection};
 use physics::{PhysicsEngine, RigidBodyComponent};
 use renderer::{create_instance_buffer, GpuContext, InstanceRaw, LightsUniform, PointLightRaw};
 use scripting::ScriptComponent;
+use tweens::TweenManager;
 use tokio::sync::{mpsc, oneshot};
 use wgpu::CurrentSurfaceTexture;
 use winit::{
@@ -132,6 +134,7 @@ pub struct EngineState {
     pub lua_ctx: scripting::LuaEngineContext,
     pub last_lua_error: Option<String>,
     pub particles: particles::ParticleSystem,
+    pub tweens: TweenManager,
     pub is_standalone_play: bool,
 
     // Editor State
@@ -370,6 +373,7 @@ impl EngineState {
             lua_ctx,
             last_lua_error: None,
             particles: particles::ParticleSystem::new(),
+            tweens: TweenManager::new(),
             is_standalone_play,
 
             play_mode: if is_standalone_play { PlayMode::Play } else { PlayMode::Edit },
@@ -1131,6 +1135,58 @@ impl EngineState {
                     );
                     if let Ok(f) = set_light { let _ = lua.globals().set("set_light", f); }
 
+                    let cam_set_s = self.lua_ctx.pending_camera_sets.clone();
+                    let set_camera = lua.create_function(move |_, (x, y, z, tx, ty, tz): (f32, f32, f32, f32, f32, f32)| {
+                        if let Ok(mut list) = cam_set_s.lock() { list.push(([x, y, z], [tx, ty, tz])); }
+                        Ok(true)
+                    });
+                    if let Ok(f) = set_camera { let _ = lua.globals().set("set_camera", f); }
+
+                    let cam_follow_s = self.lua_ctx.pending_camera_follows.clone();
+                    let follow_entity = lua.create_function(move |_, (entity_id, ox, oy, oz, sm): (Option<String>, Option<f32>, Option<f32>, Option<f32>, Option<f32>)| {
+                        if let Ok(mut list) = cam_follow_s.lock() {
+                            let offset = [ox.unwrap_or(0.0), oy.unwrap_or(3.0), oz.unwrap_or(8.0)];
+                            list.push((entity_id, offset, sm.unwrap_or(0.2)));
+                        }
+                        Ok(true)
+                    });
+                    if let Ok(f) = follow_entity { let _ = lua.globals().set("follow_entity", f); }
+
+                    let cam_shake_s = self.lua_ctx.pending_camera_shakes.clone();
+                    let camera_shake = lua.create_function(move |_, (intensity, duration): (f32, f32)| {
+                        if let Ok(mut list) = cam_shake_s.lock() { list.push((intensity, duration)); }
+                        Ok(true)
+                    });
+                    if let Ok(f) = camera_shake { let _ = lua.globals().set("camera_shake", f); }
+
+                    let tw_pos_s = self.lua_ctx.pending_tweens.clone();
+                    let tween_position = lua.create_function(move |_, (id, x, y, z, duration): (String, f32, f32, f32, f32)| {
+                        if let Ok(mut list) = tw_pos_s.lock() {
+                            list.push(tweens::TweenRequest {
+                                entity_id: id,
+                                target: glam::Vec3::new(x, y, z),
+                                duration,
+                                is_scale: false,
+                            });
+                        }
+                        Ok(true)
+                    });
+                    if let Ok(f) = tween_position { let _ = lua.globals().set("tween_position", f); }
+
+                    let tw_scale_s = self.lua_ctx.pending_tweens.clone();
+                    let tween_scale = lua.create_function(move |_, (id, sx, sy, sz, duration): (String, f32, f32, f32, f32)| {
+                        if let Ok(mut list) = tw_scale_s.lock() {
+                            list.push(tweens::TweenRequest {
+                                entity_id: id,
+                                target: glam::Vec3::new(sx, sy, sz),
+                                duration,
+                                is_scale: true,
+                            });
+                        }
+                        Ok(true)
+                    });
+                    if let Ok(f) = tween_scale { let _ = lua.globals().set("tween_scale", f); }
+
                     let chunk = lua.load(&code);
                     let result_str = match chunk.eval::<mlua::Value>() {
                         Ok(val) => format!("{:?}", val),
@@ -1488,6 +1544,48 @@ impl EngineState {
             }
         }
 
+        // Drain and apply camera commands from Lua
+        let pending_cam_sets = if let Ok(mut c) = self.lua_ctx.pending_camera_sets.lock() {
+            std::mem::take(&mut *c)
+        } else {
+            Vec::new()
+        };
+        for (eye, target) in pending_cam_sets {
+            self.camera.eye = Vec3::from(eye);
+            self.camera.target = Vec3::from(target);
+        }
+
+        let pending_cam_follows = if let Ok(mut c) = self.lua_ctx.pending_camera_follows.lock() {
+            std::mem::take(&mut *c)
+        } else {
+            Vec::new()
+        };
+        for (target_id, offset, smoothness) in pending_cam_follows {
+            self.camera.follow_entity(target_id, Vec3::from(offset), smoothness);
+        }
+
+        let pending_cam_shakes = if let Ok(mut s) = self.lua_ctx.pending_camera_shakes.lock() {
+            std::mem::take(&mut *s)
+        } else {
+            Vec::new()
+        };
+        for (intensity, duration) in pending_cam_shakes {
+            self.camera.shake(intensity, duration);
+        }
+
+        // Drain pending tweens from Lua
+        let pending_tweens = if let Ok(mut t) = self.lua_ctx.pending_tweens.lock() {
+            std::mem::take(&mut *t)
+        } else {
+            Vec::new()
+        };
+        for req in pending_tweens {
+            self.tweens.pending_requests.push_back(req);
+        }
+
+        // Update active tweens
+        self.tweens.update(dt, &mut self.world);
+
         // Drain and spawn pending particles
         let pending_particles = if let Ok(mut particles) = self.lua_ctx.pending_particles.lock() {
             std::mem::take(&mut *particles)
@@ -1507,11 +1605,40 @@ impl EngineState {
         // Update active particles
         self.particles.update(dt);
 
-        // Update camera in GPU
-        self.gpu.update_camera(&self.camera);
-
         // Compute world transforms (ParentWorld * Local) with cycle detection
         let world_transforms = compute_world_transforms(&self.world);
+
+        // Update camera follow (smooth lerp towards target entity world position)
+        if let Some((ref target_id, offset, smoothness)) = self.camera.follow_target.clone() {
+            let target_pos = {
+                let mut found = None;
+                for entity_ref in self.world.iter() {
+                    if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                        if meta.id == *target_id {
+                            if let Some((_, pos)) = world_transforms.get(&entity_ref.entity()) {
+                                found = Some(*pos);
+                            } else if let Some(t) = entity_ref.get::<&Transform>() {
+                                found = Some(t.position);
+                            }
+                            break;
+                        }
+                    }
+                }
+                found
+            };
+            if let Some(pos) = target_pos {
+                let target_eye = pos + offset;
+                let lerp_factor = (smoothness * dt * 10.0).clamp(0.0, 1.0);
+                self.camera.eye = self.camera.eye.lerp(target_eye, lerp_factor);
+                self.camera.target = self.camera.target.lerp(pos, lerp_factor);
+            }
+        }
+
+        // Update camera shake
+        self.camera.update_shake(dt);
+
+        // Update camera in GPU
+        self.gpu.update_camera(&self.camera);
 
         // Collect active point lights into GPU uniform
         let mut lights_uniform = LightsUniform::default();

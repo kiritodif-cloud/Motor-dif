@@ -15,6 +15,10 @@ pub struct LuaEngineContext {
     pub pending_parents: Arc<Mutex<Vec<(String, Option<String>)>>>,
     pub pending_lights: Arc<Mutex<Vec<(String, [f32; 3], f32, f32)>>>,
     pub pending_particles: Arc<Mutex<Vec<crate::particles::ParticleSpawnRequest>>>,
+    pub pending_camera_sets: Arc<Mutex<Vec<([f32; 3], [f32; 3])>>>,
+    pub pending_camera_follows: Arc<Mutex<Vec<(Option<String>, [f32; 3], f32)>>>,
+    pub pending_camera_shakes: Arc<Mutex<Vec<(f32, f32)>>>,
+    pub pending_tweens: Arc<Mutex<Vec<crate::tweens::TweenRequest>>>,
     pub hud_texts: Arc<RwLock<HashMap<String, String>>>,
     pub world_entities: Arc<RwLock<HashMap<String, [f32; 9]>>>,
     pub audio: Arc<Mutex<crate::audio::AudioManager>>,
@@ -32,6 +36,10 @@ impl LuaEngineContext {
             pending_parents: Arc::new(Mutex::new(Vec::new())),
             pending_lights: Arc::new(Mutex::new(Vec::new())),
             pending_particles: Arc::new(Mutex::new(Vec::new())),
+            pending_camera_sets: Arc::new(Mutex::new(Vec::new())),
+            pending_camera_follows: Arc::new(Mutex::new(Vec::new())),
+            pending_camera_shakes: Arc::new(Mutex::new(Vec::new())),
+            pending_tweens: Arc::new(Mutex::new(Vec::new())),
             hud_texts: Arc::new(RwLock::new(HashMap::new())),
             world_entities: Arc::new(RwLock::new(HashMap::new())),
             audio,
@@ -375,6 +383,98 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register set_light: {}", e))?;
         lua.globals()
             .set("set_light", set_light)
+            .map_err(|e| e.to_string())?;
+
+        // 15. set_camera(x, y, z, tx, ty, tz)
+        let cam_set_ref = ctx.pending_camera_sets.clone();
+        let set_camera = lua
+            .create_function(
+                move |_, (x, y, z, tx, ty, tz): (f32, f32, f32, f32, f32, f32)| {
+                    if let Ok(mut list) = cam_set_ref.lock() {
+                        list.push(([x, y, z], [tx, ty, tz]));
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register set_camera: {}", e))?;
+        lua.globals()
+            .set("set_camera", set_camera)
+            .map_err(|e| e.to_string())?;
+
+        // 16. follow_entity(entity_id, offset_x, offset_y, offset_z, smoothness)
+        let cam_follow_ref = ctx.pending_camera_follows.clone();
+        let follow_entity = lua
+            .create_function(
+                move |_, (entity_id, ox, oy, oz, smoothness): (Option<String>, Option<f32>, Option<f32>, Option<f32>, Option<f32>)| {
+                    if let Ok(mut list) = cam_follow_ref.lock() {
+                        let offset = [ox.unwrap_or(0.0), oy.unwrap_or(3.0), oz.unwrap_or(8.0)];
+                        let sm = smoothness.unwrap_or(0.2);
+                        list.push((entity_id, offset, sm));
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register follow_entity: {}", e))?;
+        lua.globals()
+            .set("follow_entity", follow_entity)
+            .map_err(|e| e.to_string())?;
+
+        // 17. camera_shake(intensity, duration)
+        let cam_shake_ref = ctx.pending_camera_shakes.clone();
+        let camera_shake = lua
+            .create_function(
+                move |_, (intensity, duration): (f32, f32)| {
+                    if let Ok(mut list) = cam_shake_ref.lock() {
+                        list.push((intensity, duration));
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register camera_shake: {}", e))?;
+        lua.globals()
+            .set("camera_shake", camera_shake)
+            .map_err(|e| e.to_string())?;
+
+        // 18. tween_position(id, x, y, z, duration)
+        let tweens_pos_ref = ctx.pending_tweens.clone();
+        let tween_position = lua
+            .create_function(
+                move |_, (id, x, y, z, duration): (String, f32, f32, f32, f32)| {
+                    if let Ok(mut list) = tweens_pos_ref.lock() {
+                        list.push(crate::tweens::TweenRequest {
+                            entity_id: id,
+                            target: glam::Vec3::new(x, y, z),
+                            duration,
+                            is_scale: false,
+                        });
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register tween_position: {}", e))?;
+        lua.globals()
+            .set("tween_position", tween_position)
+            .map_err(|e| e.to_string())?;
+
+        // 19. tween_scale(id, sx, sy, sz, duration)
+        let tweens_scale_ref = ctx.pending_tweens.clone();
+        let tween_scale = lua
+            .create_function(
+                move |_, (id, sx, sy, sz, duration): (String, f32, f32, f32, f32)| {
+                    if let Ok(mut list) = tweens_scale_ref.lock() {
+                        list.push(crate::tweens::TweenRequest {
+                            entity_id: id,
+                            target: glam::Vec3::new(sx, sy, sz),
+                            duration,
+                            is_scale: true,
+                        });
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register tween_scale: {}", e))?;
+        lua.globals()
+            .set("tween_scale", tween_scale)
             .map_err(|e| e.to_string())?;
 
         // Execute the script chunk to define on_update, on_collision, and globals

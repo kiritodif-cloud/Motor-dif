@@ -22,6 +22,16 @@ pub struct Camera {
     pub ortho_size: f32,
     pub znear: f32,
     pub zfar: f32,
+    #[serde(skip)]
+    pub shake_intensity: f32,
+    #[serde(skip)]
+    pub shake_duration: f32,
+    #[serde(skip)]
+    pub shake_timer: f32,
+    #[serde(skip)]
+    pub shake_offset: Vec3,
+    #[serde(skip)]
+    pub follow_target: Option<(String, Vec3, f32)>,
 }
 
 impl Camera {
@@ -36,6 +46,11 @@ impl Camera {
             ortho_size: 10.0,
             znear: 0.1,
             zfar: 100.0,
+            shake_intensity: 0.0,
+            shake_duration: 0.0,
+            shake_timer: 0.0,
+            shake_offset: Vec3::ZERO,
+            follow_target: None,
         }
     }
 
@@ -50,6 +65,46 @@ impl Camera {
             ortho_size,
             znear: 0.1,
             zfar: 100.0,
+            shake_intensity: 0.0,
+            shake_duration: 0.0,
+            shake_timer: 0.0,
+            shake_offset: Vec3::ZERO,
+            follow_target: None,
+        }
+    }
+
+    pub fn shake(&mut self, intensity: f32, duration: f32) {
+        self.shake_intensity = intensity;
+        self.shake_duration = duration.max(0.01);
+        self.shake_timer = self.shake_duration;
+    }
+
+    pub fn update_shake(&mut self, dt: f32) {
+        if self.shake_timer > 0.0 {
+            self.shake_timer -= dt;
+            let progress = (self.shake_timer / self.shake_duration).clamp(0.0, 1.0);
+            let current_amp = self.shake_intensity * progress * progress;
+            let t = self.shake_timer * 60.0;
+            let r1 = ((t * 1.37).sin() * 4375.85).fract() * 2.0 - 1.0;
+            let r2 = ((t * 2.71).cos() * 2342.16).fract() * 2.0 - 1.0;
+            let r3 = ((t * 3.89).sin() * 3123.48).fract() * 2.0 - 1.0;
+            self.shake_offset = Vec3::new(r1, r2, r3) * current_amp;
+        } else {
+            self.shake_timer = 0.0;
+            self.shake_offset = Vec3::ZERO;
+        }
+    }
+
+    pub fn follow_entity(&mut self, target_id: Option<String>, offset: Vec3, smoothness: f32) {
+        if let Some(id) = target_id {
+            let clean = id.trim().to_string();
+            if !clean.is_empty() {
+                self.follow_target = Some((clean, offset, smoothness.clamp(0.01, 1.0)));
+            } else {
+                self.follow_target = None;
+            }
+        } else {
+            self.follow_target = None;
         }
     }
 
@@ -69,7 +124,9 @@ impl Camera {
     }
 
     pub fn build_view_projection_matrix(&self) -> Mat4 {
-        let view = rh::view::look_at_mat4(self.eye, self.target, self.up);
+        let eff_eye = self.eye + self.shake_offset;
+        let eff_target = self.target + self.shake_offset;
+        let view = rh::view::look_at_mat4(eff_eye, eff_target, self.up);
         let proj = match self.mode {
             CameraMode::Perspective => rh::proj::directx::perspective(
                 self.fovy,
@@ -249,7 +306,8 @@ impl CameraUniform {
 
     pub fn update(&mut self, camera: &Camera) {
         self.view_proj = camera.build_view_projection_matrix().to_cols_array_2d();
-        self.camera_pos = [camera.eye.x, camera.eye.y, camera.eye.z, 1.0];
+        let eff_eye = camera.eye + camera.shake_offset;
+        self.camera_pos = [eff_eye.x, eff_eye.y, eff_eye.z, 1.0];
     }
 }
 
