@@ -899,4 +899,15 @@ mod tests {
             panic!("Expected Lua table");
         }
     }
+
+    #[test]
+    fn test_cosmos_script_compilation() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+        let mut comp = ScriptComponent::new("assets/scripts/cosmos_game.lua".to_string());
+        let res = comp.init_or_reload(ctx);
+        assert!(res.is_ok(), "Failed to compile cosmos_game.lua: {:?}", res.err());
+    }
 }
