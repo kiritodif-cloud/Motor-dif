@@ -16,7 +16,7 @@ use egui::{CentralPanel, Frame, Panel};
 use assets::SceneDef;
 use camera::{Camera, CameraMode};
 use ecs::{EntityMeta, MeshRender, Transform};
-use glam::Vec3;
+use glam::{EulerRot, Quat, Vec3};
 use hot_reload::{HotReloadEvent, HotReloadManager};
 use mcp_server::{EngineLogsResponse, McpCommand, WorldInspection};
 use physics::{PhysicsEngine, RigidBodyComponent};
@@ -301,6 +301,25 @@ impl EngineState {
         self.history.push(snapshot);
     }
 
+    pub fn sync_entity_to_physics(&mut self, entity: hecs::Entity) {
+        let tr_opt = self.world.get::<&Transform>(entity).map(|t| (t.position, t.rotation)).ok();
+        let rb_opt = self.world.get::<&RigidBodyComponent>(entity).map(|r| r.handle).ok();
+        if let (Some((pos, rot)), Some(handle)) = (tr_opt, rb_opt) {
+            if let Some(body) = self.physics.rigid_body_set.get_mut(handle) {
+                body.set_translation(pos, true);
+                let q = Quat::from_euler(
+                    EulerRot::XYZ,
+                    rot.x,
+                    rot.y,
+                    rot.z,
+                );
+                body.set_rotation(q, true);
+                body.set_linvel(Vec3::ZERO, true);
+                body.set_angvel(Vec3::ZERO, true);
+            }
+        }
+    }
+
     pub fn undo(&mut self) {
         let current = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
         if let Some(prev) = self.history.undo(current) {
@@ -577,195 +596,21 @@ impl EngineState {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let new_pos = [position.x as f32, position.y as f32];
-                let dx = new_pos[0] - self.mouse_pos[0];
-                let dy = new_pos[1] - self.mouse_pos[1];
-                self.mouse_pos = new_pos;
-
-                let egui_wants_pointer = self.gpu.egui_winit_state.egui_ctx().egui_wants_pointer_input();
-
-                // Camera Orbit & Pan when not interacting with egui UI or dragging gizmo
-                if !egui_wants_pointer && self.active_gizmo_axis.is_none() {
-                    let is_shift = {
-                        let set = self.pressed_keys.read().unwrap();
-                        set.contains("SHIFT") || set.contains("SHIFTRIGHT") || set.contains("SHIFTLEFT")
-                    };
-
-                    if self.is_right_mouse_down {
-                        if is_shift {
-                            self.camera.pan(dx, dy);
-                        } else {
-                            self.camera.orbit(dx, dy);
-                        }
-                    } else if self.is_middle_mouse_down {
-                        self.camera.pan(dx, dy);
-                    }
-                }
-
-                // Gizmo Dragging
-                if let (Some(axis), Some(start_m)) = (self.active_gizmo_axis, self.gizmo_drag_mouse_origin) {
-                    if let Some(entity) = self.selected_entity {
-                        let screen_size = [self.gpu.config.width as f32, self.gpu.config.height as f32];
-                        let ctrl = {
-                            let set = self.pressed_keys.read().unwrap();
-                            set.contains("CONTROL") || set.contains("CONTROLRIGHT") || set.contains("CONTROLLEFT") || self.snap_enabled
-                        };
-
-                        let axis_vec = match axis {
-                            GizmoAxis::X => Vec3::X,
-                            GizmoAxis::Y => Vec3::Y,
-                            GizmoAxis::Z => Vec3::Z,
-                        };
-
-                        let (origin_2d, axis_2d) = if let Ok(transform) = self.world.get::<&Transform>(entity) {
-                            (
-                                self.camera.world_to_screen(transform.position, screen_size),
-                                self.camera.world_to_screen(transform.position + axis_vec * 1.5, screen_size),
-                            )
-                        } else {
-                            (None, None)
-                        };
-
-                        if let (Some(o), Some(a)) = (origin_2d, axis_2d) {
-                            let dir_x = a[0] - o[0];
-                            let dir_y = a[1] - o[1];
-                            let len = (dir_x * dir_x + dir_y * dir_y).sqrt().max(1.0);
-                            let ndir_x = dir_x / len;
-                            let ndir_y = dir_y / len;
-
-                            let total_dx = new_pos[0] - start_m[0];
-                            let total_dy = new_pos[1] - start_m[1];
-                            let proj = (total_dx * ndir_x + total_dy * ndir_y) * 0.035;
-
-                            if let Ok(mut transform) = self.world.get::<&mut Transform>(entity) {
-                                match self.gizmo_mode {
-                                    GizmoMode::Translate => {
-                                        if let Some(start_pos) = self.gizmo_drag_start_pos {
-                                            let mut new_p = start_pos + axis_vec * proj;
-                                            if ctrl {
-                                                new_p.x = (new_p.x / 0.5).round() * 0.5;
-                                                new_p.y = (new_p.y / 0.5).round() * 0.5;
-                                                new_p.z = (new_p.z / 0.5).round() * 0.5;
-                                            }
-                                            transform.position = new_p;
-                                        }
-                                    }
-                                    GizmoMode::Rotate => {
-                                        if let Some(start_rot) = self.gizmo_drag_start_rot {
-                                            let angle = proj * 2.0;
-                                            let mut new_r = start_rot + axis_vec * angle;
-                                            if ctrl {
-                                                let step = std::f32::consts::PI / 12.0;
-                                                new_r.x = (new_r.x / step).round() * step;
-                                                new_r.y = (new_r.y / step).round() * step;
-                                                new_r.z = (new_r.z / step).round() * step;
-                                            }
-                                            transform.rotation = new_r;
-                                        }
-                                    }
-                                    GizmoMode::Scale => {
-                                        if let Some(start_scale) = self.gizmo_drag_start_scale {
-                                            let factor = (1.0 + proj * 0.5).max(0.05);
-                                            let mut new_s = start_scale;
-                                            match axis {
-                                                GizmoAxis::X => new_s.x = (start_scale.x * factor).max(0.01),
-                                                GizmoAxis::Y => new_s.y = (start_scale.y * factor).max(0.01),
-                                                GizmoAxis::Z => new_s.z = (start_scale.z * factor).max(0.01),
-                                            }
-                                            if ctrl {
-                                                new_s.x = (new_s.x / 0.25).round() * 0.25;
-                                                new_s.y = (new_s.y / 0.25).round() * 0.25;
-                                                new_s.z = (new_s.z / 0.25).round() * 0.25;
-                                            }
-                                            transform.scale = new_s;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                self.mouse_pos = [position.x as f32, position.y as f32];
+                self.window.request_redraw();
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let egui_wants_pointer = self.gpu.egui_winit_state.egui_ctx().egui_wants_pointer_input();
-                if !egui_wants_pointer {
-                    let scroll_y = match delta {
-                        winit::event::MouseScrollDelta::LineDelta(_, y) => *y,
-                        winit::event::MouseScrollDelta::PixelDelta(p) => (p.y as f32) * 0.05,
-                    };
-                    self.camera.zoom(scroll_y);
-                }
+            WindowEvent::MouseWheel { .. } => {
+                self.window.request_redraw();
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let is_pressed = *state == winit::event::ElementState::Pressed;
                 match button {
-                    winit::event::MouseButton::Right => {
-                        self.is_right_mouse_down = is_pressed;
-                    }
-                    winit::event::MouseButton::Middle => {
-                        self.is_middle_mouse_down = is_pressed;
-                    }
-                    winit::event::MouseButton::Left => {
-                        self.is_left_mouse_down = is_pressed;
-                        let egui_wants_pointer = self.gpu.egui_winit_state.egui_ctx().egui_wants_pointer_input();
-
-                        if is_pressed {
-                            if let Some(axis) = self.hovered_gizmo_axis {
-                                self.active_gizmo_axis = Some(axis);
-                                self.gizmo_drag_mouse_origin = Some(self.mouse_pos);
-                                if let Some(entity) = self.selected_entity {
-                                    if let Ok(trans) = self.world.get::<&Transform>(entity) {
-                                        self.gizmo_drag_start_pos = Some(trans.position);
-                                        self.gizmo_drag_start_rot = Some(trans.rotation);
-                                        self.gizmo_drag_start_scale = Some(trans.scale);
-                                    }
-                                }
-                            } else if !egui_wants_pointer {
-                                // Viewport Raycasting selection
-                                let screen_size = [self.gpu.config.width as f32, self.gpu.config.height as f32];
-                                let (ray_origin, ray_dir) = self.camera.screen_to_ray(self.mouse_pos, screen_size);
-
-                                let mut closest_hit: Option<(hecs::Entity, f32)> = None;
-
-                                for entity_ref in self.world.iter() {
-                                    let entity = entity_ref.entity();
-                                    if let Some(transform) = entity_ref.get::<&Transform>() {
-                                        let half_s = transform.scale * 0.5;
-                                        let min = transform.position - half_s;
-                                        let max = transform.position + half_s;
-
-                                        if let Some(t) = camera::ray_intersects_aabb(ray_origin, ray_dir, min, max) {
-                                            if t > 0.0 {
-                                                match closest_hit {
-                                                    None => closest_hit = Some((entity, t)),
-                                                    Some((_, cur_t)) if t < cur_t => closest_hit = Some((entity, t)),
-                                                    _ => {}
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                if let Some((hit_entity, _)) = closest_hit {
-                                    self.selected_entity = Some(hit_entity);
-                                    if let Ok(meta) = self.world.get::<&EntityMeta>(hit_entity) {
-                                        self.logs.push(format!("Selected entity '{}' via viewport raycast", meta.id));
-                                    }
-                                }
-                            }
-                        } else {
-                            if self.active_gizmo_axis.is_some() {
-                                self.push_history();
-                                self.active_gizmo_axis = None;
-                                self.gizmo_drag_start_pos = None;
-                                self.gizmo_drag_start_rot = None;
-                                self.gizmo_drag_start_scale = None;
-                                self.gizmo_drag_mouse_origin = None;
-                            }
-                        }
-                    }
+                    winit::event::MouseButton::Right => self.is_right_mouse_down = is_pressed,
+                    winit::event::MouseButton::Middle => self.is_middle_mouse_down = is_pressed,
+                    winit::event::MouseButton::Left => self.is_left_mouse_down = is_pressed,
                     _ => {}
                 }
+                self.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
                 self.update_and_render();
@@ -1364,15 +1209,15 @@ impl EngineState {
                 Panel::top("top_toolbar").show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.menu_button("File", |ui| {
-                            if ui.button("📄 New Empty Scene").clicked() {
+                            if ui.button("[+] New Empty Scene").clicked() {
                                 trigger_new_scene = true;
                                 ui.close();
                             }
-                            if ui.button("💾 Save Scene (Ctrl+S)").clicked() {
+                            if ui.button("[^] Save Scene (Ctrl+S)").clicked() {
                                 trigger_save_scene = true;
                                 ui.close();
                             }
-                            if ui.button("🔄 Reload Scene").clicked() {
+                            if ui.button("[*] Reload Scene").clicked() {
                                 trigger_reload_scene = true;
                                 ui.close();
                             }
@@ -1384,7 +1229,7 @@ impl EngineState {
                         let is_playing = self.play_mode == PlayMode::Play;
                         let is_paused = self.play_mode == PlayMode::Pause;
 
-                        if ui.selectable_label(is_playing, "▶ Play").clicked() {
+                        if ui.selectable_label(is_playing, "> Play").clicked() {
                             if self.play_mode == PlayMode::Edit {
                                 self.play_snapshot = Some(assets::extract_scene_from_world(&self.world, &self.camera, &self.physics));
                             }
@@ -1392,12 +1237,12 @@ impl EngineState {
                             self.logs.push("Simulation started (Play Mode)".to_string());
                         }
 
-                        if ui.selectable_label(is_paused, "⏸ Pause").clicked() {
+                        if ui.selectable_label(is_paused, "|| Pause").clicked() {
                             self.play_mode = PlayMode::Pause;
                             self.logs.push("Simulation paused".to_string());
                         }
 
-                        if ui.button("⏹ Stop").clicked() {
+                        if ui.button("[] Stop").clicked() {
                             if let Some(snapshot) = self.play_snapshot.take() {
                                 assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
                                 self.logs.push("Simulation stopped. Scene restored to initial snapshot.".to_string());
@@ -1408,9 +1253,9 @@ impl EngineState {
                         ui.separator();
 
                         // Gizmo Mode Selectors
-                        ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Translate, "✛ [W] Move");
-                        ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Rotate, "⟲ [E] Rotate");
-                        ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Scale, "⤢ [R] Scale");
+                        ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Translate, "[W] Move");
+                        ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Rotate, "[E] Rotate");
+                        ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Scale, "[R] Scale");
 
                         ui.separator();
                         ui.checkbox(&mut self.snap_enabled, "Snap (Ctrl)");
@@ -1421,7 +1266,7 @@ impl EngineState {
                             CameraMode::Perspective => "3D",
                             CameraMode::Orthographic => "2D",
                         };
-                        if ui.button(format!("📷 Camera: {}", cam_mode_str)).clicked() {
+                        if ui.button(format!("[Cam] Camera: {}", cam_mode_str)).clicked() {
                             self.camera.toggle_mode();
                         }
 
@@ -1429,7 +1274,7 @@ impl EngineState {
                         ui.label(format!("{:.1} FPS", fps));
 
                         ui.separator();
-                        ui.colored_label(egui::Color32::from_rgb(100, 255, 100), format!("● MCP: 3030"));
+                        ui.colored_label(egui::Color32::from_rgb(100, 255, 100), format!("* MCP: 3030"));
                     });
                 });
 
@@ -1485,7 +1330,7 @@ impl EngineState {
 
                             for (entity, id, mesh_type) in entity_items {
                                 let is_selected = self.selected_entity == Some(entity);
-                                let label_text = format!("📦 {} ({})", id, mesh_type);
+                                let label_text = format!("* {} ({})", id, mesh_type);
                                 if ui.selectable_label(is_selected, label_text).clicked() {
                                     self.selected_entity = Some(entity);
                                 }
@@ -1517,12 +1362,16 @@ impl EngineState {
                                 // 2. Transform
                                 ui.group(|ui| {
                                     ui.label(egui::RichText::new("Transform").strong());
+                                    let mut transform_changed = false;
                                     if let Ok(mut transform) = self.world.get::<&mut Transform>(entity) {
                                         ui.label("Position:");
                                         ui.horizontal(|ui| {
-                                            ui.add(egui::DragValue::new(&mut transform.position.x).speed(0.05).prefix("X: "));
-                                            ui.add(egui::DragValue::new(&mut transform.position.y).speed(0.05).prefix("Y: "));
-                                            ui.add(egui::DragValue::new(&mut transform.position.z).speed(0.05).prefix("Z: "));
+                                            if ui.add(egui::DragValue::new(&mut transform.position.x).speed(0.05).prefix("X: ")).changed()
+                                                || ui.add(egui::DragValue::new(&mut transform.position.y).speed(0.05).prefix("Y: ")).changed()
+                                                || ui.add(egui::DragValue::new(&mut transform.position.z).speed(0.05).prefix("Z: ")).changed()
+                                            {
+                                                transform_changed = true;
+                                            }
                                         });
 
                                         ui.label("Rotation (Degrees):");
@@ -1530,14 +1379,17 @@ impl EngineState {
                                         let mut deg_y = transform.rotation.y.to_degrees();
                                         let mut deg_z = transform.rotation.z.to_degrees();
                                         ui.horizontal(|ui| {
-                                            if ui.add(egui::DragValue::new(&mut deg_x).speed(1.0).prefix("X: ").suffix("°")).changed() {
+                                            if ui.add(egui::DragValue::new(&mut deg_x).speed(1.0).prefix("X: ").suffix(" deg")).changed() {
                                                 transform.rotation.x = deg_x.to_radians();
+                                                transform_changed = true;
                                             }
-                                            if ui.add(egui::DragValue::new(&mut deg_y).speed(1.0).prefix("Y: ").suffix("°")).changed() {
+                                            if ui.add(egui::DragValue::new(&mut deg_y).speed(1.0).prefix("Y: ").suffix(" deg")).changed() {
                                                 transform.rotation.y = deg_y.to_radians();
+                                                transform_changed = true;
                                             }
-                                            if ui.add(egui::DragValue::new(&mut deg_z).speed(1.0).prefix("Z: ").suffix("°")).changed() {
+                                            if ui.add(egui::DragValue::new(&mut deg_z).speed(1.0).prefix("Z: ").suffix(" deg")).changed() {
                                                 transform.rotation.z = deg_z.to_radians();
+                                                transform_changed = true;
                                             }
                                         });
 
@@ -1547,6 +1399,9 @@ impl EngineState {
                                             ui.add(egui::DragValue::new(&mut transform.scale.y).speed(0.05).prefix("Y: ").range(0.01..=100.0));
                                             ui.add(egui::DragValue::new(&mut transform.scale.z).speed(0.05).prefix("Z: ").range(0.01..=100.0));
                                         });
+                                    }
+                                    if transform_changed {
+                                        self.sync_entity_to_physics(entity);
                                     }
                                 });
 
@@ -1594,7 +1449,7 @@ impl EngineState {
                                     });
 
                                     if !current_script.is_empty() {
-                                        if ui.button("✏ Edit Script").clicked() {
+                                        if ui.button("[Edit] Edit Script").clicked() {
                                             script_to_open = Some(current_script.clone());
                                         }
                                     }
@@ -1680,9 +1535,9 @@ impl EngineState {
                     .default_size(200.0)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.selectable_value(&mut self.bottom_tab, BottomTab::Console, "📋 Console & MCP");
-                            ui.selectable_value(&mut self.bottom_tab, BottomTab::Assets, "📁 Assets Browser");
-                            ui.selectable_value(&mut self.bottom_tab, BottomTab::ScriptEditor, "💻 Script Editor");
+                            ui.selectable_value(&mut self.bottom_tab, BottomTab::Console, "[_] Console & MCP");
+                            ui.selectable_value(&mut self.bottom_tab, BottomTab::Assets, "[/] Assets Browser");
+                            ui.selectable_value(&mut self.bottom_tab, BottomTab::ScriptEditor, "[<>] Script Editor");
                         });
                         ui.separator();
 
@@ -1720,7 +1575,7 @@ impl EngineState {
                             BottomTab::Assets => {
                                 ui.horizontal(|ui| {
                                     ui.label("Files in 'assets/':");
-                                    if ui.button("🔄 Refresh").clicked() {
+                                    if ui.button("[*] Refresh").clicked() {
                                         trigger_refresh_assets = true;
                                     }
                                 });
@@ -1729,7 +1584,7 @@ impl EngineState {
                                     for path in &self.assets_cache.clone() {
                                         ui.horizontal(|ui| {
                                             if path.ends_with(".json") {
-                                                ui.label(format!("📄 {}", path));
+                                                ui.label(format!("[json] {}", path));
                                                 if ui.button("Load Scene").clicked() {
                                                     match assets::load_scene_from_file(path) {
                                                         Ok(scene) => {
@@ -1743,7 +1598,7 @@ impl EngineState {
                                                     }
                                                 }
                                             } else if path.ends_with(".lua") {
-                                                ui.label(format!("📜 {}", path));
+                                                ui.label(format!("[lua]  {}", path));
                                                 if ui.button("Open in Editor").clicked() {
                                                     script_to_open = Some(path.clone());
                                                 }
@@ -1756,7 +1611,7 @@ impl EngineState {
                                                     }
                                                 }
                                             } else if path.ends_with(".glb") || path.ends_with(".gltf") {
-                                                ui.label(format!("🧊 {}", path));
+                                                ui.label(format!("[mesh] {}", path));
                                                 if let Some(entity) = self.selected_entity {
                                                     if ui.button("Assign Mesh to Selected").clicked() {
                                                         if let Ok(mut mesh) = self.world.get::<&mut MeshRender>(entity) {
@@ -1766,7 +1621,7 @@ impl EngineState {
                                                     }
                                                 }
                                             } else {
-                                                ui.label(format!("📎 {}", path));
+                                                ui.label(format!("[file] {}", path));
                                             }
                                         });
                                     }
@@ -1776,7 +1631,7 @@ impl EngineState {
                                 ui.horizontal(|ui| {
                                     if let Some(path) = &self.script_editor_path {
                                         ui.label(egui::RichText::new(format!("Editing: {}", path)).strong());
-                                        if ui.button("💾 Save & Hot-Reload").clicked() {
+                                        if ui.button("[Save] Save & Hot-Reload").clicked() {
                                             trigger_save_script = true;
                                         }
                                     } else {
@@ -1801,13 +1656,54 @@ impl EngineState {
                 CentralPanel::default()
                     .frame(Frame::new().fill(egui::Color32::TRANSPARENT))
                     .show(ui, |ui| {
-                        // Draw 3D Gizmos and Selection Outline using egui Painter
                         let painter = ui.painter();
-                        let screen_size = [self.gpu.config.width as f32, self.gpu.config.height as f32];
-                        let mouse_pos = self.mouse_pos;
+                        let viewport_rect = ui.max_rect();
+
+                        let (
+                            screen_rect,
+                            pointer_pos,
+                            is_primary_pressed,
+                            is_primary_down,
+                            is_primary_released,
+                            is_secondary_down,
+                            is_middle_down,
+                            pointer_delta,
+                            scroll_delta_y,
+                            is_shift,
+                            is_snap,
+                        ) = ui.ctx().input(|i| {
+                            (
+                                i.raw.screen_rect.unwrap_or_else(|| {
+                                    let scale = self.window.scale_factor() as f32;
+                                    egui::Rect::from_min_size(
+                                        egui::Pos2::ZERO,
+                                        egui::vec2(
+                                            self.gpu.config.width as f32 / scale.max(0.1),
+                                            self.gpu.config.height as f32 / scale.max(0.1),
+                                        ),
+                                    )
+                                }),
+                                i.pointer.interact_pos().or(i.pointer.hover_pos()),
+                                i.pointer.primary_pressed(),
+                                i.pointer.primary_down(),
+                                i.pointer.primary_released(),
+                                i.pointer.secondary_down(),
+                                i.pointer.middle_down(),
+                                i.pointer.delta(),
+                                i.smooth_scroll_delta.y,
+                                i.modifiers.shift,
+                                i.modifiers.ctrl || self.snap_enabled,
+                            )
+                        });
+                        let screen_size = [screen_rect.width(), screen_rect.height()];
+
+                        // 1. Raycast Selection & Gizmo Interaction
+                        let mut hovered_axis = None;
+                        let gizmo_len = 1.4f32;
 
                         if let Some(entity) = self.selected_entity {
-                            if let Ok(transform) = self.world.get::<&Transform>(entity) {
+                            let transform_data = self.world.get::<&Transform>(entity).map(|t| (t.position, t.rotation, t.scale)).ok();
+                            if let Some((pos, rot, scale)) = transform_data {
                                 // 1. Selection Outline
                                 let corners = [
                                     Vec3::new(-0.5, -0.5, -0.5),
@@ -1819,7 +1715,11 @@ impl EngineState {
                                     Vec3::new( 0.5,  0.5,  0.5),
                                     Vec3::new(-0.5,  0.5,  0.5),
                                 ];
-                                let mat = transform.matrix();
+                                let mat = glam::Mat4::from_scale_rotation_translation(
+                                    scale,
+                                    Quat::from_euler(EulerRot::XYZ, rot.x, rot.y, rot.z),
+                                    pos,
+                                );
                                 let mut screen_corners = [None; 8];
                                 for i in 0..8 {
                                     let world_pt = mat.transform_point3(corners[i]);
@@ -1841,17 +1741,14 @@ impl EngineState {
                                 }
 
                                 // 2. 3D Gizmo
-                                let origin_pt = self.camera.world_to_screen(transform.position, screen_size);
+                                let origin_pt = self.camera.world_to_screen(pos, screen_size);
                                 if let Some(origin) = origin_pt {
                                     let origin_pos = egui::pos2(origin[0], origin[1]);
                                     painter.circle_filled(origin_pos, 4.0, egui::Color32::WHITE);
 
-                                    let gizmo_len = 1.4f32;
-                                    let pt_x = self.camera.world_to_screen(transform.position + Vec3::X * gizmo_len, screen_size);
-                                    let pt_y = self.camera.world_to_screen(transform.position + Vec3::Y * gizmo_len, screen_size);
-                                    let pt_z = self.camera.world_to_screen(transform.position + Vec3::Z * gizmo_len, screen_size);
-
-                                    let mut hovered_axis = None;
+                                    let pt_x = self.camera.world_to_screen(pos + Vec3::X * gizmo_len, screen_size);
+                                    let pt_y = self.camera.world_to_screen(pos + Vec3::Y * gizmo_len, screen_size);
+                                    let pt_z = self.camera.world_to_screen(pos + Vec3::Z * gizmo_len, screen_size);
 
                                     let axes = [
                                         (GizmoAxis::X, pt_x, egui::Color32::from_rgb(235, 60, 60), "X"),
@@ -1859,17 +1756,27 @@ impl EngineState {
                                         (GizmoAxis::Z, pt_z, egui::Color32::from_rgb(60, 130, 245), "Z"),
                                     ];
 
+                                    // Hit test axes with generous 15px margin
+                                    if let Some(cursor) = pointer_pos {
+                                        if viewport_rect.contains(cursor) || self.active_gizmo_axis.is_some() {
+                                            let mut closest_d = 15.0f32;
+                                            for (axis, pt_opt, _, _) in &axes {
+                                                if let Some(pt) = pt_opt {
+                                                    let dist = dist_to_segment_2d([cursor.x, cursor.y], origin, *pt);
+                                                    if dist <= closest_d {
+                                                        closest_d = dist;
+                                                        hovered_axis = Some(*axis);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     for (axis, pt_opt, base_color, label) in axes {
                                         if let Some(pt) = pt_opt {
                                             let end_pos = egui::pos2(pt[0], pt[1]);
-                                            let dist = dist_to_segment_2d(mouse_pos, origin, pt);
-
-                                            let is_hovered = dist <= 12.0;
                                             let is_active = self.active_gizmo_axis == Some(axis);
-
-                                            if is_hovered && hovered_axis.is_none() {
-                                                hovered_axis = Some(axis);
-                                            }
+                                            let is_hovered = self.active_gizmo_axis.is_none() && hovered_axis == Some(axis);
 
                                             let color = if is_active || is_hovered {
                                                 egui::Color32::from_rgb(255, 240, 50)
@@ -1907,9 +1814,161 @@ impl EngineState {
                                             );
                                         }
                                     }
+                                }
+                            }
+                        }
 
-                                    if self.active_gizmo_axis.is_none() {
-                                        self.hovered_gizmo_axis = hovered_axis;
+                        self.hovered_gizmo_axis = hovered_axis;
+
+                        // Click Priority: Gizmo Axis BEFORE Raycast
+                        if is_primary_pressed {
+                            if let Some(cursor) = pointer_pos {
+                                if viewport_rect.contains(cursor) {
+                                    if let (Some(entity), Some(axis)) = (self.selected_entity, hovered_axis) {
+                                        self.active_gizmo_axis = Some(axis);
+                                        self.gizmo_drag_mouse_origin = Some([cursor.x, cursor.y]);
+                                        if let Ok(transform) = self.world.get::<&Transform>(entity) {
+                                            self.gizmo_drag_start_pos = Some(transform.position);
+                                            self.gizmo_drag_start_rot = Some(transform.rotation);
+                                            self.gizmo_drag_start_scale = Some(transform.scale);
+                                        }
+                                    } else if hovered_axis.is_none() {
+                                        // Viewport Raycasting selection
+                                        let (ray_origin, ray_dir) = self.camera.screen_to_ray([cursor.x, cursor.y], screen_size);
+                                        let mut closest_hit: Option<(hecs::Entity, f32)> = None;
+
+                                        for entity_ref in self.world.iter() {
+                                            let entity = entity_ref.entity();
+                                            if let Some(transform) = entity_ref.get::<&Transform>() {
+                                                let half_s = transform.scale.abs() * 0.5;
+                                                let min = transform.position - half_s;
+                                                let max = transform.position + half_s;
+
+                                                if let Some(t) = camera::ray_intersects_aabb(ray_origin, ray_dir, min, max) {
+                                                    if t > 0.0 {
+                                                        match closest_hit {
+                                                            None => closest_hit = Some((entity, t)),
+                                                            Some((_, cur_t)) if t < cur_t => closest_hit = Some((entity, t)),
+                                                            _ => {}
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        self.selected_entity = closest_hit.map(|(e, _)| e);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Real-time Gizmo Dragging & Physics Sync
+                        if is_primary_down {
+                            if let (Some(entity), Some(axis), Some(start_m), Some(start_pos), Some(start_rot), Some(start_scale)) = (
+                                self.selected_entity,
+                                self.active_gizmo_axis,
+                                self.gizmo_drag_mouse_origin,
+                                self.gizmo_drag_start_pos,
+                                self.gizmo_drag_start_rot,
+                                self.gizmo_drag_start_scale,
+                            ) {
+                                if let Some(cursor) = pointer_pos {
+                                    let axis_vec = match axis {
+                                        GizmoAxis::X => Vec3::X,
+                                        GizmoAxis::Y => Vec3::Y,
+                                        GizmoAxis::Z => Vec3::Z,
+                                    };
+
+                                    let origin_2d = self.camera.world_to_screen(start_pos, screen_size);
+                                    let tip_2d = self.camera.world_to_screen(start_pos + axis_vec * gizmo_len, screen_size);
+
+                                    if let (Some(o), Some(a)) = (origin_2d, tip_2d) {
+                                        let dir_x = a[0] - o[0];
+                                        let dir_y = a[1] - o[1];
+                                        let len = (dir_x * dir_x + dir_y * dir_y).sqrt().max(1.0);
+                                        let ndir_x = dir_x / len;
+                                        let ndir_y = dir_y / len;
+
+                                        let total_dx = cursor.x - start_m[0];
+                                        let total_dy = cursor.y - start_m[1];
+                                        let proj_pixels = total_dx * ndir_x + total_dy * ndir_y;
+                                        let delta_world = proj_pixels * (gizmo_len / len);
+
+                                        match self.gizmo_mode {
+                                            GizmoMode::Translate => {
+                                                let mut new_pos = start_pos + axis_vec * delta_world;
+                                                if is_snap {
+                                                    new_pos.x = (new_pos.x * 2.0).round() * 0.5;
+                                                    new_pos.y = (new_pos.y * 2.0).round() * 0.5;
+                                                    new_pos.z = (new_pos.z * 2.0).round() * 0.5;
+                                                }
+                                                {
+                                                    if let Ok(mut transform) = self.world.get::<&mut Transform>(entity) {
+                                                        transform.position = new_pos;
+                                                    }
+                                                }
+                                                self.sync_entity_to_physics(entity);
+                                            }
+                                            GizmoMode::Rotate => {
+                                                let angle = (proj_pixels * 0.02) % (std::f32::consts::PI * 2.0);
+                                                let final_angle = if is_snap {
+                                                    let step = 15.0f32.to_radians();
+                                                    (angle / step).round() * step
+                                                } else {
+                                                    angle
+                                                };
+                                                let new_rot = start_rot + axis_vec * final_angle;
+                                                {
+                                                    if let Ok(mut transform) = self.world.get::<&mut Transform>(entity) {
+                                                        transform.rotation = new_rot;
+                                                    }
+                                                }
+                                                self.sync_entity_to_physics(entity);
+                                            }
+                                            GizmoMode::Scale => {
+                                                let scale_delta = proj_pixels * 0.015;
+                                                let mut new_scale = (start_scale + axis_vec * scale_delta).max(Vec3::splat(0.05));
+                                                if is_snap {
+                                                    new_scale.x = (new_scale.x * 4.0).round() * 0.25;
+                                                    new_scale.y = (new_scale.y * 4.0).round() * 0.25;
+                                                    new_scale.z = (new_scale.z * 4.0).round() * 0.25;
+                                                }
+                                                if let Ok(mut transform) = self.world.get::<&mut Transform>(entity) {
+                                                    transform.scale = new_scale;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Release Drag -> Push Undo History
+                        if (is_primary_released || !is_primary_down) && self.active_gizmo_axis.is_some() {
+                            self.push_history();
+                            self.active_gizmo_axis = None;
+                            self.gizmo_drag_mouse_origin = None;
+                            self.gizmo_drag_start_pos = None;
+                            self.gizmo_drag_start_rot = None;
+                            self.gizmo_drag_start_scale = None;
+                        }
+
+                        // Camera Orbit, Pan & Zoom when not dragging gizmo
+                        if self.active_gizmo_axis.is_none() {
+                            if let Some(cursor) = pointer_pos {
+                                if is_secondary_down || is_middle_down || viewport_rect.contains(cursor) {
+                                    if is_secondary_down {
+                                        if is_shift {
+                                            self.camera.pan(pointer_delta.x, pointer_delta.y);
+                                        } else {
+                                            self.camera.orbit(pointer_delta.x, pointer_delta.y);
+                                        }
+                                    } else if is_middle_down {
+                                        self.camera.pan(pointer_delta.x, pointer_delta.y);
+                                    }
+
+                                    if viewport_rect.contains(cursor) && scroll_delta_y.abs() > 0.0 {
+                                        self.camera.zoom(scroll_delta_y * 0.05);
                                     }
                                 }
                             }
@@ -1984,7 +2043,7 @@ impl EngineState {
                             }
                         }
 
-                        // 3. In-Game HUD overlay from Lua (set_hud_text)
+                        // 4. In-Game HUD overlay from Lua (set_hud_text)
                         if let Ok(hud) = self.lua_ctx.hud_texts.read() {
                             if !hud.is_empty() {
                                 let hud_area = egui::Area::new(ui.make_persistent_id("lua_hud_overlay"))
