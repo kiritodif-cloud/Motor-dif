@@ -1,7 +1,5 @@
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
-use std::collections::HashSet;
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
@@ -209,7 +207,7 @@ pub fn apply_scene_to_world(
     world: &mut hecs::World,
     camera: &mut Camera,
     physics: &mut PhysicsEngine,
-    pressed_keys: Option<&Arc<RwLock<HashSet<String>>>>,
+    lua_ctx: Option<&crate::scripting::LuaEngineContext>,
 ) {
     // 1. Update Camera
     let is_2d = scene.camera.mode.to_lowercase() == "2d";
@@ -250,8 +248,8 @@ pub fn apply_scene_to_world(
 
         if let Some(script_path) = &entity.script {
             let mut script_comp = ScriptComponent::new(script_path.clone());
-            if let Some(keys) = pressed_keys {
-                let _ = script_comp.init_or_reload(keys.clone());
+            if let Some(ctx) = lua_ctx {
+                let _ = script_comp.init_or_reload(ctx.clone());
             }
             let _ = world.insert_one(e, script_comp);
         }

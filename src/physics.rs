@@ -1,5 +1,8 @@
+use std::sync::{Arc, Mutex};
 use rapier3d::prelude::*;
 use glam::{EulerRot, Vec3};
+
+pub use rapier3d::prelude::RigidBodyHandle;
 
 use crate::assets::PhysicsDef;
 use crate::ecs::Transform;
@@ -7,6 +10,53 @@ use crate::ecs::Transform;
 #[derive(Debug, Clone, Copy)]
 pub struct RigidBodyComponent {
     pub handle: RigidBodyHandle,
+}
+
+#[derive(Debug, Clone)]
+pub struct CollisionRecord {
+    pub collider_1: ColliderHandle,
+    pub collider_2: ColliderHandle,
+    pub started: bool,
+}
+
+pub struct CollisionCollector {
+    pub events: Arc<Mutex<Vec<CollisionRecord>>>,
+}
+
+impl EventHandler for CollisionCollector {
+    fn handle_collision_event(
+        &self,
+        _bodies: &RigidBodySet,
+        _colliders: &ColliderSet,
+        event: CollisionEvent,
+        _contact_pair: Option<&ContactPair>,
+    ) {
+        if let Ok(mut list) = self.events.lock() {
+            match event {
+                CollisionEvent::Started(c1, c2, _) => {
+                    list.push(CollisionRecord { collider_1: c1, collider_2: c2, started: true });
+                }
+                CollisionEvent::Stopped(c1, c2, _) => {
+                    list.push(CollisionRecord { collider_1: c1, collider_2: c2, started: false });
+                }
+            }
+        }
+    }
+
+    fn handle_contact_force_event(
+        &self,
+        _dt: f32,
+        _bodies: &RigidBodySet,
+        _colliders: &ColliderSet,
+        _contact_pair: &ContactPair,
+        _total_force_magnitude: f32,
+    ) {}
+
+    fn handle_soft_body_tear_event(
+        &self,
+        _soft_bodies: &SoftBodySet,
+        _event: &SoftBodyTearEvent,
+    ) {}
 }
 
 pub struct PhysicsEngine {
@@ -25,6 +75,7 @@ pub struct PhysicsEngine {
     pub ccd_solver: CCDSolver,
     pub fixed_time_step: f32,
     pub accumulator: f32,
+    pub collision_events: Arc<Mutex<Vec<CollisionRecord>>>,
 }
 
 impl PhysicsEngine {
@@ -45,6 +96,7 @@ impl PhysicsEngine {
             ccd_solver: CCDSolver::new(),
             fixed_time_step: 1.0 / 60.0,
             accumulator: 0.0,
+            collision_events: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -59,6 +111,9 @@ impl PhysicsEngine {
         self.soft_body_set = SoftBodySet::new();
         self.ccd_solver = CCDSolver::new();
         self.accumulator = 0.0;
+        if let Ok(mut events) = self.collision_events.lock() {
+            events.clear();
+        }
     }
 
     pub fn add_body(
@@ -95,6 +150,7 @@ impl PhysicsEngine {
         let collider = collider_builder
             .restitution(physics_def.restitution)
             .mass(physics_def.mass)
+            .active_events(ActiveEvents::COLLISION_EVENTS)
             .build();
 
         self.collider_set
@@ -107,6 +163,10 @@ impl PhysicsEngine {
         if !self.enabled {
             return;
         }
+
+        let collector = CollisionCollector {
+            events: self.collision_events.clone(),
+        };
 
         self.accumulator += dt.min(0.2);
         while self.accumulator >= self.fixed_time_step {
@@ -124,7 +184,7 @@ impl PhysicsEngine {
                 &mut self.soft_body_set,
                 &mut self.ccd_solver,
                 &(),
-                &(),
+                &collector,
             );
         }
     }

@@ -1,10 +1,32 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
 use glam::Vec3;
+use crate::assets::{EntityDef, PhysicsDef};
 use crate::ecs::Transform;
+
+#[derive(Clone)]
+pub struct LuaEngineContext {
+    pub pressed_keys: Arc<RwLock<HashSet<String>>>,
+    pub pending_spawns: Arc<Mutex<Vec<EntityDef>>>,
+    pub pending_destroys: Arc<Mutex<Vec<String>>>,
+    pub hud_texts: Arc<RwLock<HashMap<String, String>>>,
+    pub world_entities: Arc<RwLock<HashMap<String, [f32; 9]>>>,
+}
+
+impl LuaEngineContext {
+    pub fn new(pressed_keys: Arc<RwLock<HashSet<String>>>) -> Self {
+        Self {
+            pressed_keys,
+            pending_spawns: Arc::new(Mutex::new(Vec::new())),
+            pending_destroys: Arc::new(Mutex::new(Vec::new())),
+            hud_texts: Arc::new(RwLock::new(HashMap::new())),
+            world_entities: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+}
 
 pub struct ScriptComponent {
     pub path: String,
@@ -27,10 +49,7 @@ impl ScriptComponent {
         }
     }
 
-    pub fn init_or_reload(
-        &mut self,
-        pressed_keys: Arc<RwLock<HashSet<String>>>,
-    ) -> Result<(), String> {
+    pub fn init_or_reload(&mut self, ctx: LuaEngineContext) -> Result<(), String> {
         let path = Path::new(&self.path);
         if !path.exists() {
             let err = format!("Script file '{}' not found on disk", self.path);
@@ -44,21 +63,18 @@ impl ScriptComponent {
 
         let lua = mlua::Lua::new();
 
-        // Expose is_key_down(key) to Lua
-        let keys_ref = pressed_keys.clone();
+        // 1. is_key_down(key)
+        let keys_ref = ctx.pressed_keys.clone();
         let is_key_down = lua
             .create_function(move |_, key: String| {
                 let keys = keys_ref.read().unwrap();
                 let clean = key.trim().to_uppercase();
                 Ok(keys.contains(&clean))
             })
-            .map_err(|e| format!("Failed to register is_key_down in Lua: {}", e))?;
+            .map_err(|e| format!("Failed to register is_key_down: {}", e))?;
+        lua.globals().set("is_key_down", is_key_down).map_err(|e| e.to_string())?;
 
-        lua.globals()
-            .set("is_key_down", is_key_down)
-            .map_err(|e| format!("Failed to set is_key_down global: {}", e))?;
-
-        // Expose apply_force(fx, fy, fz) to Lua
+        // 2. apply_force(fx, fy, fz)
         let forces_ref = self.pending_forces.clone();
         let apply_force = lua
             .create_function(move |_, (fx, fy, fz): (f32, f32, f32)| {
@@ -68,12 +84,9 @@ impl ScriptComponent {
                 Ok(())
             })
             .map_err(|e| format!("Failed to register apply_force: {}", e))?;
+        lua.globals().set("apply_force", apply_force).map_err(|e| e.to_string())?;
 
-        lua.globals()
-            .set("apply_force", apply_force)
-            .map_err(|e| format!("Failed to set apply_force global: {}", e))?;
-
-        // Expose apply_impulse(ix, iy, iz) to Lua
+        // 3. apply_impulse(ix, iy, iz)
         let impulses_ref = self.pending_impulses.clone();
         let apply_impulse = lua
             .create_function(move |_, (ix, iy, iz): (f32, f32, f32)| {
@@ -83,12 +96,116 @@ impl ScriptComponent {
                 Ok(())
             })
             .map_err(|e| format!("Failed to register apply_impulse: {}", e))?;
+        lua.globals().set("apply_impulse", apply_impulse).map_err(|e| e.to_string())?;
 
-        lua.globals()
-            .set("apply_impulse", apply_impulse)
-            .map_err(|e| format!("Failed to set apply_impulse global: {}", e))?;
+        // 4. spawn_entity(def_table)
+        let spawns_ref = ctx.pending_spawns.clone();
+        let spawn_entity = lua
+            .create_function(move |_, table: mlua::Table| {
+                let id: String = table.get("id").unwrap_or_else(|_| "spawned_entity".to_string());
+                let mesh: String = table.get("mesh").unwrap_or_else(|_| "cube".to_string());
+                let x: f32 = table.get("x").unwrap_or(0.0);
+                let y: f32 = table.get("y").unwrap_or(0.0);
+                let z: f32 = table.get("z").unwrap_or(0.0);
+                let rx: f32 = table.get("rx").unwrap_or(0.0);
+                let ry: f32 = table.get("ry").unwrap_or(0.0);
+                let rz: f32 = table.get("rz").unwrap_or(0.0);
+                let sx: f32 = table.get("sx").unwrap_or(1.0);
+                let sy: f32 = table.get("sy").unwrap_or(1.0);
+                let sz: f32 = table.get("sz").unwrap_or(1.0);
+                let color: [f32; 4] = if let Ok(col_tbl) = table.get::<mlua::Table>("color") {
+                    [
+                        col_tbl.get(1).unwrap_or(1.0),
+                        col_tbl.get(2).unwrap_or(1.0),
+                        col_tbl.get(3).unwrap_or(1.0),
+                        col_tbl.get(4).unwrap_or(1.0),
+                    ]
+                } else {
+                    [0.8, 0.8, 0.8, 1.0]
+                };
+                let emissive: f32 = table.get("emissive").unwrap_or(0.0);
+                let script: Option<String> = table.get("script").ok();
 
-        // Execute the script chunk to define on_update and globals
+                let phys_def = if let Ok(pt) = table.get::<mlua::Table>("physics") {
+                    Some(PhysicsDef {
+                        body: pt.get("body").unwrap_or_else(|_| "dynamic".to_string()),
+                        collider: pt.get("collider").unwrap_or_else(|_| "cuboid".to_string()),
+                        mass: pt.get("mass").unwrap_or(1.0),
+                        restitution: pt.get("restitution").unwrap_or(0.4),
+                    })
+                } else {
+                    None
+                };
+
+                let entity_def = EntityDef {
+                    id,
+                    mesh,
+                    position: [x, y, z],
+                    rotation: [rx, ry, rz],
+                    scale: [sx, sy, sz],
+                    color,
+                    emissive,
+                    script,
+                    physics: phys_def,
+                };
+
+                if let Ok(mut spawns) = spawns_ref.lock() {
+                    spawns.push(entity_def);
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register spawn_entity: {}", e))?;
+        lua.globals().set("spawn_entity", spawn_entity).map_err(|e| e.to_string())?;
+
+        // 5. destroy_entity(id)
+        let destroys_ref = ctx.pending_destroys.clone();
+        let destroy_entity = lua
+            .create_function(move |_, id: String| {
+                if let Ok(mut list) = destroys_ref.lock() {
+                    list.push(id);
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register destroy_entity: {}", e))?;
+        lua.globals().set("destroy_entity", destroy_entity).map_err(|e| e.to_string())?;
+
+        // 6. get_entity(id)
+        let entities_ref = ctx.world_entities.clone();
+        let get_entity = lua
+            .create_function(move |lua, id: String| {
+                let map = entities_ref.read().unwrap();
+                if let Some(t) = map.get(&id) {
+                    let tbl = lua.create_table()?;
+                    tbl.set("x", t[0])?;
+                    tbl.set("y", t[1])?;
+                    tbl.set("z", t[2])?;
+                    tbl.set("rx", t[3])?;
+                    tbl.set("ry", t[4])?;
+                    tbl.set("rz", t[5])?;
+                    tbl.set("sx", t[6])?;
+                    tbl.set("sy", t[7])?;
+                    tbl.set("sz", t[8])?;
+                    Ok(Some(tbl))
+                } else {
+                    Ok(None)
+                }
+            })
+            .map_err(|e| format!("Failed to register get_entity: {}", e))?;
+        lua.globals().set("get_entity", get_entity).map_err(|e| e.to_string())?;
+
+        // 7. set_hud_text(key, text)
+        let hud_ref = ctx.hud_texts.clone();
+        let set_hud_text = lua
+            .create_function(move |_, (key, text): (String, String)| {
+                if let Ok(mut map) = hud_ref.write() {
+                    map.insert(key, text);
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register set_hud_text: {}", e))?;
+        lua.globals().set("set_hud_text", set_hud_text).map_err(|e| e.to_string())?;
+
+        // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
             .exec()
             .map_err(|e| format!("Lua syntax/runtime error in '{}': {}", self.path, e))?;
@@ -96,6 +213,24 @@ impl ScriptComponent {
         self.lua = Some(Arc::new(Mutex::new(lua)));
         self.last_error = None;
         self.has_error = false;
+        Ok(())
+    }
+
+    pub fn on_collision(&self, self_id: &str, other_id: &str) -> Result<(), String> {
+        if self.has_error {
+            return Ok(());
+        }
+
+        if let Some(lua_arc) = &self.lua {
+            let lua = lua_arc.lock().map_err(|e| e.to_string())?;
+            let on_col_fn: mlua::Result<mlua::Function> = lua.globals().get("on_collision");
+            if let Ok(func) = on_col_fn {
+                let entity_tbl = lua.create_table().map_err(|e| e.to_string())?;
+                entity_tbl.set("id", self_id).map_err(|e| e.to_string())?;
+                func.call::<()>((entity_tbl, other_id))
+                    .map_err(|e| format!("Lua on_collision error on '{}': {}", self_id, e))?;
+            }
+        }
         Ok(())
     }
 
@@ -132,7 +267,6 @@ impl ScriptComponent {
                         .set("rz", transform.rotation.z)
                         .map_err(|e| e.to_string())?;
 
-                    // Also bind entity.apply_force and entity.apply_impulse methods
                     let forces_ref = self.pending_forces.clone();
                     let entity_apply_force = lua
                         .create_function(move |_, (fx, fy, fz): (f32, f32, f32)| {

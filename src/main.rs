@@ -125,6 +125,7 @@ pub struct EngineState {
     pub fps_timer: Instant,
     pub logs: Vec<String>,
     pub pressed_keys: Arc<RwLock<HashSet<String>>>,
+    pub lua_ctx: scripting::LuaEngineContext,
     pub last_lua_error: Option<String>,
 
     // Editor State
@@ -190,6 +191,7 @@ impl EngineState {
         }
 
         let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let lua_ctx = scripting::LuaEngineContext::new(pressed_keys.clone());
 
         let mut world = hecs::World::new();
         let mut physics = PhysicsEngine::new();
@@ -207,7 +209,7 @@ impl EngineState {
 
         match assets::load_scene_from_file(scene_path) {
             Ok(scene) => {
-                assets::apply_scene_to_world(&scene, &mut world, &mut camera, &mut physics, Some(&pressed_keys));
+                assets::apply_scene_to_world(&scene, &mut world, &mut camera, &mut physics, Some(&lua_ctx));
                 logs.push(format!("Scene loaded from assets/scene.json ({} entities)", world.len()));
             }
             Err(e) => {
@@ -263,6 +265,7 @@ impl EngineState {
             fps_timer: Instant::now(),
             logs,
             pressed_keys,
+            lua_ctx,
             last_lua_error: None,
 
             play_mode: PlayMode::Edit,
@@ -301,7 +304,7 @@ impl EngineState {
     pub fn undo(&mut self) {
         let current = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
         if let Some(prev) = self.history.undo(current) {
-            assets::apply_scene_to_world(&prev, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.pressed_keys));
+            assets::apply_scene_to_world(&prev, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
             self.selected_entity = None;
             self.logs.push("Undo performed".to_string());
         }
@@ -310,7 +313,7 @@ impl EngineState {
     pub fn redo(&mut self) {
         let current = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
         if let Some(next) = self.history.redo(current) {
-            assets::apply_scene_to_world(&next, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.pressed_keys));
+            assets::apply_scene_to_world(&next, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
             self.selected_entity = None;
             self.logs.push("Redo performed".to_string());
         }
@@ -334,7 +337,7 @@ impl EngineState {
     pub fn reload_scene(&mut self) {
         match assets::load_scene_from_file("assets/scene.json") {
             Ok(scene) => {
-                assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.pressed_keys));
+                assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
                 self.selected_entity = None;
                 self.hot_reload.last_reload_error = None;
                 let msg = format!("Hot-Reload: Scene successfully reloaded ({} entities)", self.world.len());
@@ -415,7 +418,7 @@ impl EngineState {
 
             if let Some(script_path) = script_val {
                 let mut s_comp = ScriptComponent::new(script_path);
-                let _ = s_comp.init_or_reload(self.pressed_keys.clone());
+                let _ = s_comp.init_or_reload(self.lua_ctx.clone());
                 let _ = self.world.insert_one(new_e, s_comp);
             }
 
@@ -807,7 +810,7 @@ impl EngineState {
                         }
                         if let Some(script_path) = &entity.script {
                             let mut script_comp = ScriptComponent::new(script_path.clone());
-                            let _ = script_comp.init_or_reload(self.pressed_keys.clone());
+                            let _ = script_comp.init_or_reload(self.lua_ctx.clone());
                             let _ = self.world.insert_one(e, script_comp);
                         }
                         if let Some(phys) = &entity.physics {
@@ -842,7 +845,7 @@ impl EngineState {
 
                         if let Some(script_path) = &entity.script {
                             let mut script_comp = ScriptComponent::new(script_path.clone());
-                            let _ = script_comp.init_or_reload(self.pressed_keys.clone());
+                            let _ = script_comp.init_or_reload(self.lua_ctx.clone());
                             let _ = self.world.insert_one(e, script_comp);
                         }
                     }
@@ -894,7 +897,7 @@ impl EngineState {
                     for (meta, script) in self.world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
                         let comp_str = script.path.replace('\\', "/");
                         if script_str.ends_with(&comp_str) || comp_str.ends_with(&script_str) {
-                            match script.init_or_reload(self.pressed_keys.clone()) {
+                            match script.init_or_reload(self.lua_ctx.clone()) {
                                 Ok(()) => {
                                     let msg = format!("Hot-Reload: Script '{}' reloaded for entity '{}'", script.path, meta.id);
                                     self.logs.push(msg.clone());
@@ -919,7 +922,28 @@ impl EngineState {
 
         // Run simulation only if PlayMode::Play
         if self.play_mode == PlayMode::Play {
-            // Run Lua scripts
+            // 1. Sync entity positions to LuaEngineContext for get_entity(id)
+            if let Ok(mut we) = self.lua_ctx.world_entities.write() {
+                we.clear();
+                for (meta, transform) in self.world.query::<(&EntityMeta, &Transform)>().iter() {
+                    we.insert(
+                        meta.id.clone(),
+                        [
+                            transform.position.x,
+                            transform.position.y,
+                            transform.position.z,
+                            transform.rotation.x,
+                            transform.rotation.y,
+                            transform.rotation.z,
+                            transform.scale.x,
+                            transform.scale.y,
+                            transform.scale.z,
+                        ],
+                    );
+                }
+            }
+
+            // 2. Run Lua scripts update
             for (meta, transform, script) in self.world.query_mut::<(&EntityMeta, &mut Transform, &mut ScriptComponent)>() {
                 if let Err(e) = script.update(transform, dt) {
                     let err_msg = format!("Lua runtime error on '{}': {}", meta.id, e);
@@ -930,7 +954,7 @@ impl EngineState {
                 }
             }
 
-            // Apply forces & impulses
+            // 3. Apply forces & impulses
             for (rb, script) in self.world.query_mut::<(&RigidBodyComponent, &mut ScriptComponent)>() {
                 if let Ok(mut forces) = script.pending_forces.lock() {
                     for f in forces.drain(..) {
@@ -944,9 +968,116 @@ impl EngineState {
                 }
             }
 
-            // Step Physics
+            // 4. Step Physics
             self.physics.step(dt);
             self.physics.sync_to_ecs(&mut self.world);
+
+            // 5. Handle Collision Events & dispatch on_collision to Lua
+            let collisions = if let Ok(mut lock) = self.physics.collision_events.lock() {
+                std::mem::take(&mut *lock)
+            } else {
+                Vec::new()
+            };
+
+            if !collisions.is_empty() {
+                let mut handle_to_info = HashMap::new();
+                for entity_ref in self.world.iter() {
+                    let entity = entity_ref.entity();
+                    if let (Some(meta), Some(rb)) = (entity_ref.get::<&EntityMeta>(), entity_ref.get::<&RigidBodyComponent>()) {
+                        handle_to_info.insert(rb.handle, (entity, meta.id.clone()));
+                    }
+                }
+
+                for col in collisions {
+                    if !col.started {
+                        continue;
+                    }
+                    let body_a = self.physics.collider_set.get(col.collider_1).and_then(|c| c.parent());
+                    let body_b = self.physics.collider_set.get(col.collider_2).and_then(|c| c.parent());
+
+                    if let (Some(h_a), Some(h_b)) = (body_a, body_b) {
+                        let a_info = handle_to_info.get(&h_a).cloned();
+                        let b_info = handle_to_info.get(&h_b).cloned();
+
+                        if let (Some((e_a, id_a)), Some((e_b, id_b))) = (a_info, b_info) {
+                            if let Ok(script) = self.world.get::<&ScriptComponent>(e_a) {
+                                if let Err(e) = script.on_collision(&id_a, &id_b) {
+                                    self.logs.push(format!("Collision error on '{}': {}", id_a, e));
+                                }
+                            }
+                            if let Ok(script) = self.world.get::<&ScriptComponent>(e_b) {
+                                if let Err(e) = script.on_collision(&id_b, &id_a) {
+                                    self.logs.push(format!("Collision error on '{}': {}", id_b, e));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 6. Handle pending spawns from Lua
+            let pending_spawns = if let Ok(mut spawns) = self.lua_ctx.pending_spawns.lock() {
+                std::mem::take(&mut *spawns)
+            } else {
+                Vec::new()
+            };
+            for def in pending_spawns {
+                let meta = EntityMeta { id: def.id.clone(), name: def.id.clone() };
+                let transform = Transform::new(
+                    Vec3::from(def.position),
+                    Vec3::from(def.rotation),
+                    Vec3::from(def.scale),
+                );
+                let mesh = MeshRender {
+                    mesh_type: def.mesh.clone(),
+                    color: def.color,
+                    emissive: def.emissive,
+                };
+                let e = self.world.spawn((meta, transform, mesh));
+
+                if let Some(phys) = &def.physics {
+                    let handle = self.physics.add_body(&transform, phys);
+                    let _ = self.world.insert_one(e, RigidBodyComponent { handle });
+                }
+
+                if let Some(script_path) = &def.script {
+                    let mut s = ScriptComponent::new(script_path.clone());
+                    let _ = s.init_or_reload(self.lua_ctx.clone());
+                    let _ = self.world.insert_one(e, s);
+                }
+            }
+
+            // 7. Handle pending destroys from Lua
+            let pending_destroys = if let Ok(mut destroys) = self.lua_ctx.pending_destroys.lock() {
+                std::mem::take(&mut *destroys)
+            } else {
+                Vec::new()
+            };
+            for target_id in pending_destroys {
+                let to_remove: Option<(hecs::Entity, Option<rapier3d::prelude::RigidBodyHandle>)> = {
+                    let mut found = None;
+                    for entity_ref in self.world.iter() {
+                        let entity = entity_ref.entity();
+                        if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                            if meta.id == target_id {
+                                let rb_handle = entity_ref.get::<&RigidBodyComponent>().map(|r| r.handle);
+                                found = Some((entity, rb_handle));
+                                break;
+                            }
+                        }
+                    }
+                    found
+                };
+                if let Some((e, rb_opt)) = to_remove {
+                    if let Some(handle) = rb_opt {
+                        self.physics.remove_body(handle);
+                    }
+                    let _ = self.world.despawn(e);
+                    if self.selected_entity == Some(e) {
+                        self.selected_entity = None;
+                    }
+                }
+            }
         }
 
         // Update camera in GPU
@@ -1052,7 +1183,7 @@ impl EngineState {
 
                         if ui.button("⏹ Stop").clicked() {
                             if let Some(snapshot) = self.play_snapshot.take() {
-                                assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.pressed_keys));
+                                assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
                                 self.logs.push("Simulation stopped. Scene restored to initial snapshot.".to_string());
                             }
                             self.play_mode = PlayMode::Edit;
@@ -1257,7 +1388,7 @@ impl EngineState {
                                             let _ = self.world.remove_one::<ScriptComponent>(entity);
                                         } else {
                                             let mut comp = ScriptComponent::new(current_script);
-                                            let _ = comp.init_or_reload(self.pressed_keys.clone());
+                                            let _ = comp.init_or_reload(self.lua_ctx.clone());
                                             let _ = self.world.insert_one(entity, comp);
                                         }
                                     }
@@ -1386,7 +1517,7 @@ impl EngineState {
                                                 if ui.button("Load Scene").clicked() {
                                                     match assets::load_scene_from_file(path) {
                                                         Ok(scene) => {
-                                                            assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.pressed_keys));
+                                                            assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
                                                             self.selected_entity = None;
                                                             self.logs.push(format!("Loaded scene from '{}'", path));
                                                         }
@@ -1403,7 +1534,7 @@ impl EngineState {
                                                 if let Some(entity) = self.selected_entity {
                                                     if ui.button("Assign to Selected").clicked() {
                                                         let mut comp = ScriptComponent::new(path.clone());
-                                                        let _ = comp.init_or_reload(self.pressed_keys.clone());
+                                                        let _ = comp.init_or_reload(self.lua_ctx.clone());
                                                         let _ = self.world.insert_one(entity, comp);
                                                         self.logs.push(format!("Assigned script '{}' to selected entity", path));
                                                     }
@@ -1636,6 +1767,26 @@ impl EngineState {
                                 }
                             }
                         }
+
+                        // 3. In-Game HUD overlay from Lua (set_hud_text)
+                        if let Ok(hud) = self.lua_ctx.hud_texts.read() {
+                            if !hud.is_empty() {
+                                let hud_area = egui::Area::new(ui.make_persistent_id("lua_hud_overlay"))
+                                    .fixed_pos(egui::pos2(270.0, 50.0))
+                                    .interactable(false);
+                                hud_area.show(ui.ctx(), |ui| {
+                                    egui::Frame::new()
+                                        .fill(egui::Color32::from_black_alpha(180))
+                                        .corner_radius(6.0)
+                                        .inner_margin(8.0)
+                                        .show(ui, |ui| {
+                                            for (k, v) in hud.iter() {
+                                                ui.colored_label(egui::Color32::from_rgb(100, 220, 255), format!("{}: {}", k, v));
+                                            }
+                                        });
+                                });
+                            }
+                        }
                     });
             });
 
@@ -1693,7 +1844,7 @@ impl EngineState {
                         // Trigger reload on all entities using this script
                         for (meta, script) in self.world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
                             if script.path == *path {
-                                let _ = script.init_or_reload(self.pressed_keys.clone());
+                                let _ = script.init_or_reload(self.lua_ctx.clone());
                                 self.logs.push(format!("Reloaded script for entity '{}'", meta.id));
                             }
                         }
