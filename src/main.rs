@@ -64,6 +64,14 @@ pub enum BottomTab {
     ScriptEditor,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsoleFilter {
+    All,
+    Info,
+    Error,
+    Mcp,
+}
+
 #[derive(Clone)]
 pub struct HistoryState {
     pub undo_stack: Vec<SceneDef>,
@@ -147,12 +155,17 @@ pub struct EngineState {
     pub selected_entity: Option<hecs::Entity>,
     pub hierarchy_search: String,
     pub bottom_tab: BottomTab,
+    pub console_filter: ConsoleFilter,
     pub script_editor_path: Option<String>,
     pub script_editor_content: String,
+    pub script_editor_original_content: String,
     pub history: HistoryState,
     pub entity_counter: u32,
     pub assets_cache: Vec<String>,
     pub last_assets_scan: Instant,
+    pub toasts: Vec<(String, Instant, egui::Color32)>,
+    pub command_palette_open: bool,
+    pub command_palette_query: String,
 
     // Mouse & Gizmo Interaction
     pub mouse_pos: [f32; 2],
@@ -387,12 +400,17 @@ impl EngineState {
             selected_entity: None,
             hierarchy_search: String::new(),
             bottom_tab: BottomTab::Console,
+            console_filter: ConsoleFilter::All,
             script_editor_path: initial_script_path,
-            script_editor_content: initial_script_content,
+            script_editor_content: initial_script_content.clone(),
+            script_editor_original_content: initial_script_content,
             history: HistoryState::new(),
             entity_counter: 10,
             assets_cache: Vec::new(),
             last_assets_scan: Instant::now() - std::time::Duration::from_secs(10),
+            toasts: Vec::new(),
+            command_palette_open: false,
+            command_palette_query: String::new(),
 
             mouse_pos: [0.0, 0.0],
             is_right_mouse_down: false,
@@ -410,6 +428,10 @@ impl EngineState {
     pub fn push_history(&mut self) {
         let snapshot = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
         self.history.push(snapshot);
+    }
+
+    pub fn add_toast(&mut self, text: impl Into<String>, color: egui::Color32) {
+        self.toasts.push((text.into(), Instant::now(), color));
     }
 
     pub fn sync_entity_to_physics(&mut self, entity: hecs::Entity) {
@@ -457,9 +479,11 @@ impl EngineState {
                 let msg = format!("Scene successfully saved to '{}'", path);
                 self.logs.push(msg.clone());
                 self.hot_reload.last_reload_status = Some(msg);
+                self.add_toast("Scene saved to assets/scene.json", egui::Color32::from_rgb(56, 189, 248));
             }
             Err(e) => {
                 self.logs.push(format!("Error saving scene: {}", e));
+                self.add_toast(format!("Error saving scene: {}", e), egui::Color32::from_rgb(239, 68, 68));
             }
         }
     }
@@ -473,10 +497,12 @@ impl EngineState {
                 let msg = format!("Hot-Reload: Scene successfully reloaded ({} entities)", self.world.len());
                 self.logs.push(msg.clone());
                 self.hot_reload.last_reload_status = Some(msg);
+                self.add_toast("Scene reloaded", egui::Color32::from_rgb(56, 189, 248));
             }
             Err(err) => {
                 self.hot_reload.last_reload_error = Some(err.clone());
                 self.logs.push(format!("Hot-Reload ERROR: {}", err));
+                self.add_toast(format!("Hot-reload error: {}", err), egui::Color32::from_rgb(239, 68, 68));
             }
         }
     }
@@ -501,6 +527,7 @@ impl EngineState {
         let entity = self.world.spawn((meta, transform, mesh));
         self.selected_entity = Some(entity);
         self.logs.push(format!("Spawned primitive entity '{}'", id));
+        self.add_toast(format!("Spawned '{}'", id), egui::Color32::from_rgb(56, 189, 248));
     }
 
     pub fn duplicate_selected(&mut self) {
@@ -1940,17 +1967,20 @@ impl EngineState {
                             }
                             self.play_mode = PlayMode::Play;
                             self.logs.push("Simulation started (Play Mode)".to_string());
+                            self.add_toast("Play mode active", egui::Color32::from_rgb(34, 197, 94));
                         }
 
                         if ui.selectable_label(is_paused, "|| Pause").clicked() {
                             self.play_mode = PlayMode::Pause;
                             self.logs.push("Simulation paused".to_string());
+                            self.add_toast("Simulation paused", egui::Color32::from_rgb(250, 204, 21));
                         }
 
                         if ui.button("[] Stop").clicked() {
                             if let Some(snapshot) = self.play_snapshot.take() {
                                 assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
                                 self.logs.push("Simulation stopped. Scene restored to initial snapshot.".to_string());
+                                self.add_toast("Simulation stopped & restored", egui::Color32::from_rgb(239, 68, 68));
                             }
                             self.particles.clear();
                             self.play_mode = PlayMode::Edit;
@@ -1965,24 +1995,49 @@ impl EngineState {
 
                         ui.separator();
                         ui.checkbox(&mut self.snap_enabled, "Snap (Ctrl)");
-                        ui.checkbox(&mut self.debug_colliders, "Debug Colliders");
-
-                        ui.separator();
-                        let cam_mode_str = match self.camera.mode {
-                            CameraMode::Perspective => "3D",
-                            CameraMode::Orthographic => "2D",
-                        };
-                        if ui.button(format!("[Cam] Camera: {}", cam_mode_str)).clicked() {
-                            self.camera.toggle_mode();
-                        }
-
-                        ui.separator();
-                        ui.label(format!("{:.1} FPS", fps));
-
-                        ui.separator();
-                        ui.colored_label(egui::Color32::from_rgb(100, 255, 100), format!("* MCP: 3030"));
                     });
                 });
+
+                // Status Bar at the bottom of the window
+                Panel::bottom("status_bar")
+                    .resizable(false)
+                    .default_size(24.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 14.0;
+
+                            // 1. MCP Server Status
+                            ui.horizontal(|ui| {
+                                ui.colored_label(egui::Color32::from_rgb(34, 197, 94), "●");
+                                ui.label(egui::RichText::new("MCP: 3030").size(11.5).strong());
+                            });
+
+                            // 2. Hot-Reload Status
+                            ui.horizontal(|ui| {
+                                ui.colored_label(egui::Color32::from_rgb(56, 189, 248), "●");
+                                ui.label(egui::RichText::new("Hot-Reload: Active").size(11.5).strong());
+                            });
+
+                            // 3. Selected Entity
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Selected:").color(ui_theme::COLOR_TEXT_MUTED).size(11.5));
+                                let selected_str = if let Some(e) = self.selected_entity {
+                                    self.world.get::<&EntityMeta>(e).map(|m| m.id.clone()).unwrap_or_else(|_| format!("{:?}", e))
+                                } else {
+                                    "None".to_string()
+                                };
+                                ui.label(egui::RichText::new(selected_str).strong().color(ui_theme::COLOR_ACCENT_PRIMARY).size(11.5));
+                            });
+
+                            // 4. Command Palette hint aligned right
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.small_button("[Ctrl+K] Command Palette").clicked() {
+                                    self.command_palette_open = true;
+                                    self.command_palette_query.clear();
+                                }
+                            });
+                        });
+                    });
 
                 // 2. LEFT PANEL: SCENE HIERARCHY
                 Panel::left("scene_hierarchy")
@@ -2405,6 +2460,13 @@ impl EngineState {
                         match self.bottom_tab {
                             BottomTab::Console => {
                                 ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("Filter:").strong());
+                                    ui.selectable_value(&mut self.console_filter, ConsoleFilter::All, "All");
+                                    ui.selectable_value(&mut self.console_filter, ConsoleFilter::Info, "Info");
+                                    ui.selectable_value(&mut self.console_filter, ConsoleFilter::Error, "Lua / Error");
+                                    ui.selectable_value(&mut self.console_filter, ConsoleFilter::Mcp, "MCP");
+
+                                    ui.separator();
                                     if ui.button("Clear Logs").clicked() {
                                         self.logs.clear();
                                     }
@@ -2423,12 +2485,25 @@ impl EngineState {
                                     .stick_to_bottom(true)
                                     .show(ui, |ui| {
                                         for log in &self.logs {
-                                            if log.contains("ERROR") || log.contains("error") {
-                                                ui.colored_label(egui::Color32::from_rgb(255, 100, 100), log);
-                                            } else if log.contains("MCP") {
-                                                ui.colored_label(egui::Color32::from_rgb(100, 200, 255), log);
-                                            } else {
-                                                ui.monospace(log);
+                                            let is_err = log.contains("ERROR") || log.contains("error") || log.contains("Failed");
+                                            let is_mcp = log.contains("MCP");
+                                            let is_info = !is_err && !is_mcp;
+
+                                            let match_filter = match self.console_filter {
+                                                ConsoleFilter::All => true,
+                                                ConsoleFilter::Info => is_info,
+                                                ConsoleFilter::Error => is_err,
+                                                ConsoleFilter::Mcp => is_mcp,
+                                            };
+
+                                            if match_filter {
+                                                if is_err {
+                                                    ui.colored_label(egui::Color32::from_rgb(255, 100, 100), log);
+                                                } else if is_mcp {
+                                                    ui.colored_label(egui::Color32::from_rgb(56, 189, 248), log);
+                                                } else {
+                                                    ui.monospace(log);
+                                                }
                                             }
                                         }
                                     });
@@ -2552,9 +2627,20 @@ impl EngineState {
                                 });
                             }
                             BottomTab::ScriptEditor => {
+                                let is_modified = self.script_editor_content != self.script_editor_original_content;
                                 ui.horizontal(|ui| {
                                     if let Some(path) = &self.script_editor_path {
-                                        ui.label(egui::RichText::new(format!("Editing: {}", path)).strong());
+                                        let title = if is_modified {
+                                            format!("* {} [Modified]", path)
+                                        } else {
+                                            format!("Editing: {}", path)
+                                        };
+                                        let title_color = if is_modified {
+                                            egui::Color32::from_rgb(250, 204, 21)
+                                        } else {
+                                            ui_theme::COLOR_TEXT_MAIN
+                                        };
+                                        ui.label(egui::RichText::new(title).strong().color(title_color));
                                         if ui.button("[Save] Save & Hot-Reload").clicked() {
                                             trigger_save_script = true;
                                         }
@@ -2564,13 +2650,29 @@ impl EngineState {
                                 });
                                 ui.separator();
                                 egui::ScrollArea::vertical().show(ui, |ui| {
-                                    ui.add(
-                                        egui::TextEdit::multiline(&mut self.script_editor_content)
-                                            .font(egui::TextStyle::Monospace)
-                                            .code_editor()
-                                            .desired_rows(12)
-                                            .desired_width(f32::INFINITY),
-                                    );
+                                    ui.horizontal_top(|ui| {
+                                        let line_count = self.script_editor_content.lines().count().max(1);
+                                        let mut gutter = String::new();
+                                        for i in 1..=line_count {
+                                            use std::fmt::Write;
+                                            let _ = writeln!(gutter, "{:>3}", i);
+                                        }
+                                        ui.label(
+                                            egui::RichText::new(gutter)
+                                                .monospace()
+                                                .color(ui_theme::COLOR_TEXT_MUTED),
+                                        );
+
+                                        ui.add_space(4.0);
+
+                                        ui.add(
+                                            egui::TextEdit::multiline(&mut self.script_editor_content)
+                                                .font(egui::TextStyle::Monospace)
+                                                .code_editor()
+                                                .desired_rows(12)
+                                                .desired_width(f32::INFINITY),
+                                        );
+                                    });
                                 });
                             }
                         }
@@ -3001,7 +3103,272 @@ impl EngineState {
                                 });
                             }
                         }
+
+                        // 6. Viewport Floating Overlay: Top-Left Capsule (Camera Mode & Colliders Toggle)
+                        let top_left_area = egui::Area::new(ui.make_persistent_id("viewport_top_left_capsule"))
+                            .fixed_pos(egui::pos2(viewport_rect.min.x + 12.0, viewport_rect.min.y + 12.0));
+                        top_left_area.show(ui.ctx(), |ui| {
+                            egui::Frame::new()
+                                .fill(egui::Color32::from_rgba_premultiplied(32, 35, 43, 220))
+                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(46, 51, 64, 180)))
+                                .corner_radius(egui::CornerRadius::same(6))
+                                .inner_margin(egui::Margin::symmetric(8, 4))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        let cam_mode_str = match self.camera.mode {
+                                            CameraMode::Perspective => "3D",
+                                            CameraMode::Orthographic => "2D",
+                                        };
+                                        if ui.selectable_label(false, cam_mode_str).clicked() {
+                                            self.camera.toggle_mode();
+                                        }
+                                        ui.separator();
+                                        ui.checkbox(&mut self.debug_colliders, "Colliders");
+                                    });
+                                });
+                        });
+
+                        // 7. Viewport Floating Overlay: Top-Right Capsule (FPS, Entity count & Orientation Gizmo)
+                        let entity_count = self.world.iter().count();
+                        let top_right_area = egui::Area::new(ui.make_persistent_id("viewport_top_right_capsule"))
+                            .fixed_pos(egui::pos2((viewport_rect.max.x - 180.0).max(viewport_rect.min.x + 10.0), viewport_rect.min.y + 12.0));
+                        top_right_area.show(ui.ctx(), |ui| {
+                            egui::Frame::new()
+                                .fill(egui::Color32::from_rgba_premultiplied(32, 35, 43, 220))
+                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(46, 51, 64, 180)))
+                                .corner_radius(egui::CornerRadius::same(6))
+                                .inner_margin(egui::Margin::symmetric(8, 4))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("{:.0} FPS | {} Ents", fps, entity_count))
+                                                .size(11.5)
+                                                .strong()
+                                                .color(ui_theme::COLOR_TEXT_MAIN),
+                                        );
+                                        ui.separator();
+
+                                        let (rect, _resp) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+                                        let center = rect.center();
+                                        let p = ui.painter();
+
+                                        // Camera orientation projection
+                                        let forward = (self.camera.target - self.camera.eye).normalize_or_zero();
+                                        let mut right = forward.cross(Vec3::Y);
+                                        if right.length_squared() < 0.001 {
+                                            right = Vec3::X;
+                                        } else {
+                                            right = right.normalize();
+                                        }
+                                        let up = right.cross(forward).normalize();
+
+                                        let axes = [
+                                            (Vec3::X, ui_theme::COLOR_AXIS_X, "X"),
+                                            (Vec3::Y, ui_theme::COLOR_AXIS_Y, "Y"),
+                                            (Vec3::Z, ui_theme::COLOR_AXIS_Z, "Z"),
+                                        ];
+
+                                        p.circle_filled(center, 13.0, egui::Color32::from_black_alpha(80));
+
+                                        for (axis_dir, color, label) in &axes {
+                                            let sx = axis_dir.dot(right) * 11.0;
+                                            let sy = -axis_dir.dot(up) * 11.0;
+                                            let tip = egui::pos2(center.x + sx, center.y + sy);
+                                            p.line_segment([center, tip], egui::Stroke::new(2.0, *color));
+                                            p.text(tip, egui::Align2::CENTER_CENTER, *label, egui::FontId::proportional(8.5), *color);
+                                        }
+                                    });
+                                });
+                        });
+
+                        // 8. Viewport Floating Overlay: Bottom-Right Toast Notifications
+                        let now = Instant::now();
+                        self.toasts.retain(|(_, start, _)| now.duration_since(*start).as_secs_f32() < 2.5);
+
+                        if !self.toasts.is_empty() {
+                            let total_h = self.toasts.len() as f32 * 36.0;
+                            let toast_area = egui::Area::new(ui.make_persistent_id("viewport_toast_container"))
+                                .fixed_pos(egui::pos2((viewport_rect.max.x - 270.0).max(viewport_rect.min.x + 10.0), (viewport_rect.max.y - total_h - 14.0).max(viewport_rect.min.y + 10.0)));
+                            toast_area.show(ui.ctx(), |ui| {
+                                for (msg, start, color) in &self.toasts {
+                                    let elapsed = now.duration_since(*start).as_secs_f32();
+                                    let alpha = if elapsed > 2.0 {
+                                        ((2.5 - elapsed) / 0.5 * 255.0).clamp(0.0, 255.0) as u8
+                                    } else {
+                                        255u8
+                                    };
+                                    egui::Frame::new()
+                                        .fill(egui::Color32::from_rgba_premultiplied(20, 22, 28, alpha))
+                                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), alpha)))
+                                        .corner_radius(egui::CornerRadius::same(6))
+                                        .inner_margin(egui::Margin::symmetric(10, 6))
+                                        .show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.colored_label(
+                                                    egui::Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), alpha),
+                                                    "[i]",
+                                                );
+                                                ui.colored_label(
+                                                    egui::Color32::from_rgba_premultiplied(230, 232, 238, alpha),
+                                                    msg,
+                                                );
+                                            });
+                                        });
+                                    ui.add_space(3.0);
+                                }
+                            });
+                        }
                     });
+
+                // Command Palette Ctrl+K detection & Modal Window
+                if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::K)) {
+                    self.command_palette_open = !self.command_palette_open;
+                    if self.command_palette_open {
+                        self.command_palette_query.clear();
+                    }
+                }
+
+                if self.command_palette_open {
+                    let mut close_palette = false;
+                    let mut chosen_action: Option<&'static str> = None;
+                    let screen_rect = ui.ctx().input(|i| i.raw.screen_rect).unwrap_or_else(|| {
+                        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0))
+                    });
+
+                    egui::Window::new("command_palette_modal")
+                        .fixed_pos(egui::pos2(screen_rect.center().x - 230.0, screen_rect.min.y + 60.0))
+                        .fixed_size(egui::vec2(460.0, 320.0))
+                        .title_bar(false)
+                        .resizable(false)
+                        .collapsible(false)
+                        .frame(
+                            egui::Frame::new()
+                                .fill(ui_theme::COLOR_BG_PANEL)
+                                .stroke(egui::Stroke::new(1.5, ui_theme::COLOR_ACCENT_PRIMARY))
+                                .corner_radius(egui::CornerRadius::same(8))
+                                .inner_margin(egui::Margin::same(12))
+                        )
+                        .show(ui.ctx(), |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Command Palette").strong().color(ui_theme::COLOR_ACCENT_PRIMARY));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.small_button("Esc / Close").clicked() {
+                                        close_palette = true;
+                                    }
+                                });
+                            });
+                            ui.separator();
+
+                            let query_res = ui.add(
+                                egui::TextEdit::singleline(&mut self.command_palette_query)
+                                    .hint_text("Search actions, entities, primitives... (Esc to close)")
+                                    .desired_width(f32::INFINITY)
+                            );
+                            query_res.request_focus();
+
+                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                close_palette = true;
+                            }
+
+                            ui.separator();
+
+                            let query = self.command_palette_query.to_lowercase();
+                            egui::ScrollArea::vertical().max_height(230.0).show(ui, |ui| {
+                                let quick_actions: &[(&str, &str)] = &[
+                                    ("Add Cube Primitive", "cube"),
+                                    ("Add Sphere Primitive", "sphere"),
+                                    ("Add Cylinder Primitive", "cylinder"),
+                                    ("Add Quad Primitive", "quad"),
+                                    ("Add Plane Primitive", "plane"),
+                                    ("Play Simulation", "play"),
+                                    ("Pause Simulation", "pause"),
+                                    ("Stop Simulation", "stop"),
+                                    ("Save Scene (Ctrl+S)", "save"),
+                                    ("Reload Scene", "reload"),
+                                    ("Toggle 2D / 3D Camera", "toggle_cam"),
+                                    ("Toggle Colliders Debug", "toggle_col"),
+                                    ("Reset Camera View", "reset_cam"),
+                                ];
+
+                                for (name, action_id) in quick_actions {
+                                    if query.is_empty() || name.to_lowercase().contains(&query) {
+                                        if ui.button(format!("> {}", name)).clicked() {
+                                            chosen_action = Some(action_id);
+                                            close_palette = true;
+                                        }
+                                    }
+                                }
+
+                                // Search scene entities
+                                if !query.is_empty() {
+                                    let mut entity_matches = Vec::new();
+                                    for er in self.world.iter() {
+                                        if let Some(m) = er.get::<&EntityMeta>() {
+                                            if m.id.to_lowercase().contains(&query) {
+                                                entity_matches.push((er.entity(), m.id.clone()));
+                                            }
+                                        }
+                                    }
+
+                                    if !entity_matches.is_empty() {
+                                        ui.separator();
+                                        ui.label(egui::RichText::new("Entities:").color(ui_theme::COLOR_TEXT_MUTED).small());
+                                        for (e, id) in entity_matches {
+                                            if ui.button(format!("* Select Entity: {}", id)).clicked() {
+                                                self.selected_entity = Some(e);
+                                                self.add_toast(format!("Selected '{}'", id), egui::Color32::from_rgb(56, 189, 248));
+                                                close_palette = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                        });
+
+                    if let Some(act) = chosen_action {
+                        match act {
+                            "cube" => trigger_spawn_mesh = Some(("cube", [0.8, 0.4, 0.3, 1.0])),
+                            "sphere" => trigger_spawn_mesh = Some(("sphere", [0.3, 0.7, 0.9, 1.0])),
+                            "cylinder" => trigger_spawn_mesh = Some(("cylinder", [0.4, 0.8, 0.4, 1.0])),
+                            "quad" => trigger_spawn_mesh = Some(("quad", [0.9, 0.8, 0.2, 1.0])),
+                            "plane" => trigger_spawn_mesh = Some(("plane", [0.6, 0.6, 0.6, 1.0])),
+                            "play" => {
+                                if self.play_mode == PlayMode::Edit {
+                                    self.play_snapshot = Some(assets::extract_scene_from_world(&self.world, &self.camera, &self.physics));
+                                }
+                                self.play_mode = PlayMode::Play;
+                                self.add_toast("Play mode active", egui::Color32::from_rgb(34, 197, 94));
+                            }
+                            "pause" => {
+                                self.play_mode = PlayMode::Pause;
+                                self.add_toast("Simulation paused", egui::Color32::from_rgb(250, 204, 21));
+                            }
+                            "stop" => {
+                                if let Some(snapshot) = self.play_snapshot.take() {
+                                    assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
+                                }
+                                self.particles.clear();
+                                self.play_mode = PlayMode::Edit;
+                                self.add_toast("Simulation stopped & restored", egui::Color32::from_rgb(239, 68, 68));
+                            }
+                            "save" => trigger_save_scene = true,
+                            "reload" => trigger_reload_scene = true,
+                            "toggle_cam" => self.camera.toggle_mode(),
+                            "toggle_col" => self.debug_colliders = !self.debug_colliders,
+                            "reset_cam" => {
+                                self.camera.eye = glam::Vec3::new(0.0, 3.0, 7.0);
+                                self.camera.target = glam::Vec3::new(0.0, 1.0, 0.0);
+                                self.camera.up = glam::Vec3::Y;
+                                self.add_toast("Camera view reset", egui::Color32::from_rgb(56, 189, 248));
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if close_palette {
+                        self.command_palette_open = false;
+                    }
+                }
             });
 
         // Process triggered actions from UI
@@ -3016,6 +3383,7 @@ impl EngineState {
             self.physics.clear();
             self.selected_entity = None;
             self.logs.push("Created new empty scene".to_string());
+            self.add_toast("New empty scene created", egui::Color32::from_rgb(250, 204, 21));
         }
 
         if trigger_save_scene {
@@ -3040,31 +3408,38 @@ impl EngineState {
 
         if let Some(path) = script_to_open {
             if let Ok(content) = std::fs::read_to_string(&path) {
-                self.script_editor_path = Some(path);
-                self.script_editor_content = content;
+                self.script_editor_path = Some(path.clone());
+                self.script_editor_content = content.clone();
+                self.script_editor_original_content = content;
                 self.bottom_tab = BottomTab::ScriptEditor;
+                self.add_toast(format!("Opened script '{}'", path), egui::Color32::from_rgb(56, 189, 248));
             } else {
                 self.logs.push(format!("Could not read script file '{}'", path));
+                self.add_toast(format!("Failed to open script '{}'", path), egui::Color32::from_rgb(239, 68, 68));
             }
         }
 
         if trigger_save_script {
-            if let Some(path) = &self.script_editor_path {
-                match std::fs::write(path, &self.script_editor_content) {
+            if let Some(path) = self.script_editor_path.clone() {
+                match std::fs::write(&path, &self.script_editor_content) {
                     Ok(()) => {
+                        self.script_editor_original_content = self.script_editor_content.clone();
                         let msg = format!("Script '{}' saved and hot-reloaded", path);
                         self.logs.push(msg.clone());
                         self.hot_reload.last_reload_status = Some(msg);
+                        self.add_toast("Script saved & hot-reloaded", egui::Color32::from_rgb(34, 197, 94));
                         // Trigger reload on all entities using this script
                         for (meta, script) in self.world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
-                            if script.path == *path {
+                            if script.path == path {
                                 let _ = script.init_or_reload(self.lua_ctx.clone());
                                 self.logs.push(format!("Reloaded script for entity '{}'", meta.id));
                             }
                         }
                     }
                     Err(e) => {
-                        self.logs.push(format!("Error saving script '{}': {}", path, e));
+                        let err_msg = format!("Error saving script '{}': {}", path, e);
+                        self.logs.push(err_msg.clone());
+                        self.add_toast(err_msg, egui::Color32::from_rgb(239, 68, 68));
                     }
                 }
             }
