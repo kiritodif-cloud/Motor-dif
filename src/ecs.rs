@@ -46,6 +46,23 @@ impl Default for Transform {
 pub struct EntityMeta {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub parent: Option<String>,
+}
+
+impl EntityMeta {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            parent: None,
+        }
+    }
+
+    pub fn with_parent(mut self, parent: impl Into<String>) -> Self {
+        self.parent = Some(parent.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

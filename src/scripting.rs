@@ -12,6 +12,7 @@ pub struct LuaEngineContext {
     pub pressed_keys: Arc<RwLock<HashSet<String>>>,
     pub pending_spawns: Arc<Mutex<Vec<EntityDef>>>,
     pub pending_destroys: Arc<Mutex<Vec<String>>>,
+    pub pending_parents: Arc<Mutex<Vec<(String, Option<String>)>>>,
     pub pending_particles: Arc<Mutex<Vec<crate::particles::ParticleSpawnRequest>>>,
     pub hud_texts: Arc<RwLock<HashMap<String, String>>>,
     pub world_entities: Arc<RwLock<HashMap<String, [f32; 9]>>>,
@@ -27,6 +28,7 @@ impl LuaEngineContext {
             pressed_keys,
             pending_spawns: Arc::new(Mutex::new(Vec::new())),
             pending_destroys: Arc::new(Mutex::new(Vec::new())),
+            pending_parents: Arc::new(Mutex::new(Vec::new())),
             pending_particles: Arc::new(Mutex::new(Vec::new())),
             hud_texts: Arc::new(RwLock::new(HashMap::new())),
             world_entities: Arc::new(RwLock::new(HashMap::new())),
@@ -145,6 +147,7 @@ impl ScriptComponent {
                     None
                 };
 
+                let parent: Option<String> = table.get("parent").ok();
                 let entity_def = EntityDef {
                     id,
                     mesh,
@@ -152,6 +155,7 @@ impl ScriptComponent {
                     rotation: [rx, ry, rz],
                     scale: [sx, sy, sz],
                     texture,
+                    parent,
                     color,
                     emissive,
                     script,
@@ -328,6 +332,30 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register spawn_prefab: {}", e))?;
         lua.globals()
             .set("spawn_prefab", spawn_prefab)
+            .map_err(|e| e.to_string())?;
+
+        // 13. set_parent(child_id, parent_id)
+        let parents_ref = ctx.pending_parents.clone();
+        let set_parent = lua
+            .create_function(
+                move |_, (child_id, parent_id): (String, Option<String>)| {
+                    if let Ok(mut list) = parents_ref.lock() {
+                        let clean_parent = parent_id.and_then(|p| {
+                            let trimmed = p.trim().to_string();
+                            if trimmed.is_empty() {
+                                None
+                            } else {
+                                Some(trimmed)
+                            }
+                        });
+                        list.push((child_id, clean_parent));
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register set_parent: {}", e))?;
+        lua.globals()
+            .set("set_parent", set_parent)
             .map_err(|e| e.to_string())?;
 
         // Execute the script chunk to define on_update, on_collision, and globals

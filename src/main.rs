@@ -180,6 +180,77 @@ pub fn dist_to_segment_2d(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     (rx * rx + ry * ry).sqrt()
 }
 
+pub fn compute_world_transforms(
+    world: &hecs::World,
+) -> HashMap<hecs::Entity, (glam::Mat4, Vec3)> {
+    let mut id_to_entity = HashMap::new();
+    let mut parent_map = HashMap::new();
+    let mut local_mats = HashMap::new();
+
+    for entity_ref in world.iter() {
+        let entity = entity_ref.entity();
+        if let (Some(meta), Some(transform)) = (entity_ref.get::<&EntityMeta>(), entity_ref.get::<&Transform>()) {
+            id_to_entity.insert(meta.id.clone(), entity);
+            local_mats.insert(meta.id.clone(), transform.matrix());
+            if let Some(pid) = &meta.parent {
+                let clean = pid.trim();
+                if !clean.is_empty() {
+                    parent_map.insert(meta.id.clone(), clean.to_string());
+                }
+            }
+        }
+    }
+
+    let mut resolved_matrices = HashMap::new();
+    let mut visiting = HashSet::new();
+
+    for id in local_mats.keys() {
+        resolve_world_matrix(id, &parent_map, &local_mats, &mut resolved_matrices, &mut visiting);
+    }
+
+    let mut result = HashMap::new();
+    for (id, world_mat) in resolved_matrices {
+        if let Some(&entity) = id_to_entity.get(&id) {
+            let world_pos = world_mat.transform_point3(Vec3::ZERO);
+            result.insert(entity, (world_mat, world_pos));
+        }
+    }
+    result
+}
+
+fn resolve_world_matrix(
+    id: &str,
+    parent_map: &HashMap<String, String>,
+    local_mats: &HashMap<String, glam::Mat4>,
+    resolved: &mut HashMap<String, glam::Mat4>,
+    visiting: &mut HashSet<String>,
+) -> glam::Mat4 {
+    if let Some(&mat) = resolved.get(id) {
+        return mat;
+    }
+    if visiting.contains(id) {
+        // Cycle detected! Fallback to local transform to break cycle safely
+        return local_mats.get(id).copied().unwrap_or(glam::Mat4::IDENTITY);
+    }
+    visiting.insert(id.to_string());
+
+    let local = local_mats.get(id).copied().unwrap_or(glam::Mat4::IDENTITY);
+    let world = if let Some(parent_id) = parent_map.get(id) {
+        if parent_id != id && local_mats.contains_key(parent_id) {
+            let parent_world = resolve_world_matrix(parent_id, parent_map, local_mats, resolved, visiting);
+            parent_world * local
+        } else {
+            local
+        }
+    } else {
+        local
+    };
+
+    visiting.remove(id);
+    resolved.insert(id.to_string(), world);
+    world
+}
+
 impl EngineState {
     pub async fn new(window: Arc<Window>, is_standalone_play: bool, initial_scene_path: String) -> Self {
         let size = window.inner_size();
@@ -410,6 +481,7 @@ impl EngineState {
         let meta = EntityMeta {
             id: id.clone(),
             name: id.clone(),
+            parent: None,
         };
         let transform = Transform::from_xyz(0.0, 1.0, 0.0);
         let mesh = MeshRender {
@@ -464,6 +536,7 @@ impl EngineState {
             let new_meta = EntityMeta {
                 id: new_id.clone(),
                 name: new_id,
+                parent: meta.parent.clone(),
             };
             let mut new_trans = transform;
             new_trans.position.x += 1.0;
@@ -695,6 +768,9 @@ impl EngineState {
                             transform.rotation = Vec3::from(entity.rotation);
                             transform.scale = Vec3::from(entity.scale);
                         }
+                        if let Ok(mut meta) = self.world.get::<&mut EntityMeta>(e) {
+                            meta.parent = entity.parent.clone();
+                        }
                         if let Ok(mut mesh) = self.world.get::<&mut MeshRender>(e) {
                             mesh.mesh_type = entity.mesh.clone();
                             mesh.color = entity.color;
@@ -717,6 +793,7 @@ impl EngineState {
                         let meta = EntityMeta {
                             id: entity.id.clone(),
                             name: entity.id.clone(),
+                            parent: entity.parent.clone(),
                         };
                         let transform = Transform::new(
                             Vec3::from(entity.position),
@@ -911,9 +988,10 @@ impl EngineState {
                         let sz: f32 = table.get("sz").unwrap_or(1.0);
                         let color = [1.0, 1.0, 1.0, 1.0];
                         let texture: Option<String> = table.get("texture").ok();
+                        let parent: Option<String> = table.get("parent").ok();
                         let def = assets::EntityDef {
                             id, mesh, position: [x,y,z], rotation: [rx,ry,rz], scale: [sx,sy,sz],
-                            color, texture, emissive: 0.0, script: None, physics: None
+                            color, texture, parent, emissive: 0.0, script: None, physics: None
                         };
                         if let Ok(mut list) = spawns_ref.lock() { list.push(def); }
                         Ok(())
@@ -1012,6 +1090,21 @@ impl EngineState {
                     );
                     if let Ok(f) = spawn_prefab { let _ = lua.globals().set("spawn_prefab", f); }
 
+                    let parents_ref_snippet = self.lua_ctx.pending_parents.clone();
+                    let set_parent = lua.create_function(
+                        move |_, (child_id, parent_id): (String, Option<String>)| {
+                            if let Ok(mut list) = parents_ref_snippet.lock() {
+                                let clean = parent_id.and_then(|p| {
+                                    let t = p.trim().to_string();
+                                    if t.is_empty() { None } else { Some(t) }
+                                });
+                                list.push((child_id, clean));
+                            }
+                            Ok(true)
+                        },
+                    );
+                    if let Ok(f) = set_parent { let _ = lua.globals().set("set_parent", f); }
+
                     let chunk = lua.load(&code);
                     let result_str = match chunk.eval::<mlua::Value>() {
                         Ok(val) => format!("{:?}", val),
@@ -1051,7 +1144,11 @@ impl EngineState {
                             def.id = format!("{}_{}", def.id, self.entity_counter);
                             def.position = position;
 
-                            let meta = EntityMeta { id: def.id.clone(), name: def.id.clone() };
+                            let meta = EntityMeta {
+                                id: def.id.clone(),
+                                name: def.id.clone(),
+                                parent: def.parent.clone(),
+                            };
                             let transform = Transform::new(
                                 Vec3::from(def.position),
                                 Vec3::from(def.rotation),
@@ -1245,7 +1342,11 @@ impl EngineState {
                 Vec::new()
             };
             for def in pending_spawns {
-                let meta = EntityMeta { id: def.id.clone(), name: def.id.clone() };
+                let meta = EntityMeta {
+                    id: def.id.clone(),
+                    name: def.id.clone(),
+                    parent: def.parent.clone(),
+                };
                 let transform = Transform::new(
                     Vec3::from(def.position),
                     Vec3::from(def.rotation),
@@ -1304,6 +1405,21 @@ impl EngineState {
             }
         }
 
+        // Drain and apply pending parents from Lua
+        let pending_parents = if let Ok(mut parents) = self.lua_ctx.pending_parents.lock() {
+            std::mem::take(&mut *parents)
+        } else {
+            Vec::new()
+        };
+        for (child_id, new_parent) in pending_parents {
+            for meta in self.world.query_mut::<&mut EntityMeta>() {
+                if meta.id == child_id {
+                    meta.parent = new_parent;
+                    break;
+                }
+            }
+        }
+
         // Drain and spawn pending particles
         let pending_particles = if let Ok(mut particles) = self.lua_ctx.pending_particles.lock() {
             std::mem::take(&mut *particles)
@@ -1326,18 +1442,29 @@ impl EngineState {
         // Update camera in GPU
         self.gpu.update_camera(&self.camera);
 
+        // Compute world transforms (ParentWorld * Local) with cycle detection
+        let world_transforms = compute_world_transforms(&self.world);
+
         // Collect instances by mesh type and texture
         let mut instances_by_batch: HashMap<(String, Option<String>), Vec<InstanceRaw>> = HashMap::new();
-        for (transform, mesh) in self.world.query::<(&Transform, &MeshRender)>().iter() {
-            let raw = InstanceRaw {
-                model: transform.matrix().to_cols_array_2d(),
-                color: mesh.color,
-                extra: [mesh.emissive, 0.0, 0.0, 0.0],
-            };
-            instances_by_batch
-                .entry((mesh.mesh_type.clone(), mesh.texture.clone()))
-                .or_default()
-                .push(raw);
+        for entity_ref in self.world.iter() {
+            let entity = entity_ref.entity();
+            if let (Some(transform), Some(mesh)) = (entity_ref.get::<&Transform>(), entity_ref.get::<&MeshRender>()) {
+                let model_mat = if let Some((mat, _)) = world_transforms.get(&entity) {
+                    mat.to_cols_array_2d()
+                } else {
+                    transform.matrix().to_cols_array_2d()
+                };
+                let raw = InstanceRaw {
+                    model: model_mat,
+                    color: mesh.color,
+                    extra: [mesh.emissive, 0.0, 0.0, 0.0],
+                };
+                instances_by_batch
+                    .entry((mesh.mesh_type.clone(), mesh.texture.clone()))
+                    .or_default()
+                    .push(raw);
+            }
         }
 
         for (mesh_id, tex_opt) in instances_by_batch.keys() {
@@ -1531,23 +1658,59 @@ impl EngineState {
                         ui.text_edit_singleline(&mut self.hierarchy_search);
                         ui.separator();
 
-                        // Entity List
+                        // Entity List with Tree Hierarchy
                         egui::ScrollArea::vertical().show(ui, |ui| {
-                            let mut entity_items = Vec::new();
+                            let mut all_entities = Vec::new();
+                            let mut children_map: HashMap<String, Vec<(hecs::Entity, String, String)>> = HashMap::new();
+                            let mut known_ids = HashSet::new();
+
                             for entity_ref in self.world.iter() {
                                 let entity = entity_ref.entity();
                                 if let (Some(meta), Some(mesh)) = (entity_ref.get::<&EntityMeta>(), entity_ref.get::<&MeshRender>()) {
                                     if self.hierarchy_search.is_empty() || meta.id.to_lowercase().contains(&self.hierarchy_search.to_lowercase()) {
-                                        entity_items.push((entity, meta.id.clone(), mesh.mesh_type.clone()));
+                                        all_entities.push((entity, meta.id.clone(), meta.parent.clone(), mesh.mesh_type.clone()));
+                                        known_ids.insert(meta.id.clone());
                                     }
                                 }
                             }
 
-                            for (entity, id, mesh_type) in entity_items {
-                                let is_selected = self.selected_entity == Some(entity);
-                                let label_text = format!("* {} ({})", id, mesh_type);
-                                if ui.selectable_label(is_selected, label_text).clicked() {
-                                    self.selected_entity = Some(entity);
+                            for (entity, id, parent, mesh_type) in &all_entities {
+                                if let Some(pid) = parent {
+                                    if known_ids.contains(pid) && pid != id {
+                                        children_map.entry(pid.clone()).or_default().push((*entity, id.clone(), mesh_type.clone()));
+                                    }
+                                }
+                            }
+
+                            fn render_node(
+                                ui: &mut egui::Ui,
+                                entity: hecs::Entity,
+                                id: &str,
+                                mesh_type: &str,
+                                selected: &mut Option<hecs::Entity>,
+                                children_map: &HashMap<String, Vec<(hecs::Entity, String, String)>>,
+                                depth: usize,
+                            ) {
+                                let is_selected = *selected == Some(entity);
+                                let indent_str = if depth == 0 { "* " } else { "|- " };
+                                let label = format!("{}{}{} ({})", "  ".repeat(depth), indent_str, id, mesh_type);
+                                if ui.selectable_label(is_selected, label).clicked() {
+                                    *selected = Some(entity);
+                                }
+                                if let Some(children) = children_map.get(id) {
+                                    for (c_e, c_id, c_mesh) in children {
+                                        render_node(ui, *c_e, c_id, c_mesh, selected, children_map, depth + 1);
+                                    }
+                                }
+                            }
+
+                            for (entity, id, parent, mesh_type) in &all_entities {
+                                let is_root = match parent {
+                                    None => true,
+                                    Some(pid) => !known_ids.contains(pid) || pid == id,
+                                };
+                                if is_root {
+                                    render_node(ui, *entity, id, mesh_type, &mut self.selected_entity, &children_map, 0);
                                 }
                             }
                         });
@@ -1566,10 +1729,38 @@ impl EngineState {
                                 // 1. Identity
                                 ui.group(|ui| {
                                     ui.label(egui::RichText::new("Entity Identity").strong());
+                                    let mut all_other_ids: Vec<String> = Vec::new();
+                                    for other_ref in self.world.iter() {
+                                        if other_ref.entity() != entity {
+                                            if let Some(m) = other_ref.get::<&EntityMeta>() {
+                                                all_other_ids.push(m.id.clone());
+                                            }
+                                        }
+                                    }
+
                                     if let Ok(mut meta) = self.world.get::<&mut EntityMeta>(entity) {
                                         ui.horizontal(|ui| {
                                             ui.label("ID:");
                                             ui.text_edit_singleline(&mut meta.id);
+                                        });
+
+                                        ui.horizontal(|ui| {
+                                            ui.label("Parent:");
+                                            let current_parent_text = meta.parent.clone().unwrap_or_else(|| "None (Root)".to_string());
+                                            egui::ComboBox::from_id_salt("parent_select")
+                                                .selected_text(&current_parent_text)
+                                                .show_ui(ui, |ui| {
+                                                    let is_none = meta.parent.is_none();
+                                                    if ui.selectable_label(is_none, "None (Root)").clicked() {
+                                                        meta.parent = None;
+                                                    }
+                                                    for pid in &all_other_ids {
+                                                        let is_selected = meta.parent.as_ref() == Some(pid);
+                                                        if ui.selectable_label(is_selected, pid).clicked() {
+                                                            meta.parent = Some(pid.clone());
+                                                        }
+                                                    }
+                                                });
                                         });
                                     }
                                 });
@@ -1839,7 +2030,11 @@ impl EngineState {
                                                             def.id = format!("{}_{}", def.id, self.entity_counter);
                                                             def.position = [0.0, 2.0, 0.0];
 
-                                                            let meta = EntityMeta { id: def.id.clone(), name: def.id.clone() };
+                                                            let meta = EntityMeta {
+                                id: def.id.clone(),
+                                name: def.id.clone(),
+                                parent: def.parent.clone(),
+                            };
                                                             let transform = Transform::new(
                                                                 Vec3::from(def.position),
                                                                 Vec3::from(def.rotation),
@@ -2709,4 +2904,62 @@ fn main() {
 
     let mut app = App::new(is_play_mode, target_scene);
     event_loop.run_app(&mut app).expect("Error running event loop");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_world_transforms_hierarchy_and_cycle() {
+        let mut world = hecs::World::new();
+        let parent_e = world.spawn((
+            EntityMeta {
+                id: "parent".to_string(),
+                name: "Parent".to_string(),
+                parent: None,
+            },
+            Transform::from_xyz(10.0, 0.0, 0.0),
+        ));
+
+        let child_e = world.spawn((
+            EntityMeta {
+                id: "child".to_string(),
+                name: "Child".to_string(),
+                parent: Some("parent".to_string()),
+            },
+            Transform::from_xyz(0.0, 5.0, 0.0),
+        ));
+
+        let transforms = compute_world_transforms(&world);
+        let parent_pos = transforms.get(&parent_e).unwrap().1;
+        let child_pos = transforms.get(&child_e).unwrap().1;
+
+        assert_eq!(parent_pos, Vec3::new(10.0, 0.0, 0.0));
+        assert_eq!(child_pos, Vec3::new(10.0, 5.0, 0.0));
+
+        // Test cycle safety (A -> B -> A)
+        let mut world_cycle = hecs::World::new();
+        let e_a = world_cycle.spawn((
+            EntityMeta {
+                id: "A".to_string(),
+                name: "A".to_string(),
+                parent: Some("B".to_string()),
+            },
+            Transform::from_xyz(1.0, 0.0, 0.0),
+        ));
+        let e_b = world_cycle.spawn((
+            EntityMeta {
+                id: "B".to_string(),
+                name: "B".to_string(),
+                parent: Some("A".to_string()),
+            },
+            Transform::from_xyz(0.0, 2.0, 0.0),
+        ));
+
+        // Must terminate without stack overflow or hanging!
+        let cycle_transforms = compute_world_transforms(&world_cycle);
+        assert!(cycle_transforms.contains_key(&e_a));
+        assert!(cycle_transforms.contains_key(&e_b));
+    }
 }

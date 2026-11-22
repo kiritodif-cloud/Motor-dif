@@ -50,6 +50,8 @@ pub struct EntityDef {
     pub scale: [f32; 3],
     #[serde(default)]
     pub texture: Option<String>,
+    #[serde(default)]
+    pub parent: Option<String>,
     pub color: [f32; 4],
     #[serde(default)]
     pub emissive: f32,
@@ -87,6 +89,7 @@ impl Default for SceneDef {
                     scale: [1.3, 1.3, 1.3],
                     color: [0.95, 0.25, 0.25, 1.0],
                     texture: None,
+                    parent: None,
                     emissive: 0.0,
                     script: None,
                     physics: None,
@@ -99,6 +102,7 @@ impl Default for SceneDef {
                     scale: [1.3, 1.3, 1.3],
                     color: [0.25, 0.85, 0.35, 1.0],
                     texture: None,
+                    parent: None,
                     emissive: 0.0,
                     script: None,
                     physics: None,
@@ -111,6 +115,7 @@ impl Default for SceneDef {
                     scale: [1.3, 1.3, 1.3],
                     color: [0.25, 0.45, 0.95, 1.0],
                     texture: None,
+                    parent: None,
                     emissive: 0.0,
                     script: None,
                     physics: None,
@@ -195,6 +200,7 @@ pub fn extract_scene_from_world(
             rotation: [transform.rotation.x, transform.rotation.y, transform.rotation.z],
             scale: [transform.scale.x, transform.scale.y, transform.scale.z],
             texture: mesh.texture.clone(),
+            parent: meta.parent.clone(),
             color: mesh.color,
             emissive: mesh.emissive,
             script: script_opt.map(|s| s.path.clone()),
@@ -233,6 +239,7 @@ pub fn apply_scene_to_world(
         let meta = EntityMeta {
             id: entity.id.clone(),
             name: entity.id.clone(),
+            parent: entity.parent.clone(),
         };
         let transform = Transform::new(
             Vec3::from(entity.position),
@@ -335,6 +342,7 @@ pub fn extract_entity_def(
         rotation: [transform.rotation.x, transform.rotation.y, transform.rotation.z],
         scale: [transform.scale.x, transform.scale.y, transform.scale.z],
         texture: mesh.texture.clone(),
+        parent: meta.parent.clone(),
         color: mesh.color,
         emissive: mesh.emissive,
         script,
@@ -359,5 +367,26 @@ mod tests {
         let phys = def.physics.unwrap();
         assert_eq!(phys.collider, "ball");
         assert!(phys.restitution > 0.9);
+    }
+
+    #[test]
+    fn test_entity_def_parent() {
+        let def = EntityDef {
+            id: "child".to_string(),
+            mesh: "cube".to_string(),
+            position: [1.0, 2.0, 3.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+            texture: None,
+            parent: Some("parent_node".to_string()),
+            color: [1.0, 1.0, 1.0, 1.0],
+            emissive: 0.0,
+            script: None,
+            physics: None,
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        assert!(json.contains("\"parent\":\"parent_node\""));
+        let decoded: EntityDef = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.parent, Some("parent_node".to_string()));
     }
 }
