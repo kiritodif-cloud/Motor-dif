@@ -367,6 +367,18 @@ impl EngineState {
             None
         };
 
+        let mut initial_selected = None;
+        for er in world.iter() {
+            if let Some(m) = er.get::<&EntityMeta>() {
+                if m.id == "pedestal" {
+                    initial_selected = Some(er.entity());
+                    break;
+                } else if initial_selected.is_none() {
+                    initial_selected = Some(er.entity());
+                }
+            }
+        }
+
         Self {
             window,
             gpu,
@@ -397,7 +409,7 @@ impl EngineState {
             gizmo_mode: GizmoMode::Translate,
             snap_enabled: false,
             debug_colliders: true,
-            selected_entity: None,
+            selected_entity: initial_selected,
             hierarchy_search: String::new(),
             bottom_tab: BottomTab::Console,
             console_filter: ConsoleFilter::All,
@@ -1354,6 +1366,24 @@ impl EngineState {
                             self.logs.push(err_msg.clone());
                             let _ = respond_to.send(Err(err_msg));
                         }
+                    }
+                }
+                McpCommand::SelectEntity { id, respond_to } => {
+                    let mut found = None;
+                    for er in self.world.iter() {
+                        if let Some(meta) = er.get::<&EntityMeta>() {
+                            if meta.id == id {
+                                found = Some(er.entity());
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(e) = found {
+                        self.selected_entity = Some(e);
+                        self.add_toast(format!("Selected '{}'", id), egui::Color32::from_rgb(56, 189, 248));
+                        let _ = respond_to.send(Ok(format!("Selected entity '{}'", id)));
+                    } else {
+                        let _ = respond_to.send(Err(format!("Entity '{}' not found", id)));
                     }
                 }
             }

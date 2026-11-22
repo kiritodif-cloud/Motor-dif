@@ -67,6 +67,10 @@ pub enum McpCommand {
         position: [f32; 3],
         respond_to: oneshot::Sender<Result<String, String>>,
     },
+    SelectEntity {
+        id: String,
+        respond_to: oneshot::Sender<Result<String, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,6 +309,17 @@ pub async fn handle_jsonrpc(
                                 },
                                 "required": ["name"]
                             }
+                        },
+                        {
+                            "name": "select_entity",
+                            "description": "Selecciona una entidad por ID en el editor activo para inspeccionar y mostrar sus gizmos",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "id": { "type": "string", "description": "ID de la entidad a seleccionar" }
+                                },
+                                "required": ["id"]
+                            }
                         }
                     ]
                 }),
@@ -535,6 +550,21 @@ pub async fn handle_jsonrpc(
                         Ok(Ok(msg)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": msg }] }))),
                         Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al instanciar prefab")),
+                    }
+                }
+                "select_entity" => {
+                    let id_str = match args.get("id").and_then(|v| v.as_str()) {
+                        Some(s) => s.to_string(),
+                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'id'")),
+                    };
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::SelectEntity { id: id_str, respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(msg)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": msg }] }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al seleccionar entidad")),
                     }
                 }
                 _ => Some(JsonRpcResponse::error(id, -32601, format!("Herramienta desconocida: {}", tool_name))),
