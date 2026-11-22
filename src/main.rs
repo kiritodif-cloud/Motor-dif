@@ -647,6 +647,9 @@ impl EngineState {
 
     pub fn handle_event(&mut self, event_loop: &ActiveEventLoop, event: &WindowEvent) {
         let response = self.gpu.egui_winit_state.on_window_event(&self.window, event);
+        if response.repaint {
+            self.window.request_redraw();
+        }
         if response.consumed {
             return;
         }
@@ -721,8 +724,8 @@ impl EngineState {
                     }
                 }
 
-                // Keyboard Shortcuts when not focused on egui text edit
-                if is_pressed && !egui_wants_kbd {
+                // Keyboard Shortcuts when not focused on egui text edit (Editor mode only)
+                if !self.is_standalone_play && is_pressed && !egui_wants_kbd {
                     let (_ctrl, do_s, do_z, do_y, do_d, do_del, do_w, do_e, do_r, do_f) = {
                         let set = self.pressed_keys.read().unwrap();
                         let ctrl_down = set.contains("CONTROL") || set.contains("CONTROLRIGHT") || set.contains("CONTROLLEFT");
@@ -1947,42 +1950,46 @@ impl EngineState {
                 ui_theme::apply_theme(ui.ctx());
 
                 if self.is_standalone_play {
-                    // In Standalone Game Mode: Render only HUD overlay on top of full viewport
-                    if let Ok(hud) = self.lua_ctx.hud_texts.read() {
-                        if !hud.is_empty() {
-                            let hud_area = egui::Area::new(ui.make_persistent_id("lua_hud_overlay_standalone"))
-                                .fixed_pos(egui::pos2(25.0, 25.0))
-                                .interactable(false);
-                            hud_area.show(ui.ctx(), |ui| {
-                                egui::Frame::new()
-                                    .fill(egui::Color32::from_black_alpha(180))
-                                    .corner_radius(8.0)
-                                    .inner_margin(12.0)
-                                    .show(ui, |ui| {
-                                        for (k, v) in hud.iter() {
-                                            ui.colored_label(
-                                                egui::Color32::from_rgb(100, 220, 255),
-                                                format!("{}: {}", k, v),
-                                            );
+                    // In Standalone Game Mode: Render HUD overlay and buttons inside full-viewport CentralPanel
+                    CentralPanel::default()
+                        .frame(Frame::new().fill(egui::Color32::TRANSPARENT))
+                        .show(ui, |ui| {
+                            if let Ok(hud) = self.lua_ctx.hud_texts.read() {
+                                if !hud.is_empty() {
+                                    let hud_area = egui::Area::new(ui.make_persistent_id("lua_hud_overlay_standalone"))
+                                        .fixed_pos(egui::pos2(25.0, 25.0))
+                                        .interactable(false);
+                                    hud_area.show(ui.ctx(), |ui| {
+                                        egui::Frame::new()
+                                            .fill(egui::Color32::from_black_alpha(180))
+                                            .corner_radius(8.0)
+                                            .inner_margin(12.0)
+                                            .show(ui, |ui| {
+                                                for (k, v) in hud.iter() {
+                                                    ui.colored_label(
+                                                        egui::Color32::from_rgb(100, 220, 255),
+                                                        format!("{}: {}", k, v),
+                                                    );
+                                                }
+                                            });
+                                    });
+                                }
+                            }
+
+                            if let Ok(btns) = self.lua_ctx.hud_buttons.read() {
+                                for btn in btns.values() {
+                                    let btn_area = egui::Area::new(ui.make_persistent_id(format!("hud_btn_std_{}", btn.id)))
+                                        .fixed_pos(egui::pos2(btn.x, btn.y));
+                                    btn_area.show(ui.ctx(), |ui| {
+                                        if ui.button(egui::RichText::new(&btn.text).size(15.0).strong()).clicked() {
+                                            if let Ok(mut clicks) = self.lua_ctx.pending_button_clicks.lock() {
+                                                clicks.push(btn.callback.clone());
+                                            }
                                         }
                                     });
-                            });
-                        }
-                    }
-
-                    if let Ok(btns) = self.lua_ctx.hud_buttons.read() {
-                        for btn in btns.values() {
-                            let btn_area = egui::Area::new(ui.make_persistent_id(format!("hud_btn_std_{}", btn.id)))
-                                .fixed_pos(egui::pos2(btn.x, btn.y));
-                            btn_area.show(ui.ctx(), |ui| {
-                                if ui.button(egui::RichText::new(&btn.text).size(15.0).strong()).clicked() {
-                                    if let Ok(mut clicks) = self.lua_ctx.pending_button_clicks.lock() {
-                                        clicks.push(btn.callback.clone());
-                                    }
                                 }
-                            });
-                        }
-                    }
+                            }
+                        });
                     return;
                 }
 
@@ -3675,6 +3682,7 @@ impl EngineState {
         }
 
         self.gpu.queue.present(output);
+        self.window.request_redraw();
     }
 }
 
@@ -3705,22 +3713,34 @@ impl ApplicationHandler for App {
             };
             let window_attributes = Window::default_attributes()
                 .with_title(title)
-                .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
-                .with_visible(true);
+                .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0))
+                .with_visible(true)
+                .with_active(true)
+                .with_resizable(true);
             let window = Arc::new(
                 event_loop
                     .create_window(window_attributes)
                     .expect("Failed to create winit window"),
             );
             window.set_visible(true);
+            window.set_minimized(false);
             window.focus_window();
+            window.request_user_attention(Some(winit::window::UserAttentionType::Critical));
             let state = pollster::block_on(EngineState::new(
                 window.clone(),
                 self.is_play_mode,
                 self.target_scene.clone(),
             ));
+            window.set_visible(true);
+            window.set_minimized(false);
+            window.focus_window();
             window.request_redraw();
             self.state = Some(state);
+        } else if let Some(state) = &self.state {
+            state.window.set_visible(true);
+            state.window.set_minimized(false);
+            state.window.focus_window();
+            state.window.request_redraw();
         }
     }
 
