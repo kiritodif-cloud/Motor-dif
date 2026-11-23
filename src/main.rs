@@ -552,6 +552,11 @@ impl EngineState {
             color,
             texture: None,
             emissive: 0.0,
+            fresnel_color: None,
+            fresnel_power: None,
+            blend_mode: None,
+            wireframe: None,
+            uv_scroll: None,
         };
 
         let entity = self.world.spawn((meta, transform, mesh));
@@ -849,6 +854,11 @@ impl EngineState {
                             mesh.color = entity.color;
                             mesh.texture = entity.texture.clone();
                             mesh.emissive = entity.emissive;
+                            mesh.fresnel_color = entity.fresnel_color;
+                            mesh.fresnel_power = entity.fresnel_power;
+                            mesh.blend_mode = entity.blend_mode.clone();
+                            mesh.wireframe = entity.wireframe;
+                            mesh.uv_scroll = entity.uv_scroll;
                         }
                         if let Some(script_path) = &entity.script {
                             let mut script_comp = ScriptComponent::new(script_path.clone());
@@ -885,6 +895,11 @@ impl EngineState {
                             color: entity.color,
                             texture: entity.texture.clone(),
                             emissive: entity.emissive,
+                            fresnel_color: entity.fresnel_color,
+                            fresnel_power: entity.fresnel_power,
+                            blend_mode: entity.blend_mode.clone(),
+                            wireframe: entity.wireframe,
+                            uv_scroll: entity.uv_scroll,
                         };
 
                         let e = self.world.spawn((meta, transform, mesh));
@@ -1087,7 +1102,9 @@ impl EngineState {
                         let parent: Option<String> = table.get("parent").ok();
                         let def = assets::EntityDef {
                             id, mesh, position: [x,y,z], rotation: [rx,ry,rz], scale: [sx,sy,sz],
-                            color, texture, parent, emissive: 0.0, script: None, physics: None, point_light: None
+                            color, texture, parent, emissive: 0.0,
+                            fresnel_color: None, fresnel_power: None, blend_mode: None, wireframe: None, uv_scroll: None,
+                            script: None, physics: None, point_light: None
                         };
                         if let Ok(mut list) = spawns_ref.lock() { list.push(def); }
                         Ok(())
@@ -1369,6 +1386,11 @@ impl EngineState {
                                 color: def.color,
                                 texture: def.texture.clone(),
                                 emissive: def.emissive,
+                                fresnel_color: def.fresnel_color,
+                                fresnel_power: def.fresnel_power,
+                                blend_mode: def.blend_mode.clone(),
+                                wireframe: def.wireframe,
+                                uv_scroll: def.uv_scroll,
                             };
                             let e = self.world.spawn((meta, transform, mesh));
 
@@ -1601,6 +1623,11 @@ impl EngineState {
                     color: def.color,
                     texture: def.texture.clone(),
                     emissive: def.emissive,
+                    fresnel_color: def.fresnel_color,
+                    fresnel_power: def.fresnel_power,
+                    blend_mode: def.blend_mode.clone(),
+                    wireframe: def.wireframe,
+                    uv_scroll: def.uv_scroll,
                 };
                 let e = self.world.spawn((meta, transform, mesh));
 
@@ -1740,6 +1767,32 @@ impl EngineState {
             }
         }
 
+        // Drain and apply material updates from Lua
+        let pending_mat_updates = if let Ok(mut m) = self.lua_ctx.pending_materials.lock() {
+            std::mem::take(&mut *m)
+        } else {
+            Vec::new()
+        };
+        for update in pending_mat_updates {
+            for entity_ref in self.world.iter() {
+                if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                    if meta.id == update.entity_id {
+                        let e = entity_ref.entity();
+                        if let Ok(mut mesh) = self.world.get::<&mut MeshRender>(e) {
+                            if let Some(c) = update.color { mesh.color = c; }
+                            if let Some(em) = update.emissive { mesh.emissive = em; }
+                            if let Some(fc) = update.fresnel_color { mesh.fresnel_color = Some(fc); }
+                            if let Some(fp) = update.fresnel_power { mesh.fresnel_power = Some(fp); }
+                            if let Some(bm) = update.blend_mode { mesh.blend_mode = Some(bm); }
+                            if let Some(wf) = update.wireframe { mesh.wireframe = Some(wf); }
+                            if let Some(uv) = update.uv_scroll { mesh.uv_scroll = Some(uv); }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
         // Drain and apply sprite frame updates from Lua
         let pending_sprites = if let Ok(mut s) = self.lua_ctx.pending_sprite_frames.lock() {
             std::mem::take(&mut *s)
@@ -1862,8 +1915,8 @@ impl EngineState {
         // Update camera shake
         self.camera.update_shake(dt);
 
-        // Update camera in GPU
-        self.gpu.update_camera(&self.camera);
+        // Update camera in GPU with simulation time
+        self.gpu.update_camera_with_time(&self.camera, self.total_time);
 
         // Collect active point lights into GPU uniform
         let mut lights_uniform = LightsUniform::default();
@@ -1893,8 +1946,8 @@ impl EngineState {
         lights_uniform.num_lights = light_count;
         self.gpu.update_lights(&lights_uniform);
 
-        // Collect instances by mesh type and texture
-        let mut instances_by_batch: HashMap<(String, Option<String>), Vec<InstanceRaw>> = HashMap::new();
+        // Collect instances by mesh type, texture, and blend mode
+        let mut instances_by_batch: HashMap<(String, Option<String>, String), Vec<InstanceRaw>> = HashMap::new();
         for entity_ref in self.world.iter() {
             let entity = entity_ref.entity();
             if let (Some(transform), Some(mesh)) = (entity_ref.get::<&Transform>(), entity_ref.get::<&MeshRender>()) {
@@ -1908,21 +1961,30 @@ impl EngineState {
                 } else {
                     ([0.0, 0.0], [1.0, 1.0])
                 };
+                let fresnel = if let Some(fc) = mesh.fresnel_color {
+                    [fc[0], fc[1], fc[2], mesh.fresnel_power.unwrap_or(2.0)]
+                } else {
+                    [0.0, 0.0, 0.0, 0.0]
+                };
+                let scroll = mesh.uv_scroll.unwrap_or([0.0, 0.0]);
+                let wire_flag = if mesh.wireframe.unwrap_or(false) { 1.0 } else { 0.0 };
                 let raw = InstanceRaw {
                     model: model_mat,
                     color: mesh.color,
-                    extra: [mesh.emissive, 0.0, 0.0, 0.0],
+                    extra: [mesh.emissive, scroll[0], scroll[1], wire_flag],
+                    fresnel,
                     uv_offset,
                     uv_scale,
                 };
+                let blend_mode = mesh.blend_mode.clone().unwrap_or_else(|| "opaque".to_string());
                 instances_by_batch
-                    .entry((mesh.mesh_type.clone(), mesh.texture.clone()))
+                    .entry((mesh.mesh_type.clone(), mesh.texture.clone(), blend_mode))
                     .or_default()
                     .push(raw);
             }
         }
 
-        for (mesh_id, tex_opt) in instances_by_batch.keys() {
+        for (mesh_id, tex_opt, _) in instances_by_batch.keys() {
             self.gpu.ensure_mesh(mesh_id);
             if let Some(tex) = tex_opt {
                 self.gpu.get_or_load_texture(tex);
@@ -2340,8 +2402,67 @@ impl EngineState {
                                             });
                                             ui.horizontal(|ui| {
                                                 ui.label("Emissive:");
-                                                ui.add(egui::Slider::new(&mut mesh.emissive, 0.0..=1.0));
+                                                ui.add(egui::Slider::new(&mut mesh.emissive, 0.0..=5.0));
                                             });
+
+                                            // Blend Mode
+                                            ui.horizontal(|ui| {
+                                                ui.label("Blend Mode:");
+                                                let mut current_mode = mesh.blend_mode.clone().unwrap_or_else(|| "opaque".to_string());
+                                                egui::ComboBox::from_id_salt("blend_mode_select")
+                                                    .selected_text(&current_mode)
+                                                    .show_ui(ui, |ui| {
+                                                        if ui.selectable_value(&mut current_mode, "opaque".to_string(), "Opaque").clicked() {
+                                                            mesh.blend_mode = Some("opaque".to_string());
+                                                        }
+                                                        if ui.selectable_value(&mut current_mode, "alpha".to_string(), "Alpha Blend").clicked() {
+                                                            mesh.blend_mode = Some("alpha".to_string());
+                                                        }
+                                                        if ui.selectable_value(&mut current_mode, "additive".to_string(), "Additive").clicked() {
+                                                            mesh.blend_mode = Some("additive".to_string());
+                                                        }
+                                                    });
+                                            });
+
+                                            // Fresnel
+                                            let mut has_fresnel = mesh.fresnel_color.is_some();
+                                            if ui.checkbox(&mut has_fresnel, "Fresnel Glow").changed() {
+                                                if has_fresnel {
+                                                    mesh.fresnel_color = Some([0.4, 0.8, 1.0]);
+                                                    mesh.fresnel_power = Some(2.5);
+                                                } else {
+                                                    mesh.fresnel_color = None;
+                                                    mesh.fresnel_power = None;
+                                                }
+                                            }
+                                            if let Some(ref mut fc) = mesh.fresnel_color {
+                                                ui.horizontal(|ui| {
+                                                    ui.label("  Fresnel Color:");
+                                                    ui.color_edit_button_rgb(fc);
+                                                });
+                                                let mut fp = mesh.fresnel_power.unwrap_or(2.5);
+                                                if ui.add(egui::Slider::new(&mut fp, 0.5..=8.0).text("Power")).changed() {
+                                                    mesh.fresnel_power = Some(fp);
+                                                }
+                                            }
+
+                                            // Wireframe & UV Scroll
+                                            let mut wire = mesh.wireframe.unwrap_or(false);
+                                            if ui.checkbox(&mut wire, "Wireframe Overlay").changed() {
+                                                mesh.wireframe = Some(wire);
+                                            }
+
+                                            ui.horizontal(|ui| {
+                                                ui.label("UV Scroll:");
+                                                let mut uv = mesh.uv_scroll.unwrap_or([0.0, 0.0]);
+                                                let mut changed = false;
+                                                changed |= ui.add(egui::DragValue::new(&mut uv[0]).speed(0.01).prefix("X: ")).changed();
+                                                changed |= ui.add(egui::DragValue::new(&mut uv[1]).speed(0.01).prefix("Y: ")).changed();
+                                                if changed {
+                                                    mesh.uv_scroll = if uv[0] == 0.0 && uv[1] == 0.0 { None } else { Some(uv) };
+                                                }
+                                            });
+
                                             ui.horizontal(|ui| {
                                                 ui.label("Mesh:");
                                                 egui::ComboBox::from_id_salt("mesh_select")
@@ -2634,6 +2755,11 @@ impl EngineState {
                                                                 color: def.color,
                                                                 texture: def.texture.clone(),
                                                                 emissive: def.emissive,
+                                                                fresnel_color: def.fresnel_color,
+                                                                fresnel_power: def.fresnel_power,
+                                                                blend_mode: def.blend_mode.clone(),
+                                                                wireframe: def.wireframe,
+                                                                uv_scroll: def.uv_scroll,
                                                             };
                                                             let e = self.world.spawn((meta, transform, mesh));
 
@@ -3617,12 +3743,45 @@ impl EngineState {
                 multiview_mask: None,
             });
 
+            // 1a. Render Opaque & Alpha Batches
             render_pass.set_pipeline(&self.gpu.render_pipeline);
             render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
             render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
 
-            for ((mesh_id, tex_opt), instances) in &instances_by_batch {
-                if instances.is_empty() {
+            for ((mesh_id, tex_opt, blend_mode), instances) in &instances_by_batch {
+                if blend_mode == "additive" || instances.is_empty() {
+                    continue;
+                }
+                if let Some(mesh_gpu) = self.gpu.meshes.get(mesh_id) {
+                    let tex_bind = if let Some(tex) = tex_opt {
+                        &self.gpu.get_texture(tex).bind_group
+                    } else {
+                        &self.gpu.default_white_texture.bind_group
+                    };
+                    render_pass.set_bind_group(1, tex_bind, &[]);
+
+                    let instance_buffer = create_instance_buffer(&self.gpu.device, instances);
+                    render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
+                    render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
+                    render_pass.set_index_buffer(
+                        mesh_gpu.index_buffer.slice(..),
+                        mesh_gpu.index_format,
+                    );
+                    render_pass.draw_indexed(
+                        0..mesh_gpu.num_indices,
+                        0,
+                        0..instances.len() as u32,
+                    );
+                }
+            }
+
+            // 1b. Render Additive Batches
+            render_pass.set_pipeline(&self.gpu.additive_render_pipeline);
+            render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
+            render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
+
+            for ((mesh_id, tex_opt, blend_mode), instances) in &instances_by_batch {
+                if blend_mode != "additive" || instances.is_empty() {
                     continue;
                 }
                 if let Some(mesh_gpu) = self.gpu.meshes.get(mesh_id) {

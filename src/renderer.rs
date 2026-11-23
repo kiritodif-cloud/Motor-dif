@@ -37,14 +37,15 @@ impl Vertex {
 pub struct InstanceRaw {
     pub model: [[f32; 4]; 4],
     pub color: [f32; 4],
-    pub extra: [f32; 4], // extra[0] = emissive factor
+    pub extra: [f32; 4], // [emissive, uv_scroll.x, uv_scroll.y, wireframe_flag]
     pub uv_offset: [f32; 2],
     pub uv_scale: [f32; 2],
+    pub fresnel: [f32; 4], // [fresnel_color.r, fresnel_color.g, fresnel_color.b, fresnel_power]
 }
 
 impl InstanceRaw {
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
-        const ATTRIBS: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
+        const ATTRIBS: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
             4 => Float32x4,
             5 => Float32x4,
             6 => Float32x4,
@@ -53,6 +54,7 @@ impl InstanceRaw {
             9 => Float32x4,
             10 => Float32x2,
             11 => Float32x2,
+            12 => Float32x4,
         ];
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<InstanceRaw>() as wgpu::BufferAddress,
@@ -259,6 +261,7 @@ pub struct GpuContext {
     pub size: winit::dpi::PhysicalSize<u32>,
     pub depth_texture: DepthTexture,
     pub render_pipeline: wgpu::RenderPipeline,
+    pub additive_render_pipeline: wgpu::RenderPipeline,
     pub line_pipeline: wgpu::RenderPipeline,
     pub grid_mesh: MeshGpu,
     pub wireframe_cube_mesh: MeshGpu,
@@ -324,6 +327,7 @@ struct InstanceInput {
     @location(9) inst_extra: vec4<f32>,
     @location(10) uv_offset: vec2<f32>,
     @location(11) uv_scale: vec2<f32>,
+    @location(12) fresnel: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -333,6 +337,8 @@ struct VertexOutput {
     @location(2) uv: vec2<f32>,
     @location(3) emissive: f32,
     @location(4) world_pos: vec3<f32>,
+    @location(5) fresnel: vec4<f32>,
+    @location(6) uv_scroll: vec2<f32>,
 };
 
 @vertex
@@ -362,12 +368,15 @@ fn vs_main(
     out.uv = vertex.uv * instance.uv_scale + instance.uv_offset;
     out.emissive = instance.inst_extra.x;
     out.world_pos = world_pos.xyz;
+    out.fresnel = instance.fresnel;
+    out.uv_scroll = vec2<f32>(instance.inst_extra.y, instance.inst_extra.z);
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let tex_color = textureSample(t_diffuse, s_diffuse, in.uv);
+    let scrolled_uv = in.uv + in.uv_scroll * camera.camera_pos.w;
+    let tex_color = textureSample(t_diffuse, s_diffuse, scrolled_uv);
     let base_color = in.color * tex_color;
 
     if (base_color.a < 0.01) {
@@ -416,11 +425,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
+    // Fresnel Rim Glow
+    var fresnel_contrib = vec3<f32>(0.0);
+    if (in.fresnel.w > 0.0) {
+        let n_dot_v = max(dot(in.world_normal, view_dir), 0.0);
+        let rim = pow(1.0 - n_dot_v, in.fresnel.w);
+        fresnel_contrib = in.fresnel.rgb * rim;
+    }
+
     // 5. Emissive Material Glow
     let emissive = base_color.rgb * in.emissive * 2.0;
 
     // 6. Combined Lighting
-    let lit_color = base_color.rgb * (ambient + diffuse + point_diffuse) + specular + point_specular + emissive;
+    let lit_color = base_color.rgb * (ambient + diffuse + point_diffuse) + specular + point_specular + emissive + fresnel_contrib;
 
     // 6. Horizon Gradient & Soft Distance Fog
     let fog_color = vec3<f32>(0.08, 0.09, 0.12);
@@ -991,6 +1008,61 @@ impl GpuContext {
             cache: None,
         });
 
+        let additive_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("3D Additive Render Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[Some(Vertex::desc()), Some(InstanceRaw::desc())],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DepthTexture::DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
         // Line pipeline for Grid, Wireframes and Debug Colliders
         let line_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Line Shader Module"),
@@ -1086,6 +1158,7 @@ impl GpuContext {
             size,
             depth_texture,
             render_pipeline,
+            additive_render_pipeline,
             line_pipeline,
             grid_mesh,
             wireframe_cube_mesh,
@@ -1187,8 +1260,12 @@ impl GpuContext {
     }
 
     pub fn update_camera(&mut self, camera: &Camera) {
+        self.update_camera_with_time(camera, 1.0);
+    }
+
+    pub fn update_camera_with_time(&mut self, camera: &Camera, time: f32) {
         let mut uniform = CameraUniform::new();
-        uniform.update(camera);
+        uniform.update_with_time(camera, time);
         self.queue.write_buffer(
             &self.camera_buffer,
             0,

@@ -115,6 +115,19 @@ pub struct LuaEngineContext {
     pub audio: Arc<Mutex<crate::audio::AudioManager>>,
     pub pending_post_process: Arc<Mutex<Option<crate::assets::PostProcessDef>>>,
     pub post_process_settings: Arc<RwLock<crate::assets::PostProcessDef>>,
+    pub pending_materials: Arc<Mutex<Vec<MaterialUpdate>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MaterialUpdate {
+    pub entity_id: String,
+    pub color: Option<[f32; 4]>,
+    pub emissive: Option<f32>,
+    pub fresnel_color: Option<[f32; 3]>,
+    pub fresnel_power: Option<f32>,
+    pub blend_mode: Option<String>,
+    pub wireframe: Option<bool>,
+    pub uv_scroll: Option<[f32; 2]>,
 }
 
 pub fn check_key_match(keys: &HashSet<String>, clean: &str) -> bool {
@@ -173,6 +186,7 @@ impl LuaEngineContext {
             audio,
             pending_post_process: Arc::new(Mutex::new(None)),
             post_process_settings: Arc::new(RwLock::new(crate::assets::PostProcessDef::default())),
+            pending_materials: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -299,6 +313,12 @@ impl ScriptComponent {
                 };
 
                 let parent: Option<String> = table.get("parent").ok();
+                let fresnel_color: Option<[f32; 3]> = table.get("fresnel_color").ok();
+                let fresnel_power: Option<f32> = table.get("fresnel_power").ok();
+                let blend_mode: Option<String> = table.get("blend_mode").ok();
+                let wireframe: Option<bool> = table.get("wireframe").ok();
+                let uv_scroll: Option<[f32; 2]> = table.get("uv_scroll").ok();
+
                 let entity_def = EntityDef {
                     id,
                     mesh,
@@ -309,6 +329,11 @@ impl ScriptComponent {
                     parent,
                     color,
                     emissive,
+                    fresnel_color,
+                    fresnel_power,
+                    blend_mode,
+                    wireframe,
+                    uv_scroll,
                     script,
                     physics: phys_def,
                     point_light: None,
@@ -781,6 +806,58 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register get_post_process: {}", e))?;
         lua.globals()
             .set("get_post_process", get_post_process)
+            .map_err(|e| e.to_string())?;
+
+        // 27. set_material(entity_id, material_table)
+        let materials_ref = ctx.pending_materials.clone();
+        let set_material = lua
+            .create_function(move |_, (id, mat_table): (String, mlua::Table)| {
+                let color: Option<[f32; 4]> = if let Ok(col) = mat_table.get::<mlua::Table>("color") {
+                    let r: f32 = col.get(1).unwrap_or(1.0);
+                    let g: f32 = col.get(2).unwrap_or(1.0);
+                    let b: f32 = col.get(3).unwrap_or(1.0);
+                    let a: f32 = col.get(4).unwrap_or(1.0);
+                    Some([r, g, b, a])
+                } else {
+                    None
+                };
+                let emissive: Option<f32> = mat_table.get("emissive").ok();
+                let fresnel_color: Option<[f32; 3]> = if let Ok(fc) = mat_table.get::<mlua::Table>("fresnel_color") {
+                    let r: f32 = fc.get(1).unwrap_or(1.0);
+                    let g: f32 = fc.get(2).unwrap_or(1.0);
+                    let b: f32 = fc.get(3).unwrap_or(1.0);
+                    Some([r, g, b])
+                } else {
+                    None
+                };
+                let fresnel_power: Option<f32> = mat_table.get("fresnel_power").ok();
+                let blend_mode: Option<String> = mat_table.get("blend_mode").ok();
+                let wireframe: Option<bool> = mat_table.get("wireframe").ok();
+                let uv_scroll: Option<[f32; 2]> = if let Ok(uv) = mat_table.get::<mlua::Table>("uv_scroll") {
+                    let x: f32 = uv.get(1).unwrap_or(0.0);
+                    let y: f32 = uv.get(2).unwrap_or(0.0);
+                    Some([x, y])
+                } else {
+                    None
+                };
+
+                if let Ok(mut list) = materials_ref.lock() {
+                    list.push(MaterialUpdate {
+                        entity_id: id,
+                        color,
+                        emissive,
+                        fresnel_color,
+                        fresnel_power,
+                        blend_mode,
+                        wireframe,
+                        uv_scroll,
+                    });
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register set_material: {}", e))?;
+        lua.globals()
+            .set("set_material", set_material)
             .map_err(|e| e.to_string())?;
 
         // Execute the script chunk to define on_update, on_collision, and globals

@@ -305,9 +305,13 @@ impl CameraUniform {
     }
 
     pub fn update(&mut self, camera: &Camera) {
+        self.update_with_time(camera, 1.0);
+    }
+
+    pub fn update_with_time(&mut self, camera: &Camera, time: f32) {
         self.view_proj = camera.build_view_projection_matrix().to_cols_array_2d();
         let eff_eye = camera.eye + camera.shake_offset;
-        self.camera_pos = [eff_eye.x, eff_eye.y, eff_eye.z, 1.0];
+        self.camera_pos = [eff_eye.x, eff_eye.y, eff_eye.z, time];
     }
 }
 

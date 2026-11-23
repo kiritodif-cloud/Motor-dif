@@ -116,6 +116,7 @@ impl ParticleSystem {
                 model: model.to_cols_array_2d(),
                 color: col,
                 extra: [1.0, 0.0, 0.0, 0.0], // Emissive glow = 1.0
+                fresnel: [0.0, 0.0, 0.0, 0.0],
                 uv_offset: [0.0, 0.0],
                 uv_scale: [1.0, 1.0],
             });

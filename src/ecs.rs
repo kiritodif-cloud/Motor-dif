@@ -88,7 +88,17 @@ pub struct MeshRender {
     #[serde(default)]
     pub texture: Option<String>,
     pub color: [f32; 4],   // [r, g, b, a]
-    pub emissive: f32,     // 0.0 to 1.0
+    pub emissive: f32,     // 0.0 to 5.0
+    #[serde(default)]
+    pub fresnel_color: Option<[f32; 3]>,
+    #[serde(default)]
+    pub fresnel_power: Option<f32>,
+    #[serde(default)]
+    pub blend_mode: Option<String>, // "opaque" | "alpha" | "additive"
+    #[serde(default)]
+    pub wireframe: Option<bool>,
+    #[serde(default)]
+    pub uv_scroll: Option<[f32; 2]>,
 }
 
 impl MeshRender {
@@ -98,6 +108,11 @@ impl MeshRender {
             texture: None,
             color,
             emissive,
+            fresnel_color: None,
+            fresnel_power: None,
+            blend_mode: None,
+            wireframe: None,
+            uv_scroll: None,
         }
     }
 
@@ -112,6 +127,11 @@ impl MeshRender {
             texture: None,
             color,
             emissive: 0.0,
+            fresnel_color: None,
+            fresnel_power: None,
+            blend_mode: None,
+            wireframe: None,
+            uv_scroll: None,
         }
     }
 
@@ -121,6 +141,11 @@ impl MeshRender {
             texture: None,
             color,
             emissive: 0.0,
+            fresnel_color: None,
+            fresnel_power: None,
+            blend_mode: None,
+            wireframe: None,
+            uv_scroll: None,
         }
     }
 }

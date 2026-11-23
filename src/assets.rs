@@ -73,6 +73,16 @@ pub struct EntityDef {
     #[serde(default)]
     pub emissive: f32,
     #[serde(default)]
+    pub fresnel_color: Option<[f32; 3]>,
+    #[serde(default)]
+    pub fresnel_power: Option<f32>,
+    #[serde(default)]
+    pub blend_mode: Option<String>,
+    #[serde(default)]
+    pub wireframe: Option<bool>,
+    #[serde(default)]
+    pub uv_scroll: Option<[f32; 2]>,
+    #[serde(default)]
     pub script: Option<String>,
     #[serde(default)]
     pub physics: Option<PhysicsDef>,
@@ -145,6 +155,11 @@ impl Default for SceneDef {
                     texture: None,
                     parent: None,
                     emissive: 0.0,
+                    fresnel_color: None,
+                    fresnel_power: None,
+                    blend_mode: None,
+                    wireframe: None,
+                    uv_scroll: None,
                     script: None,
                     physics: None,
                     point_light: None,
@@ -159,6 +174,11 @@ impl Default for SceneDef {
                     texture: None,
                     parent: None,
                     emissive: 0.0,
+                    fresnel_color: None,
+                    fresnel_power: None,
+                    blend_mode: None,
+                    wireframe: None,
+                    uv_scroll: None,
                     script: None,
                     physics: None,
                     point_light: None,
@@ -173,6 +193,11 @@ impl Default for SceneDef {
                     texture: None,
                     parent: None,
                     emissive: 0.0,
+                    fresnel_color: None,
+                    fresnel_power: None,
+                    blend_mode: None,
+                    wireframe: None,
+                    uv_scroll: None,
                     script: None,
                     physics: None,
                     point_light: None,
@@ -267,6 +292,11 @@ pub fn extract_scene_from_world(
             parent: meta.parent.clone(),
             color: mesh.color,
             emissive: mesh.emissive,
+            fresnel_color: mesh.fresnel_color,
+            fresnel_power: mesh.fresnel_power,
+            blend_mode: mesh.blend_mode.clone(),
+            wireframe: mesh.wireframe,
+            uv_scroll: mesh.uv_scroll,
             script: script_opt.map(|s| s.path.clone()),
             physics: phys_def,
             point_light: light_opt,
@@ -317,6 +347,11 @@ pub fn apply_scene_to_world(
             texture: entity.texture.clone(),
             color: entity.color,
             emissive: entity.emissive,
+            fresnel_color: entity.fresnel_color,
+            fresnel_power: entity.fresnel_power,
+            blend_mode: entity.blend_mode.clone(),
+            wireframe: entity.wireframe,
+            uv_scroll: entity.uv_scroll,
         };
 
         let e = world.spawn((meta, transform, mesh));
@@ -428,6 +463,11 @@ pub fn extract_entity_def(
         parent: meta.parent.clone(),
         color: mesh.color,
         emissive: mesh.emissive,
+        fresnel_color: mesh.fresnel_color,
+        fresnel_power: mesh.fresnel_power,
+        blend_mode: mesh.blend_mode.clone(),
+        wireframe: mesh.wireframe,
+        uv_scroll: mesh.uv_scroll,
         script,
         physics: phys_def,
         point_light,
@@ -465,6 +505,11 @@ mod tests {
             parent: Some("parent_node".to_string()),
             color: [1.0, 1.0, 1.0, 1.0],
             emissive: 0.0,
+            fresnel_color: None,
+            fresnel_power: None,
+            blend_mode: None,
+            wireframe: None,
+            uv_scroll: None,
             script: None,
             physics: None,
             point_light: Some(PointLightDef {
@@ -479,5 +524,36 @@ mod tests {
         let decoded: EntityDef = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.parent, Some("parent_node".to_string()));
         assert_eq!(decoded.point_light.as_ref().unwrap().intensity, 3.5);
+    }
+
+    #[test]
+    fn test_entity_def_material_properties() {
+        let def = EntityDef {
+            id: "styled_mat".to_string(),
+            mesh: "torus".to_string(),
+            position: [0.0, 1.0, 0.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+            texture: None,
+            parent: None,
+            color: [0.2, 0.7, 1.0, 1.0],
+            emissive: 3.5,
+            fresnel_color: Some([0.0, 1.0, 1.0]),
+            fresnel_power: Some(3.0),
+            blend_mode: Some("additive".to_string()),
+            wireframe: Some(true),
+            uv_scroll: Some([0.1, -0.2]),
+            script: None,
+            physics: None,
+            point_light: None,
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        assert!(json.contains("\"blend_mode\":\"additive\""));
+        assert!(json.contains("\"wireframe\":true"));
+        assert!(json.contains("\"emissive\":3.5"));
+        let decoded: EntityDef = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.blend_mode, Some("additive".to_string()));
+        assert_eq!(decoded.wireframe, Some(true));
+        assert_eq!(decoded.fresnel_power, Some(3.0));
     }
 }
