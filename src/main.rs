@@ -11,6 +11,7 @@ pub mod particles;
 pub mod physics;
 pub mod renderer;
 pub mod scripting;
+pub mod templates;
 pub mod tweens;
 pub mod ui_theme;
 
@@ -2504,6 +2505,7 @@ impl EngineState {
 
         let mut trigger_save_scene = false;
         let mut trigger_new_scene = false;
+        let mut trigger_template: Option<&'static str> = None;
         let mut trigger_reload_scene = false;
         let mut trigger_spawn_mesh = None;
         let mut trigger_duplicate = false;
@@ -2643,6 +2645,24 @@ impl EngineState {
                                 trigger_new_scene = true;
                                 ui.close();
                             }
+                            ui.menu_button("[T] New from Template", |ui| {
+                                if ui.button("Empty 3D").clicked() {
+                                    trigger_template = Some("empty_3d");
+                                    ui.close();
+                                }
+                                if ui.button("Top-Down 2D").clicked() {
+                                    trigger_template = Some("top_down_2d");
+                                    ui.close();
+                                }
+                                if ui.button("Platformer 3D").clicked() {
+                                    trigger_template = Some("platformer_3d");
+                                    ui.close();
+                                }
+                                if ui.button("Space Arena").clicked() {
+                                    trigger_template = Some("space_arena");
+                                    ui.close();
+                                }
+                            });
                             if ui.button("[^] Save Scene (Ctrl+S)").clicked() {
                                 trigger_save_scene = true;
                                 ui.close();
@@ -3207,7 +3227,7 @@ impl EngineState {
                                     ui.add_space(4.0);
 
                                     // 7. Animation Player
-                                    ui_theme::collapsible_card(ui, "insp_animation", "🎬 Animation Player", true, |ui| {
+                                    ui_theme::collapsible_card(ui, "insp_animation", "[A] Animation Player", true, |ui| {
                                         let has_anim = self.world.get::<&crate::animation::AnimationPlayer>(entity).is_ok();
                                         let mut enable_anim = has_anim;
                                         if ui.checkbox(&mut enable_anim, "Enable Animation Player").changed() {
@@ -4596,6 +4616,28 @@ impl EngineState {
             self.selected_entity = None;
             self.logs.push("Created new empty scene".to_string());
             self.add_toast("New empty scene created", egui::Color32::from_rgb(250, 204, 21));
+        }
+
+        if let Some(template_name) = trigger_template {
+            self.push_history();
+            match templates::create_template_scene(template_name) {
+                Ok(scene) => {
+                    self.world.clear();
+                    self.physics.clear();
+                    self.particles.clear();
+                    self.selected_entity = None;
+                    assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
+                    if let Some(env) = &scene.environment {
+                        self.environment_settings = env.clone();
+                    }
+                    let msg = format!("Loaded template '{}'", template_name);
+                    self.logs.push(msg.clone());
+                    self.add_toast(&msg, egui::Color32::from_rgb(56, 189, 248));
+                }
+                Err(e) => {
+                    self.logs.push(format!("Error loading template '{}': {}", template_name, e));
+                }
+            }
         }
 
         if trigger_save_scene {

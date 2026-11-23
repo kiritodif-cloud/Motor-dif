@@ -69,7 +69,19 @@ pub fn export_game(
     }
 
     let out_dir = match output_dir {
-        Some(dir) => PathBuf::from(dir).join(clean_name),
+        Some(dir) => {
+            let p = PathBuf::from(dir.trim());
+            let already_ends_with_name = p
+                .file_name()
+                .and_then(|f| f.to_str())
+                .map(|f| f.eq_ignore_ascii_case(clean_name))
+                .unwrap_or(false);
+            if already_ends_with_name {
+                p
+            } else {
+                p.join(clean_name)
+            }
+        }
         None => PathBuf::from("dist").join(clean_name),
     };
 
@@ -157,5 +169,37 @@ mod tests {
         assert_eq!(decoded.entry_scene, "assets/cosmos_scene.json");
         assert_eq!(decoded.width, 1920);
         assert_eq!(decoded.height, 1080);
+    }
+
+    #[test]
+    fn test_export_output_dir_resolution() {
+        let resolve_dir = |dir: Option<&str>, name: &str| -> PathBuf {
+            let clean_name = name.trim();
+            match dir {
+                Some(d) => {
+                    let p = PathBuf::from(d.trim());
+                    let already_ends = p
+                        .file_name()
+                        .and_then(|f| f.to_str())
+                        .map(|f| f.eq_ignore_ascii_case(clean_name))
+                        .unwrap_or(false);
+                    if already_ends {
+                        p
+                    } else {
+                        p.join(clean_name)
+                    }
+                }
+                None => PathBuf::from("dist").join(clean_name),
+            }
+        };
+
+        // When passing output_dir = "dist" and name = "mi_juego" -> "dist/mi_juego"
+        assert_eq!(resolve_dir(Some("dist"), "mi_juego"), PathBuf::from("dist").join("mi_juego"));
+
+        // When passing output_dir = "dist/mi_juego" and name = "mi_juego" -> "dist/mi_juego" (NO DUPLICATION)
+        assert_eq!(resolve_dir(Some("dist/mi_juego"), "mi_juego"), PathBuf::from("dist/mi_juego"));
+
+        // When passing output_dir = None -> "dist/mi_juego"
+        assert_eq!(resolve_dir(None, "mi_juego"), PathBuf::from("dist").join("mi_juego"));
     }
 }

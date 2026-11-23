@@ -397,6 +397,25 @@ pub async fn handle_jsonrpc(
                                 },
                                 "required": ["id"]
                             }
+                        },
+                        {
+                            "name": "new_scene_from_template",
+                            "description": "Genera una nueva escena a partir de una plantilla lista para usar ('empty_3d', 'top_down_2d', 'platformer_3d', 'space_arena') y la guarda en disco",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "template_name": {
+                                        "type": "string",
+                                        "enum": ["empty_3d", "top_down_2d", "platformer_3d", "space_arena"],
+                                        "description": "Nombre de la plantilla ('empty_3d', 'top_down_2d', 'platformer_3d', 'space_arena')"
+                                    },
+                                    "save_path": {
+                                        "type": "string",
+                                        "description": "Ruta de guardado (por defecto 'assets/scene.json')"
+                                    }
+                                },
+                                "required": ["template_name"]
+                            }
                         }
                     ]
                 }),
@@ -732,6 +751,28 @@ pub async fn handle_jsonrpc(
                         Ok(Ok(msg)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": msg }] }))),
                         Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al seleccionar entidad")),
+                    }
+                }
+                "new_scene_from_template" => {
+                    let template_name = match args.get("template_name").and_then(|v| v.as_str()) {
+                        Some(t) => t,
+                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'template_name'")),
+                    };
+                    let save_path = args.get("save_path").and_then(|v| v.as_str()).unwrap_or("assets/scene.json");
+                    match crate::templates::generate_and_save_template(template_name, save_path) {
+                        Ok(scene) => Some(JsonRpcResponse::success(
+                            id,
+                            json!({
+                                "content": [{
+                                    "type": "text",
+                                    "text": format!("Plantilla '{}' guardada exitosamente en '{}' con {} entidades", template_name, save_path, scene.entities.len())
+                                }],
+                                "template": template_name,
+                                "save_path": save_path,
+                                "entities_count": scene.entities.len()
+                            }),
+                        )),
+                        Err(e) => Some(JsonRpcResponse::error(id, -32000, format!("Error generando plantilla: {}", e))),
                     }
                 }
                 _ => Some(JsonRpcResponse::error(id, -32601, format!("Herramienta desconocida: {}", tool_name))),
