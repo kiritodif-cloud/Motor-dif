@@ -8,6 +8,7 @@ pub mod game_ui;
 pub mod hot_reload;
 pub mod input_map;
 pub mod mcp_server;
+pub mod nav;
 pub mod particles;
 pub mod physics;
 pub mod renderer;
@@ -2015,6 +2016,19 @@ impl EngineState {
             }
             if let Ok(mut states_lock) = self.lua_ctx.anim_playing_states.write() {
                 *states_lock = anim_states;
+            }
+
+            // Handle pending nav bake from Lua
+            let pending_bake = if let Ok(mut lock) = self.lua_ctx.pending_nav_bake.lock() {
+                lock.take()
+            } else {
+                None
+            };
+            if let Some((cs, extent)) = pending_bake {
+                if let Ok(mut grid) = self.lua_ctx.nav_grid.write() {
+                    *grid = nav::NavGrid::new(cs, extent);
+                    grid.bake_from_world(&self.world);
+                }
             }
         }
 

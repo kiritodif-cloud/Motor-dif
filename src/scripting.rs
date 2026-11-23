@@ -134,6 +134,8 @@ pub struct LuaEngineContext {
     pub input_map: Arc<RwLock<crate::input_map::InputMap>>,
     pub mouse_info: Arc<RwLock<crate::input_map::MouseInfo>>,
     pub active_camera: Arc<RwLock<crate::camera::Camera>>,
+    pub nav_grid: Arc<RwLock<crate::nav::NavGrid>>,
+    pub pending_nav_bake: Arc<Mutex<Option<(f32, f32)>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -291,6 +293,8 @@ impl LuaEngineContext {
             input_map: Arc::new(RwLock::new(crate::input_map::InputMap::load_or_default(std::path::Path::new("assets/input_map.json")))),
             mouse_info: Arc::new(RwLock::new(crate::input_map::MouseInfo::default())),
             active_camera: Arc::new(RwLock::new(crate::camera::Camera::new_3d(glam::Vec3::new(0.0, 3.5, 9.0), glam::Vec3::ZERO, 16.0 / 9.0))),
+            nav_grid: Arc::new(RwLock::new(crate::nav::NavGrid::new(1.0, 20.0))),
+            pending_nav_bake: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1654,6 +1658,71 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register get_mouse_world_pos: {}", e))?;
         lua.globals().set("get_mouse_world_pos", get_mouse_world_pos).map_err(|e| e.to_string())?;
 
+        // 56. nav_bake([cell_size], [half_extent]) -> bool
+        let nav_grid_bake_ref = ctx.nav_grid.clone();
+        let we_bake_ref = ctx.world_entities.clone();
+        let pending_bake_ref = ctx.pending_nav_bake.clone();
+        let nav_bake = lua
+            .create_function(move |_, (cs_opt, extent_opt): (Option<f32>, Option<f32>)| {
+                let cs = cs_opt.unwrap_or(1.0);
+                let extent = extent_opt.unwrap_or(20.0);
+                if let Ok(mut pending) = pending_bake_ref.lock() {
+                    *pending = Some((cs, extent));
+                }
+                if let Ok(mut grid) = nav_grid_bake_ref.write() {
+                    *grid = crate::nav::NavGrid::new(cs, extent);
+                    if let Ok(entities) = we_bake_ref.read() {
+                        grid.bake_from_entities_map(&entities);
+                    }
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register nav_bake: {}", e))?;
+        lua.globals().set("nav_bake", nav_bake).map_err(|e| e.to_string())?;
+
+        // 57. find_path(start_x, start_z, goal_x, goal_z) -> table or nil
+        let nav_grid_find_ref = ctx.nav_grid.clone();
+        let find_path = lua
+            .create_function(move |lua, (sx, sz, gx, gz): (f32, f32, f32, f32)| {
+                let grid = nav_grid_find_ref.read().unwrap();
+                if let Some(waypoints) = grid.find_path(sx, sz, gx, gz) {
+                    let tbl = lua.create_table()?;
+                    for (i, pt) in waypoints.iter().enumerate() {
+                        let pt_tbl = lua.create_table()?;
+                        pt_tbl.set("x", pt[0])?;
+                        pt_tbl.set("z", pt[1])?;
+                        tbl.set(i + 1, pt_tbl)?;
+                    }
+                    Ok(Some(tbl))
+                } else {
+                    Ok(None)
+                }
+            })
+            .map_err(|e| format!("Failed to register find_path: {}", e))?;
+        lua.globals().set("find_path", find_path).map_err(|e| e.to_string())?;
+
+        // 58. nav_set_blocked(world_x, world_z, is_blocked) -> bool
+        let nav_grid_set_ref = ctx.nav_grid.clone();
+        let nav_set_blocked = lua
+            .create_function(move |_, (wx, wz, is_blocked): (f32, f32, bool)| {
+                if let Ok(mut grid) = nav_grid_set_ref.write() {
+                    grid.set_world_blocked(wx, wz, is_blocked);
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register nav_set_blocked: {}", e))?;
+        lua.globals().set("nav_set_blocked", nav_set_blocked).map_err(|e| e.to_string())?;
+
+        // 59. nav_is_blocked(world_x, world_z) -> bool
+        let nav_grid_is_ref = ctx.nav_grid.clone();
+        let nav_is_blocked = lua
+            .create_function(move |_, (wx, wz): (f32, f32)| {
+                let grid = nav_grid_is_ref.read().unwrap();
+                Ok(grid.is_world_blocked(wx, wz))
+            })
+            .map_err(|e| format!("Failed to register nav_is_blocked: {}", e))?;
+        lua.globals().set("nav_is_blocked", nav_is_blocked).map_err(|e| e.to_string())?;
+
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
             .exec()
@@ -2210,6 +2279,43 @@ mod tests {
 
             let has_boost: bool = lua.globals().get("has_boost").unwrap();
             assert!(!has_boost, "Boost should not be active yet");
+        }
+
+        let _ = std::fs::remove_file(test_script_path);
+    }
+
+    #[test]
+    fn test_nav_lua_bindings() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        let test_script_path = "assets/scripts/temp_nav_test.lua";
+        let script_code = r#"
+            nav_bake(1.0, 10.0)
+            nav_set_blocked(0.0, 0.0, true)
+            is_zero_blocked = nav_is_blocked(0.0, 0.0)
+
+            path = find_path(-2.0, 0.0, 2.0, 0.0)
+            path_len = 0
+            if path then
+                path_len = #path
+            end
+        "#;
+        std::fs::write(test_script_path, script_code).unwrap();
+
+        let mut comp = ScriptComponent::new(test_script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Init failed: {:?}", res.err());
+
+        if let Some(lua_arc) = &comp.lua {
+            let lua = lua_arc.lock().unwrap();
+            let is_blocked: bool = lua.globals().get("is_zero_blocked").unwrap();
+            assert!(is_blocked, "Cell at (0, 0) should be blocked");
+
+            let path_len: i32 = lua.globals().get("path_len").unwrap();
+            assert!(path_len > 2, "Expected a valid path around the blocked cell");
         }
 
         let _ = std::fs::remove_file(test_script_path);
