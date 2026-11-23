@@ -5,14 +5,17 @@ pub mod camera;
 pub mod ecs;
 pub mod exporter;
 pub mod game_ui;
+pub mod glb_exporter;
 pub mod hot_reload;
 pub mod input_map;
 pub mod mcp_server;
+pub mod modeler;
 pub mod nav;
 pub mod particles;
 pub mod physics;
 pub mod renderer;
 pub mod scripting;
+pub mod sdf;
 pub mod templates;
 pub mod tweens;
 pub mod ui_theme;
@@ -4204,126 +4207,130 @@ impl EngineState {
                             });
                         }
 
+                        let is_play_active = self.play_mode == PlayMode::Play;
+
                         // 6. Viewport Floating Overlay: Top-Left Capsule (Camera Mode & Colliders Toggle)
-                        let top_left_area = egui::Area::new(ui.make_persistent_id("viewport_top_left_capsule"))
-                            .fixed_pos(egui::pos2(viewport_rect.min.x + 12.0, viewport_rect.min.y + 12.0));
-                        top_left_area.show(ui.ctx(), |ui| {
-                            egui::Frame::new()
-                                .fill(egui::Color32::from_rgba_premultiplied(32, 35, 43, 220))
-                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(46, 51, 64, 180)))
-                                .corner_radius(egui::CornerRadius::same(6))
-                                .inner_margin(egui::Margin::symmetric(8, 4))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        let cam_mode_str = match self.camera.mode {
-                                            CameraMode::Perspective => "3D",
-                                            CameraMode::Orthographic => "2D",
-                                        };
-                                        if ui.selectable_label(false, cam_mode_str).clicked() {
-                                            self.camera.toggle_mode();
-                                        }
-                                        ui.separator();
-                                        ui.checkbox(&mut self.debug_colliders, "Colliders");
-                                        ui.separator();
-                                        let sky_label = match self.environment_settings.sky_mode.as_str() {
-                                            "space" => "Sky: Space",
-                                            "solid" => "Sky: Solid",
-                                            _ => "Sky: Gradient",
-                                        };
-                                        egui::ComboBox::from_id_salt("viewport_sky_mode")
-                                            .selected_text(sky_label)
-                                            .width(95.0)
-                                            .show_ui(ui, |ui| {
-                                                if ui.selectable_value(&mut self.environment_settings.sky_mode, "gradient".to_string(), "Gradient").changed() {
-                                                    if let Ok(mut lock) = self.lua_ctx.environment_settings.write() {
-                                                        *lock = self.environment_settings.clone();
+                        if !is_play_active {
+                            let top_left_area = egui::Area::new(ui.make_persistent_id("viewport_top_left_capsule"))
+                                .fixed_pos(egui::pos2(viewport_rect.min.x + 12.0, viewport_rect.min.y + 12.0));
+                            top_left_area.show(ui.ctx(), |ui| {
+                                egui::Frame::new()
+                                    .fill(egui::Color32::from_rgba_premultiplied(32, 35, 43, 220))
+                                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(46, 51, 64, 180)))
+                                    .corner_radius(egui::CornerRadius::same(6))
+                                    .inner_margin(egui::Margin::symmetric(8, 4))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            let cam_mode_str = match self.camera.mode {
+                                                CameraMode::Perspective => "3D",
+                                                CameraMode::Orthographic => "2D",
+                                            };
+                                            if ui.selectable_label(false, cam_mode_str).clicked() {
+                                                self.camera.toggle_mode();
+                                            }
+                                            ui.separator();
+                                            ui.checkbox(&mut self.debug_colliders, "Colliders");
+                                            ui.separator();
+                                            let sky_label = match self.environment_settings.sky_mode.as_str() {
+                                                "space" => "Sky: Space",
+                                                "solid" => "Sky: Solid",
+                                                _ => "Sky: Gradient",
+                                            };
+                                            egui::ComboBox::from_id_salt("viewport_sky_mode")
+                                                .selected_text(sky_label)
+                                                .width(95.0)
+                                                .show_ui(ui, |ui| {
+                                                    if ui.selectable_value(&mut self.environment_settings.sky_mode, "gradient".to_string(), "Gradient").changed() {
+                                                        if let Ok(mut lock) = self.lua_ctx.environment_settings.write() {
+                                                            *lock = self.environment_settings.clone();
+                                                        }
                                                     }
-                                                }
-                                                if ui.selectable_value(&mut self.environment_settings.sky_mode, "space".to_string(), "Space").changed() {
-                                                    if let Ok(mut lock) = self.lua_ctx.environment_settings.write() {
-                                                        *lock = self.environment_settings.clone();
+                                                    if ui.selectable_value(&mut self.environment_settings.sky_mode, "space".to_string(), "Space").changed() {
+                                                        if let Ok(mut lock) = self.lua_ctx.environment_settings.write() {
+                                                            *lock = self.environment_settings.clone();
+                                                        }
                                                     }
-                                                }
-                                                if ui.selectable_value(&mut self.environment_settings.sky_mode, "solid".to_string(), "Solid").changed() {
-                                                    if let Ok(mut lock) = self.lua_ctx.environment_settings.write() {
-                                                        *lock = self.environment_settings.clone();
+                                                    if ui.selectable_value(&mut self.environment_settings.sky_mode, "solid".to_string(), "Solid").changed() {
+                                                        if let Ok(mut lock) = self.lua_ctx.environment_settings.write() {
+                                                            *lock = self.environment_settings.clone();
+                                                        }
                                                     }
-                                                }
-                                            });
-                                        ui.separator();
-                                        let view_mode_str = match self.view_mode {
-                                            renderer::ViewMode::Lit => "View: Lit",
-                                            renderer::ViewMode::Unlit => "View: Unlit",
-                                            renderer::ViewMode::Wireframe => "View: Wireframe",
-                                        };
-                                        egui::ComboBox::from_id_salt("viewport_view_mode")
-                                            .selected_text(view_mode_str)
-                                            .width(95.0)
-                                            .show_ui(ui, |ui| {
-                                                ui.selectable_value(&mut self.view_mode, renderer::ViewMode::Lit, "Lit");
-                                                ui.selectable_value(&mut self.view_mode, renderer::ViewMode::Unlit, "Unlit");
-                                                ui.selectable_value(&mut self.view_mode, renderer::ViewMode::Wireframe, "Wireframe");
-                                            });
-                                        ui.separator();
-                                        if ui.selectable_label(self.show_profiler, "Profiler (F3)").clicked() {
-                                            self.show_profiler = !self.show_profiler;
-                                        }
+                                                });
+                                            ui.separator();
+                                            let view_mode_str = match self.view_mode {
+                                                renderer::ViewMode::Lit => "View: Lit",
+                                                renderer::ViewMode::Unlit => "View: Unlit",
+                                                renderer::ViewMode::Wireframe => "View: Wireframe",
+                                            };
+                                            egui::ComboBox::from_id_salt("viewport_view_mode")
+                                                .selected_text(view_mode_str)
+                                                .width(95.0)
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(&mut self.view_mode, renderer::ViewMode::Lit, "Lit");
+                                                    ui.selectable_value(&mut self.view_mode, renderer::ViewMode::Unlit, "Unlit");
+                                                    ui.selectable_value(&mut self.view_mode, renderer::ViewMode::Wireframe, "Wireframe");
+                                                });
+                                            ui.separator();
+                                            if ui.selectable_label(self.show_profiler, "Profiler (F3)").clicked() {
+                                                self.show_profiler = !self.show_profiler;
+                                            }
+                                        });
                                     });
-                                });
-                        });
+                            });
 
-                        // 7. Viewport Floating Overlay: Top-Right Capsule (FPS, Entity count & Orientation Gizmo)
-                        let entity_count = self.world.iter().count();
-                        let top_right_area = egui::Area::new(ui.make_persistent_id("viewport_top_right_capsule"))
-                            .fixed_pos(egui::pos2((viewport_rect.max.x - 180.0).max(viewport_rect.min.x + 10.0), viewport_rect.min.y + 12.0));
-                        top_right_area.show(ui.ctx(), |ui| {
-                            egui::Frame::new()
-                                .fill(egui::Color32::from_rgba_premultiplied(32, 35, 43, 220))
-                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(46, 51, 64, 180)))
-                                .corner_radius(egui::CornerRadius::same(6))
-                                .inner_margin(egui::Margin::symmetric(8, 4))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new(format!("{:.0} FPS | {} Ents", fps, entity_count))
-                                                .size(11.5)
-                                                .strong()
-                                                .color(ui_theme::COLOR_TEXT_MAIN),
-                                        );
-                                        ui.separator();
+                            // 7. Viewport Floating Overlay: Top-Right Capsule (FPS, Entity count & Orientation Gizmo)
+                            let entity_count = self.world.iter().count();
+                            let top_right_area = egui::Area::new(ui.make_persistent_id("viewport_top_right_capsule"))
+                                .fixed_pos(egui::pos2((viewport_rect.max.x - 180.0).max(viewport_rect.min.x + 10.0), viewport_rect.min.y + 12.0));
+                            top_right_area.show(ui.ctx(), |ui| {
+                                egui::Frame::new()
+                                    .fill(egui::Color32::from_rgba_premultiplied(32, 35, 43, 220))
+                                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(46, 51, 64, 180)))
+                                    .corner_radius(egui::CornerRadius::same(6))
+                                    .inner_margin(egui::Margin::symmetric(8, 4))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(format!("{:.0} FPS | {} Ents", fps, entity_count))
+                                                    .size(11.5)
+                                                    .strong()
+                                                    .color(ui_theme::COLOR_TEXT_MAIN),
+                                            );
+                                            ui.separator();
 
-                                        let (rect, _resp) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
-                                        let center = rect.center();
-                                        let p = ui.painter();
+                                            let (rect, _resp) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+                                            let center = rect.center();
+                                            let p = ui.painter();
 
-                                        // Camera orientation projection
-                                        let forward = (self.camera.target - self.camera.eye).normalize_or_zero();
-                                        let mut right = forward.cross(Vec3::Y);
-                                        if right.length_squared() < 0.001 {
-                                            right = Vec3::X;
-                                        } else {
-                                            right = right.normalize();
-                                        }
-                                        let up = right.cross(forward).normalize();
+                                            // Camera orientation projection
+                                            let forward = (self.camera.target - self.camera.eye).normalize_or_zero();
+                                            let mut right = forward.cross(Vec3::Y);
+                                            if right.length_squared() < 0.001 {
+                                                right = Vec3::X;
+                                            } else {
+                                                right = right.normalize();
+                                            }
+                                            let up = right.cross(forward).normalize();
 
-                                        let axes = [
-                                            (Vec3::X, ui_theme::COLOR_AXIS_X, "X"),
-                                            (Vec3::Y, ui_theme::COLOR_AXIS_Y, "Y"),
-                                            (Vec3::Z, ui_theme::COLOR_AXIS_Z, "Z"),
-                                        ];
+                                            let axes = [
+                                                (Vec3::X, ui_theme::COLOR_AXIS_X, "X"),
+                                                (Vec3::Y, ui_theme::COLOR_AXIS_Y, "Y"),
+                                                (Vec3::Z, ui_theme::COLOR_AXIS_Z, "Z"),
+                                            ];
 
-                                        p.circle_filled(center, 13.0, egui::Color32::from_black_alpha(80));
+                                            p.circle_filled(center, 13.0, egui::Color32::from_black_alpha(80));
 
-                                        for (axis_dir, color, label) in &axes {
-                                            let sx = axis_dir.dot(right) * 11.0;
-                                            let sy = -axis_dir.dot(up) * 11.0;
-                                            let tip = egui::pos2(center.x + sx, center.y + sy);
-                                            p.line_segment([center, tip], egui::Stroke::new(2.0, *color));
-                                            p.text(tip, egui::Align2::CENTER_CENTER, *label, egui::FontId::proportional(8.5), *color);
-                                        }
+                                            for (axis_dir, color, label) in &axes {
+                                                let sx = axis_dir.dot(right) * 11.0;
+                                                let sy = -axis_dir.dot(up) * 11.0;
+                                                let tip = egui::pos2(center.x + sx, center.y + sy);
+                                                p.line_segment([center, tip], egui::Stroke::new(2.0, *color));
+                                                p.text(tip, egui::Align2::CENTER_CENTER, *label, egui::FontId::proportional(8.5), *color);
+                                            }
+                                        });
                                     });
-                                });
-                        });
+                            });
+                        }
 
                         // 7b. F3 Profiler Overlay
                         if self.show_profiler {
