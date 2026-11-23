@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, Write};
 use std::path::Path;
@@ -7,10 +8,16 @@ pub struct AudioManager {
     stream_handle: Option<OutputStreamHandle>,
     music_sink: Option<Sink>,
     pub available: bool,
+    pub bus_volumes: HashMap<String, f32>,
 }
 
 impl AudioManager {
     pub fn init() -> (Option<OutputStream>, Self) {
+        let mut bus_volumes = HashMap::new();
+        bus_volumes.insert("master".to_string(), 1.0);
+        bus_volumes.insert("sfx".to_string(), 1.0);
+        bus_volumes.insert("music".to_string(), 1.0);
+
         match OutputStream::try_default() {
             Ok((stream, handle)) => {
                 (
@@ -19,6 +26,7 @@ impl AudioManager {
                         stream_handle: Some(handle),
                         music_sink: None,
                         available: true,
+                        bus_volumes,
                     },
                 )
             }
@@ -33,16 +41,50 @@ impl AudioManager {
                         stream_handle: None,
                         music_sink: None,
                         available: false,
+                        bus_volumes,
                     },
                 )
             }
         }
     }
 
+    pub fn get_bus_volume(&self, bus: &str) -> f32 {
+        let b = bus.trim().to_lowercase();
+        self.bus_volumes.get(&b).copied().unwrap_or(1.0)
+    }
+
+    pub fn set_bus_volume(&mut self, bus: &str, volume: f32) {
+        let b = bus.trim().to_lowercase();
+        let vol = volume.clamp(0.0, 2.0);
+        self.bus_volumes.insert(b.clone(), vol);
+        if (b == "music" || b == "master") && self.music_sink.is_some() {
+            let master = self.get_bus_volume("master");
+            let music = self.get_bus_volume("music");
+            if let Some(sink) = &self.music_sink {
+                sink.set_volume(master * music);
+            }
+        }
+    }
+
+    pub fn compute_effective_volume(&self, base_volume: f32, bus: &str) -> f32 {
+        let master = self.get_bus_volume("master");
+        let bus_vol = self.get_bus_volume(bus);
+        (base_volume * bus_vol * master).clamp(0.0, 2.0)
+    }
+
     pub fn play_sound(&self, path: &str, volume: f32) -> Result<(), String> {
+        self.play_sound_bus(path, volume, "sfx")
+    }
+
+    pub fn play_sound_bus(&self, path: &str, volume: f32, bus: &str) -> Result<(), String> {
         if !self.available {
             return Ok(());
         }
+        let effective_vol = self.compute_effective_volume(volume, bus);
+        if effective_vol <= 0.001 {
+            return Ok(());
+        }
+
         let handle = match &self.stream_handle {
             Some(h) => h,
             None => return Ok(()),
@@ -58,7 +100,59 @@ impl AudioManager {
         let source = Decoder::new(reader).map_err(|e| format!("Failed to decode '{}': {}", path, e))?;
 
         let sink = Sink::try_new(handle).map_err(|e| format!("Failed to create audio sink: {}", e))?;
-        sink.set_volume(volume.clamp(0.0, 2.0));
+        sink.set_volume(effective_vol);
+        sink.append(source);
+        sink.detach();
+
+        Ok(())
+    }
+
+    pub fn play_sound_3d(
+        &self,
+        path: &str,
+        sound_pos: [f32; 3],
+        listener_pos: [f32; 3],
+        max_dist: f32,
+        base_volume: f32,
+        bus: Option<&str>,
+    ) -> Result<(), String> {
+        if !self.available {
+            return Ok(());
+        }
+        let max_d = max_dist.max(0.1);
+        let dx = sound_pos[0] - listener_pos[0];
+        let dy = sound_pos[1] - listener_pos[1];
+        let dz = sound_pos[2] - listener_pos[2];
+        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+
+        if dist >= max_d {
+            return Ok(());
+        }
+
+        let attenuation = (1.0 - (dist / max_d)).clamp(0.0, 1.0);
+        let bus_name = bus.unwrap_or("sfx");
+        let effective_vol = self.compute_effective_volume(base_volume * attenuation, bus_name);
+
+        if effective_vol <= 0.001 {
+            return Ok(());
+        }
+
+        let handle = match &self.stream_handle {
+            Some(h) => h,
+            None => return Ok(()),
+        };
+
+        let file_path = Path::new(path);
+        if !file_path.exists() {
+            return Err(format!("Audio file '{}' not found", path));
+        }
+
+        let file = File::open(file_path).map_err(|e| format!("Failed to open '{}': {}", path, e))?;
+        let reader = BufReader::new(file);
+        let source = Decoder::new(reader).map_err(|e| format!("Failed to decode '{}': {}", path, e))?;
+
+        let sink = Sink::try_new(handle).map_err(|e| format!("Failed to create audio sink: {}", e))?;
+        sink.set_volume(effective_vol);
         sink.append(source);
         sink.detach();
 
@@ -69,6 +163,14 @@ impl AudioManager {
         if !self.available {
             return Ok(());
         }
+        let effective_vol = self.compute_effective_volume(volume, "music");
+        if effective_vol <= 0.001 {
+            if let Some(existing) = self.music_sink.take() {
+                existing.stop();
+            }
+            return Ok(());
+        }
+
         let handle = match &self.stream_handle {
             Some(h) => h,
             None => return Ok(()),
@@ -89,7 +191,7 @@ impl AudioManager {
         }
 
         let sink = Sink::try_new(handle).map_err(|e| format!("Failed to create music sink: {}", e))?;
-        sink.set_volume(volume.clamp(0.0, 2.0));
+        sink.set_volume(effective_vol);
         sink.append(source.repeat_infinite());
 
         self.music_sink = Some(sink);
@@ -110,7 +212,23 @@ impl AudioManager {
         duration_secs: f32,
         vol: f32,
     ) -> Result<(), String> {
+        self.play_tone_bus(f_start, f_end, wave_type, duration_secs, vol, "sfx")
+    }
+
+    pub fn play_tone_bus(
+        &self,
+        f_start: f32,
+        f_end: f32,
+        wave_type: &str,
+        duration_secs: f32,
+        vol: f32,
+        bus: &str,
+    ) -> Result<(), String> {
         if !self.available {
+            return Ok(());
+        }
+        let effective_vol = self.compute_effective_volume(vol, bus);
+        if effective_vol <= 0.001 {
             return Ok(());
         }
         let handle = match &self.stream_handle {
@@ -118,12 +236,12 @@ impl AudioManager {
             None => return Ok(()),
         };
 
-        let wav_bytes = generate_tone_wav_bytes(f_start, f_end, wave_type, duration_secs, vol);
+        let wav_bytes = generate_tone_wav_bytes(f_start, f_end, wave_type, duration_secs, 1.0);
         let cursor = std::io::Cursor::new(wav_bytes);
         let source = Decoder::new(cursor).map_err(|e| format!("Failed to decode synthesized tone: {}", e))?;
 
         let sink = Sink::try_new(handle).map_err(|e| format!("Failed to create audio sink: {}", e))?;
-        sink.set_volume(1.0);
+        sink.set_volume(effective_vol);
         sink.append(source);
         sink.detach();
 
@@ -288,6 +406,33 @@ mod tests {
 
         let noise_bytes = generate_tone_wav_bytes(500.0, 100.0, "noise", 0.05, 0.5);
         assert!(noise_bytes.len() > 44);
+    }
+
+    #[test]
+    fn test_audio_buses_and_spatial_math() {
+        let (_, mut audio) = AudioManager::init();
+        assert_eq!(audio.get_bus_volume("master"), 1.0);
+        assert_eq!(audio.get_bus_volume("sfx"), 1.0);
+        assert_eq!(audio.get_bus_volume("music"), 1.0);
+
+        audio.set_bus_volume("master", 0.8);
+        audio.set_bus_volume("sfx", 0.5);
+        assert_eq!(audio.get_bus_volume("master"), 0.8);
+        assert_eq!(audio.get_bus_volume("sfx"), 0.5);
+
+        // Effective volume = 1.0 * 0.5 (sfx) * 0.8 (master) = 0.4
+        let eff = audio.compute_effective_volume(1.0, "sfx");
+        assert!((eff - 0.4).abs() < 1e-4);
+
+        // Test spatial attenuation calculation
+        let _listener = [0.0_f32, 0.0, 0.0];
+        let max_dist = 20.0_f32;
+        let dist = 10.0_f32;
+        let att = (1.0_f32 - (dist / max_dist)).clamp(0.0_f32, 1.0_f32);
+        assert!((att - 0.5_f32).abs() < 1e-4);
+
+        let att_out_of_range = (1.0_f32 - (30.0_f32 / max_dist)).clamp(0.0_f32, 1.0_f32);
+        assert_eq!(att_out_of_range, 0.0_f32);
     }
 }
 

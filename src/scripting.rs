@@ -548,13 +548,14 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register set_hud_text: {}", e))?;
         lua.globals().set("set_hud_text", set_hud_text).map_err(|e| e.to_string())?;
 
-        // 8. play_sound(path, [volume])
+        // 8. play_sound(path, [volume], [bus])
         let audio_sound = ctx.audio.clone();
         let play_sound = lua
-            .create_function(move |_, (path, volume): (String, Option<f32>)| {
+            .create_function(move |_, (path, volume, bus): (String, Option<f32>, Option<String>)| {
                 let vol = volume.unwrap_or(1.0);
+                let bus_str = bus.unwrap_or_else(|| "sfx".to_string());
                 if let Ok(audio) = audio_sound.lock() {
-                    let _ = audio.play_sound(&path, vol);
+                    let _ = audio.play_sound_bus(&path, vol, &bus_str);
                 }
                 Ok(())
             })
@@ -585,6 +586,67 @@ impl ScriptComponent {
             })
             .map_err(|e| format!("Failed to register stop_music: {}", e))?;
         lua.globals().set("stop_music", stop_music).map_err(|e| e.to_string())?;
+
+        // 10b. play_sound_3d(path, x, y, z, max_dist, [volume], [bus])
+        let audio_3d = ctx.audio.clone();
+        let cam_3d = ctx.active_camera.clone();
+        let play_sound_3d = lua
+            .create_function(
+                move |_,
+                      (path, x, y, z, max_dist, volume, bus): (
+                    String,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    Option<f32>,
+                    Option<String>,
+                )| {
+                    let vol = volume.unwrap_or(1.0);
+                    let listener_eye = {
+                        let cam = cam_3d.read().unwrap();
+                        [cam.eye.x, cam.eye.y, cam.eye.z]
+                    };
+                    if let Ok(audio) = audio_3d.lock() {
+                        let _ = audio.play_sound_3d(
+                            &path,
+                            [x, y, z],
+                            listener_eye,
+                            max_dist,
+                            vol,
+                            bus.as_deref(),
+                        );
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(|e| format!("Failed to register play_sound_3d: {}", e))?;
+        lua.globals().set("play_sound_3d", play_sound_3d).map_err(|e| e.to_string())?;
+
+        // 10c. set_bus_volume(bus, volume)
+        let audio_set_bus = ctx.audio.clone();
+        let set_bus_volume = lua
+            .create_function(move |_, (bus, vol): (String, f32)| {
+                if let Ok(mut audio) = audio_set_bus.lock() {
+                    audio.set_bus_volume(&bus, vol);
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register set_bus_volume: {}", e))?;
+        lua.globals().set("set_bus_volume", set_bus_volume).map_err(|e| e.to_string())?;
+
+        // 10d. get_bus_volume(bus) -> number
+        let audio_get_bus = ctx.audio.clone();
+        let get_bus_volume = lua
+            .create_function(move |_, bus: String| {
+                if let Ok(audio) = audio_get_bus.lock() {
+                    Ok(audio.get_bus_volume(&bus))
+                } else {
+                    Ok(1.0)
+                }
+            })
+            .map_err(|e| format!("Failed to register get_bus_volume: {}", e))?;
+        lua.globals().set("get_bus_volume", get_bus_volume).map_err(|e| e.to_string())?;
 
         // 11. spawn_particles(x, y, z, r, g, b, [count], [speed], [lifetime])
         let particles_ref = ctx.pending_particles.clone();
@@ -2317,6 +2379,39 @@ mod tests {
             let path_len: i32 = lua.globals().get("path_len").unwrap();
             assert!(path_len > 2, "Expected a valid path around the blocked cell");
         }
+
+        let _ = std::fs::remove_file(test_script_path);
+    }
+
+    #[test]
+    fn test_audio_buses_lua_bindings() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio.clone());
+
+        let test_script_path = "assets/scripts/temp_audio_test.lua";
+        let script_code = r#"
+            initial_master = get_bus_volume("master")
+            set_bus_volume("sfx", 0.6)
+            new_sfx = get_bus_volume("sfx")
+            play_sound_3d("assets/sfx/bounce.wav", 0.0, 0.0, 0.0, 25.0, 1.0, "sfx")
+        "#;
+        std::fs::write(test_script_path, script_code).unwrap();
+
+        let mut comp = ScriptComponent::new(test_script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Init failed: {:?}", res.err());
+
+        if let Some(lua_arc) = &comp.lua {
+            let lua = lua_arc.lock().unwrap();
+            let initial_master: f32 = lua.globals().get("initial_master").unwrap();
+            let new_sfx: f32 = lua.globals().get("new_sfx").unwrap();
+            assert_eq!(initial_master, 1.0);
+            assert!((new_sfx - 0.6).abs() < 1e-4);
+        }
+
+        assert_eq!(audio.lock().unwrap().get_bus_volume("sfx"), 0.6);
 
         let _ = std::fs::remove_file(test_script_path);
     }
