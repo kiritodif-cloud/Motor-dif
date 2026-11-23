@@ -912,4 +912,17 @@ pub mod tests {
         assert!(sum_mid > 0.0);
         assert!(sum_high > 0.0);
     }
+
+    #[test]
+    fn test_bake_cosmos_theme_wav() {
+        let recipe = preset_space_ambient();
+        let out_path = "assets/music/cosmos_theme.wav";
+        let res = bake_music_to_wav(&recipe, out_path, Some(0.7));
+        assert!(res.is_ok(), "Failed to bake cosmos_theme.wav: {:?}", res.err());
+
+        let bytes = std::fs::read(out_path).expect("cosmos_theme.wav should exist");
+        assert!(bytes.len() > 1000);
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WAVE");
+    }
 }
