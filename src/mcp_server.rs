@@ -1615,5 +1615,122 @@ mod tests {
         assert!(resp_str.contains("forge_scatter_props"));
         assert!(resp_str.contains("forge_create_rigged_character"));
         assert!(resp_str.contains("forge_spawn_vfx"));
+        assert!(resp_str.contains("get_engine_docs"));
+    }
+
+    #[test]
+    fn test_get_engine_docs_all_sections() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(1);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // 1. With topic: "all"
+        let req_all = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(101)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "get_engine_docs",
+                "arguments": { "topic": "all" }
+            })),
+        };
+        let resp = rt.block_on(async {
+            handle_jsonrpc(&cmd_tx, req_all).await
+        }).expect("Response expected");
+
+        let resp_json = serde_json::to_value(&resp).unwrap();
+        let content_text = resp_json["result"]["content"][0]["text"].as_str().unwrap();
+
+        assert!(content_text.contains("## quickstart"));
+        assert!(content_text.contains("## scene_json"));
+        assert!(content_text.contains("## lua_core"));
+        assert!(content_text.contains("## lua_ui"));
+        assert!(content_text.contains("## lua_vfx_audio"));
+        assert!(content_text.contains("## lua_ai_rig"));
+        assert!(content_text.contains("## mcp_workflow"));
+
+        // 2. Default without arguments
+        let req_default = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(102)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "get_engine_docs"
+            })),
+        };
+        let resp_default = rt.block_on(async {
+            handle_jsonrpc(&cmd_tx, req_default).await
+        }).expect("Response expected");
+        let resp_default_json = serde_json::to_value(&resp_default).unwrap();
+        let default_text = resp_default_json["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(content_text, default_text);
+    }
+
+    #[test]
+    fn test_get_engine_docs_topic_filtering() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(1);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Topic: "lua_ui"
+        let req_ui = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(103)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "get_engine_docs",
+                "arguments": { "topic": "lua_ui" }
+            })),
+        };
+        let resp_ui = rt.block_on(async {
+            handle_jsonrpc(&cmd_tx, req_ui).await
+        }).expect("Response expected");
+        let resp_ui_json = serde_json::to_value(&resp_ui).unwrap();
+        let ui_text = resp_ui_json["result"]["content"][0]["text"].as_str().unwrap();
+
+        assert!(ui_text.contains("## lua_ui"));
+        assert!(ui_text.contains("ui_button"));
+        assert!(ui_text.contains("ui_panel"));
+        assert!(!ui_text.contains("## scene_json"));
+        assert!(!ui_text.contains("## quickstart"));
+        assert!(!ui_text.contains("## lua_ai_rig"));
+        assert!(ui_text.len() < ENGINE_DOCS.len() / 2);
+
+        // Topic: "scene_json"
+        let req_scene = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(104)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "get_engine_docs",
+                "arguments": { "topic": "scene_json" }
+            })),
+        };
+        let resp_scene = rt.block_on(async {
+            handle_jsonrpc(&cmd_tx, req_scene).await
+        }).expect("Response expected");
+        let resp_scene_json = serde_json::to_value(&resp_scene).unwrap();
+        let scene_text = resp_scene_json["result"]["content"][0]["text"].as_str().unwrap();
+
+        assert!(scene_text.contains("## scene_json"));
+        assert!(scene_text.contains("\"camera\""));
+        assert!(scene_text.contains("\"post_process\""));
+        assert!(scene_text.contains("\"environment\""));
+        assert!(!scene_text.contains("## lua_ui"));
+
+        // Topic: invalid/unknown
+        let req_unknown = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(105)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "get_engine_docs",
+                "arguments": { "topic": "non_existent_topic" }
+            })),
+        };
+        let resp_unknown = rt.block_on(async {
+            handle_jsonrpc(&cmd_tx, req_unknown).await
+        }).expect("Response expected");
+        let resp_unknown_json = serde_json::to_value(&resp_unknown).unwrap();
+        let unknown_text = resp_unknown_json["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(unknown_text.contains("Error: Topic 'non_existent_topic' not found"));
     }
 }
