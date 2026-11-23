@@ -172,6 +172,31 @@ impl PhysicsEngine {
         handle
     }
 
+    pub fn add_trimesh_body(
+        &mut self,
+        transform: &Transform,
+        vertices: Vec<Vec3>,
+        indices: Vec<[u32; 3]>,
+        is_sensor: bool,
+    ) -> Option<RigidBodyHandle> {
+        let body = RigidBodyBuilder::fixed()
+            .translation(transform.position)
+            .rotation(transform.rotation)
+            .build();
+        let handle = self.rigid_body_set.insert(body);
+        if let Ok(builder) = ColliderBuilder::trimesh(vertices, indices) {
+            let collider = builder
+                .sensor(is_sensor)
+                .active_events(ActiveEvents::COLLISION_EVENTS)
+                .build();
+            self.collider_set
+                .insert_with_parent(collider, handle, &mut self.rigid_body_set);
+            Some(handle)
+        } else {
+            None
+        }
+    }
+
     pub fn step(&mut self, dt: f32) {
         if !self.enabled {
             return;

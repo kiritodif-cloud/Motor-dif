@@ -8,6 +8,7 @@ pub mod game_ui;
 pub mod glb_exporter;
 pub mod hot_reload;
 pub mod input_map;
+pub mod level_forge;
 pub mod mcp_server;
 pub mod modeler;
 pub mod music_forge;
@@ -3011,7 +3012,7 @@ impl EngineState {
                                 ui.close();
                             }
                             ui.separator();
-                            if ui.button("🎵 Music Forge...").clicked() {
+                            if ui.button("[M] Music Forge...").clicked() {
                                 self.show_music_forge_window = true;
                                 ui.close();
                             }
@@ -3955,7 +3956,7 @@ impl EngineState {
                                                          player.resume();
                                                      }
                                                  }
-                                                 if ui.button("⏹ Stop").clicked() {
+                                                 if ui.button("Stop").clicked() {
                                                      player.stop();
                                                  }
                                              });
@@ -5288,12 +5289,12 @@ impl EngineState {
                     let mut stop_music_trigger = false;
                     let mut bake_music_trigger = false;
 
-                    egui::Window::new("🎵 Music Forge — Compositor Procedural")
+                    egui::Window::new("[M] Music Forge — Compositor Procedural")
                         .default_size(egui::vec2(420.0, 380.0))
                         .resizable(true)
                         .collapsible(true)
                         .show(ui.ctx(), |ui| {
-                            ui.heading("🎼 Generador de Música Adaptativa");
+                            ui.heading("[M] Generador de Musica Adaptativa");
                             ui.label("Crea y reproduce música procedural sin dependencias externas.");
                             ui.add_space(8.0);
 
@@ -5328,7 +5329,7 @@ impl EngineState {
                             ui.separator();
                             ui.add_space(4.0);
 
-                            ui.label(egui::RichText::new("🎚️ Control Adaptativo en Vivo").strong());
+                            ui.label(egui::RichText::new("[-] Control Adaptativo en Vivo").strong());
                             let prev_intensity = self.music_forge_intensity;
                             ui.add(egui::Slider::new(&mut self.music_forge_intensity, 0.0..=1.0).text("Intensidad (0.0 Ambiente -> 1.0 Batalla)"));
                             if (self.music_forge_intensity - prev_intensity).abs() > 0.005 {
@@ -5339,10 +5340,10 @@ impl EngineState {
 
                             ui.add_space(8.0);
                             ui.horizontal(|ui| {
-                                if ui.button(egui::RichText::new("▶ Play Adaptive").strong()).clicked() {
+                                if ui.button(egui::RichText::new("Play Adaptive").strong()).clicked() {
                                     play_music_trigger = true;
                                 }
-                                if ui.button("⏹ Stop").clicked() {
+                                if ui.button("Stop").clicked() {
                                     stop_music_trigger = true;
                                 }
                             });
@@ -5351,7 +5352,7 @@ impl EngineState {
                             ui.separator();
                             ui.add_space(4.0);
 
-                            ui.label(egui::RichText::new("💾 Horneado a .WAV").strong());
+                            ui.label(egui::RichText::new("[*] Horneado a .WAV").strong());
                             ui.horizontal(|ui| {
                                 ui.label("Archivo:");
                                 ui.text_edit_singleline(&mut self.music_forge_bake_name);
