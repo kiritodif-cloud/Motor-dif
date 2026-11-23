@@ -127,6 +127,18 @@ pub struct LuaEngineContext {
     pub game_ui_elements: Arc<RwLock<Vec<crate::game_ui::UiElement>>>,
     pub pending_anims: Arc<Mutex<Vec<AnimationCommand>>>,
     pub anim_playing_states: Arc<RwLock<HashMap<String, bool>>>,
+    pub event_listeners: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    pub pending_events: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+    pub timers: Arc<Mutex<Vec<LuaTimer>>>,
+    pub next_timer_id: Arc<std::sync::atomic::AtomicU64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LuaTimer {
+    pub id: u64,
+    pub callback: String,
+    pub remaining: f32,
+    pub interval: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -269,6 +281,19 @@ impl LuaEngineContext {
             game_ui_elements: Arc::new(RwLock::new(Vec::new())),
             pending_anims: Arc::new(Mutex::new(Vec::new())),
             anim_playing_states: Arc::new(RwLock::new(HashMap::new())),
+            event_listeners: Arc::new(RwLock::new(HashMap::new())),
+            pending_events: Arc::new(Mutex::new(Vec::new())),
+            timers: Arc::new(Mutex::new(Vec::new())),
+            next_timer_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        }
+    }
+
+    pub fn clear_timers_and_events(&self) {
+        if let Ok(mut t) = self.timers.lock() {
+            t.clear();
+        }
+        if let Ok(mut e) = self.pending_events.lock() {
+            e.clear();
         }
     }
 }
@@ -1444,6 +1469,119 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register is_anim_playing: {}", e))?;
         lua.globals().set("is_anim_playing", is_anim_playing).map_err(|e| e.to_string())?;
 
+        // 45. on_event(event_name, callback_name)
+        let listeners_ref = ctx.event_listeners.clone();
+        let on_event = lua
+            .create_function(move |_, (event_name, callback): (String, String)| {
+                if let Ok(mut map) = listeners_ref.write() {
+                    let list = map.entry(event_name).or_insert_with(Vec::new);
+                    if !list.contains(&callback) {
+                        list.push(callback);
+                    }
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register on_event: {}", e))?;
+        lua.globals().set("on_event", on_event).map_err(|e| e.to_string())?;
+
+        // 46. emit_event(event_name, [payload])
+        let events_ref = ctx.pending_events.clone();
+        let emit_event = lua
+            .create_function(move |_, (event_name, payload): (String, Option<mlua::Value>)| {
+                let json_val = match payload {
+                    Some(v) => lua_to_json(&v),
+                    None => serde_json::Value::Null,
+                };
+                if let Ok(mut list) = events_ref.lock() {
+                    list.push((event_name, json_val));
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register emit_event: {}", e))?;
+        lua.globals().set("emit_event", emit_event).map_err(|e| e.to_string())?;
+
+        // 47. clear_events()
+        let listeners_clear_ref = ctx.event_listeners.clone();
+        let events_clear_ref = ctx.pending_events.clone();
+        let clear_events = lua
+            .create_function(move |_, ()| {
+                if let Ok(mut map) = listeners_clear_ref.write() {
+                    map.clear();
+                }
+                if let Ok(mut list) = events_clear_ref.lock() {
+                    list.clear();
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register clear_events: {}", e))?;
+        lua.globals().set("clear_events", clear_events).map_err(|e| e.to_string())?;
+
+        // 48. after(delay_seconds, callback_name) -> timer_id
+        let timers_ref = ctx.timers.clone();
+        let next_timer_id = ctx.next_timer_id.clone();
+        let after = lua
+            .create_function(move |_, (delay, callback): (f32, String)| {
+                let id = next_timer_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if let Ok(mut list) = timers_ref.lock() {
+                    list.push(LuaTimer {
+                        id,
+                        callback,
+                        remaining: delay.max(0.0),
+                        interval: None,
+                    });
+                }
+                Ok(id)
+            })
+            .map_err(|e| format!("Failed to register after: {}", e))?;
+        lua.globals().set("after", after).map_err(|e| e.to_string())?;
+
+        // 49. every(interval_seconds, callback_name) -> timer_id
+        let timers_every_ref = ctx.timers.clone();
+        let next_timer_id_every = ctx.next_timer_id.clone();
+        let every = lua
+            .create_function(move |_, (interval, callback): (f32, String)| {
+                let id = next_timer_id_every.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let inter = interval.max(0.001);
+                if let Ok(mut list) = timers_every_ref.lock() {
+                    list.push(LuaTimer {
+                        id,
+                        callback,
+                        remaining: inter,
+                        interval: Some(inter),
+                    });
+                }
+                Ok(id)
+            })
+            .map_err(|e| format!("Failed to register every: {}", e))?;
+        lua.globals().set("every", every).map_err(|e| e.to_string())?;
+
+        // 50. cancel_timer(timer_id) -> bool
+        let timers_cancel_ref = ctx.timers.clone();
+        let cancel_timer = lua
+            .create_function(move |_, timer_id: u64| {
+                if let Ok(mut list) = timers_cancel_ref.lock() {
+                    if let Some(pos) = list.iter().position(|t| t.id == timer_id) {
+                        list.remove(pos);
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            })
+            .map_err(|e| format!("Failed to register cancel_timer: {}", e))?;
+        lua.globals().set("cancel_timer", cancel_timer).map_err(|e| e.to_string())?;
+
+        // 51. clear_timers()
+        let timers_clear_ref = ctx.timers.clone();
+        let clear_timers = lua
+            .create_function(move |_, ()| {
+                if let Ok(mut list) = timers_clear_ref.lock() {
+                    list.clear();
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register clear_timers: {}", e))?;
+        lua.globals().set("clear_timers", clear_timers).map_err(|e| e.to_string())?;
+
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
             .exec()
@@ -1603,6 +1741,85 @@ impl ScriptComponent {
             }
         } else {
             Ok(())
+        }
+    }
+}
+
+pub fn process_timers_and_events(
+    world: &mut hecs::World,
+    ctx: &LuaEngineContext,
+    dt: f32,
+    logs: &mut Vec<String>,
+) {
+    // 1. Process Timers
+    let triggered_callbacks = {
+        let mut triggered = Vec::new();
+        if let Ok(mut list) = ctx.timers.lock() {
+            let mut kept = Vec::new();
+            for mut timer in list.drain(..) {
+                timer.remaining -= dt;
+                if timer.remaining <= 0.0 {
+                    triggered.push(timer.callback.clone());
+                    if let Some(interval) = timer.interval {
+                        timer.remaining = interval;
+                        kept.push(timer);
+                    }
+                } else {
+                    kept.push(timer);
+                }
+            }
+            *list = kept;
+        }
+        triggered
+    };
+
+    for cb in triggered_callbacks {
+        for (_meta, script) in world.query_mut::<(&crate::ecs::EntityMeta, &mut ScriptComponent)>() {
+            if let Some(lua_arc) = &script.lua {
+                if let Ok(lua) = lua_arc.lock() {
+                    if let Ok(func) = lua.globals().get::<mlua::Function>(cb.as_str()) {
+                        if let Err(e) = func.call::<()>(()) {
+                            logs.push(format!("Timer callback error in '{}': {}", cb, e));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Process Events
+    let events = {
+        if let Ok(mut list) = ctx.pending_events.lock() {
+            std::mem::take(&mut *list)
+        } else {
+            Vec::new()
+        }
+    };
+
+    if !events.is_empty() {
+        let listeners_snapshot = if let Ok(l) = ctx.event_listeners.read() {
+            l.clone()
+        } else {
+            HashMap::new()
+        };
+
+        for (event_name, payload) in events {
+            if let Some(callbacks) = listeners_snapshot.get(&event_name) {
+                for cb in callbacks {
+                    for (_meta, script) in world.query_mut::<(&crate::ecs::EntityMeta, &mut ScriptComponent)>() {
+                        if let Some(lua_arc) = &script.lua {
+                            if let Ok(lua) = lua_arc.lock() {
+                                if let Ok(func) = lua.globals().get::<mlua::Function>(cb.as_str()) {
+                                    let lua_payload = json_to_lua(&lua, &payload).unwrap_or(mlua::Value::Nil);
+                                    if let Err(e) = func.call::<()>(lua_payload) {
+                                        logs.push(format!("Event callback error on '{}' (listener '{}'): {}", event_name, cb, e));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1773,5 +1990,102 @@ mod tests {
         }
 
         let _ = std::fs::remove_file(script_path);
+    }
+
+    #[test]
+    fn test_signals_and_timers() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        let test_script_path = "assets/scripts/temp_signal_test.lua";
+        let script_code = r#"
+            received_health = 0
+            timer_ticks = 0
+            one_shot_fired = false
+
+            function on_damage_taken(payload)
+                if payload and payload.amount then
+                    received_health = payload.amount
+                end
+            end
+
+            function on_tick()
+                timer_ticks = timer_ticks + 1
+            end
+
+            function on_boom()
+                one_shot_fired = true
+            end
+
+            on_event("player_damaged", "on_damage_taken")
+            t_every = every(0.5, "on_tick")
+            t_once = after(1.0, "on_boom")
+        "#;
+        std::fs::write(test_script_path, script_code).unwrap();
+
+        let mut comp = ScriptComponent::new(test_script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Failed to init test script: {:?}", res.err());
+
+        let mut world = hecs::World::new();
+        let e = world.spawn((
+            crate::ecs::EntityMeta {
+                id: "test_entity".to_string(),
+                name: "Test Entity".to_string(),
+                parent: None,
+            },
+            Transform::default(),
+            comp,
+        ));
+
+        let mut logs = Vec::new();
+
+        // 1. Test Event emission
+        {
+            let script = world.get::<&ScriptComponent>(e).unwrap();
+            let lua_arc = script.lua.as_ref().unwrap();
+            let lua = lua_arc.lock().unwrap();
+            lua.load(r#"emit_event("player_damaged", { amount = 42 })"#).exec().unwrap();
+        }
+
+        process_timers_and_events(&mut world, &ctx, 0.1, &mut logs);
+
+        {
+            let script = world.get::<&ScriptComponent>(e).unwrap();
+            let lua_arc = script.lua.as_ref().unwrap();
+            let lua = lua_arc.lock().unwrap();
+            let received: i32 = lua.globals().get("received_health").unwrap();
+            assert_eq!(received, 42);
+        }
+
+        // 2. Test Timers update
+        // Advance 0.5s -> every should trigger once, after not yet
+        process_timers_and_events(&mut world, &ctx, 0.5, &mut logs);
+        {
+            let script = world.get::<&ScriptComponent>(e).unwrap();
+            let lua_arc = script.lua.as_ref().unwrap();
+            let lua = lua_arc.lock().unwrap();
+            let ticks: i32 = lua.globals().get("timer_ticks").unwrap();
+            let fired: bool = lua.globals().get("one_shot_fired").unwrap();
+            assert_eq!(ticks, 1);
+            assert!(!fired);
+        }
+
+        // Advance another 0.5s (total 1.0s) -> every should be 2, after should fire
+        process_timers_and_events(&mut world, &ctx, 0.5, &mut logs);
+        {
+            let script = world.get::<&ScriptComponent>(e).unwrap();
+            let lua_arc = script.lua.as_ref().unwrap();
+            let lua = lua_arc.lock().unwrap();
+            let ticks: i32 = lua.globals().get("timer_ticks").unwrap();
+            let fired: bool = lua.globals().get("one_shot_fired").unwrap();
+            assert_eq!(ticks, 2);
+            assert!(fired);
+        }
+
+        // Clean up test file
+        let _ = std::fs::remove_file(test_script_path);
     }
 }

@@ -1191,6 +1191,7 @@ impl EngineState {
                                 assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
                             }
                             self.particles.clear();
+                            self.lua_ctx.clear_timers_and_events();
                             self.play_mode = PlayMode::Edit;
                             let msg = "Play mode set to Stop (Scene restored)".to_string();
                             self.logs.push(msg.clone());
@@ -1221,6 +1222,7 @@ impl EngineState {
                     for (_meta, transform, script) in self.world.query_mut::<(&EntityMeta, &mut Transform, &mut ScriptComponent)>() {
                         let _ = script.update(transform, step_dt);
                     }
+                    scripting::process_timers_and_events(&mut self.world, &self.lua_ctx, step_dt, &mut self.logs);
 
                     for (rb, script) in self.world.query_mut::<(&RigidBodyComponent, &mut ScriptComponent)>() {
                         if let Ok(mut forces) = script.pending_forces.lock() {
@@ -1259,6 +1261,19 @@ impl EngineState {
                         Ok(scripting::check_key_match(&keys, &clean))
                     });
                     if let Ok(f) = is_key_just_pressed { let _ = lua.globals().set("is_key_just_pressed", f); }
+
+                    let events_ref = self.lua_ctx.pending_events.clone();
+                    let emit_event = lua.create_function(move |_, (event_name, payload): (String, Option<mlua::Value>)| {
+                        let json_val = match payload {
+                            Some(v) => scripting::lua_to_json(&v),
+                            None => serde_json::Value::Null,
+                        };
+                        if let Ok(mut list) = events_ref.lock() {
+                            list.push((event_name, json_val));
+                        }
+                        Ok(true)
+                    });
+                    if let Ok(f) = emit_event { let _ = lua.globals().set("emit_event", f); }
 
                     let spawns_ref = self.lua_ctx.pending_spawns.clone();
                     let spawn_entity = lua.create_function(move |_, table: mlua::Table| {
@@ -1748,6 +1763,7 @@ impl EngineState {
                     }
                 }
             }
+            scripting::process_timers_and_events(&mut self.world, &self.lua_ctx, dt, &mut self.logs);
 
             // 3. Apply forces & impulses
             for (rb, script) in self.world.query_mut::<(&RigidBodyComponent, &mut ScriptComponent)>() {
@@ -2706,6 +2722,7 @@ impl EngineState {
                                 self.add_toast("Simulation stopped & restored", egui::Color32::from_rgb(239, 68, 68));
                             }
                             self.particles.clear();
+                            self.lua_ctx.clear_timers_and_events();
                             self.play_mode = PlayMode::Edit;
                         }
 
@@ -4525,6 +4542,7 @@ impl EngineState {
                                     assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
                                 }
                                 self.particles.clear();
+                                self.lua_ctx.clear_timers_and_events();
                                 self.play_mode = PlayMode::Edit;
                                 self.add_toast("Simulation stopped & restored", egui::Color32::from_rgb(239, 68, 68));
                             }
