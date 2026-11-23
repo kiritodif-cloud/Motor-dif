@@ -26,13 +26,18 @@
       "blend_mode": "opaque", "parent": null, "script": "assets/scripts/player.lua",
       "physics": { "body": "dynamic", "collider": "cuboid", "mass": 1.0, "restitution": 0.2, "is_sensor": false },
       "point_light": { "color": [0.3, 0.8, 1.0], "intensity": 2.5, "radius": 8.0 },
-      "vfx_emitter": { "preset_or_recipe": "fire", "enabled": true, "looping": true, "offset": [0, 1, 0] }
+      "vfx_emitter": { "preset_or_recipe": "fire", "enabled": true, "looping": true, "offset": [0, 1, 0] },
+      "animation_player": { "default_clip": "idle_breathe" },
+      "rig_controller": { "preset": "mech_biped", "locomotion_enabled": true }
     }
   ]
 }
 ```
 Meshes: `"cube"`, `"sphere"`, `"cylinder"`, `"quad"`, `"plane"`, `"torus"`, `"ring"`, `"cone"`, `"icosphere"`, or `"assets/models/*.glb"`.
-Sky modes: `"gradient"`, `"space"`, `"solid"`. Physics bodies: `"dynamic"`, `"fixed"`. Colliders: `"cuboid"`, `"ball"`.
+Blend modes: `"opaque"`, `"additive"`.
+Sky modes: `"gradient"`, `"space"`, `"solid"`.
+Physics bodies: `"dynamic"`, `"fixed"`. Colliders: `"cuboid"`, `"ball"`.
+Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
 
 ## lua_core
 - Entity management:
@@ -125,3 +130,28 @@ Recommended 4-step autonomous loop for AI agents (`http://127.0.0.1:3030/mcp`):
 4. **Visual & Performance Inspection:**
    - Call `capture_viewport` to verify visual composition, materials, and HUD in Base64 PNG.
    - Call `get_performance_stats` to verify 60+ FPS, draw calls, and entity counts.
+
+MCP Tools Directory:
+- `get_engine_docs({ topic })`: Compact API signatures and schemas (topics: all, quickstart, scene_json, lua_core, lua_ui, lua_vfx_audio, lua_ai_rig, mcp_workflow).
+- `inspect_world()`: Returns active camera and entity definitions JSON.
+- `upsert_entity(entity_def)`: Dynamically adds or modifies an entity in active scene.
+- `delete_entity({ id })`: Removes entity by ID.
+- `execute_lua({ code })`: Runs Lua code immediately in active environment.
+- `get_console_logs({ filter })`: Retrieves engine/script log buffer.
+- `get_engine_logs()`: Compact diagnostic metrics (FPS, logs, Lua error string).
+- `capture_viewport()`: Captures rendered frame as Base64 PNG data.
+- `set_play_mode({ mode })`: Sets engine state (`"play"`, `"pause"`, `"edit"`).
+- `load_scene({ path })`: Loads `.json` scene from `assets/`.
+- `save_scene({ path })`: Serializes active scene to `assets/<path>.json`.
+- `get_scene_tree()`: Hierarchical parent-child tree and entity components.
+- `get_performance_stats()`: Profiler metrics (FPS, frame_time_ms, entities, draw_calls, particles, bodies).
+- `forge_create_model({ name, mesh, color, ... })`: Spawns 3D mesh with procedural material.
+- `forge_bake_glb({ mesh_type, path })`: Exports procedural geometric mesh as GLB.
+- `forge_create_texture({ style, filename, size, seed, color_tint })`: Generates procedural texture PNG.
+- `forge_create_music({ preset, recipe, bake_path, play_now, intensity })`: Synthesizes procedural adaptive music.
+- `set_music_intensity({ intensity })`: Blends adaptive music intensity layers (0.0 to 1.0).
+- `forge_generate_terrain({ recipe, bake_path, add_to_scene })`: Generates procedural heightmap terrain.
+- `forge_generate_dungeon({ recipe, add_to_scene })`: Generates procedural grid dungeon.
+- `forge_scatter_props({ recipe, positions })`: Instanced or individual prop scattering.
+- `forge_create_rigged_character({ preset, id_prefix, position })`: Spawns modular rigged character.
+- `forge_spawn_vfx({ preset, recipe, position, attach_to_entity })`: Spawns or attaches procedural VFX emitter.
