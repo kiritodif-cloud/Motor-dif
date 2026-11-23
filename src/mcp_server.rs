@@ -225,6 +225,44 @@ impl JsonRpcResponse {
     }
 }
 
+pub const ENGINE_DOCS: &str = include_str!("../AGENT_GUIDE.md");
+
+pub fn extract_doc_topic(full_docs: &str, topic: &str) -> String {
+    let t = topic.trim();
+    if t.is_empty() || t.eq_ignore_ascii_case("all") {
+        return full_docs.to_string();
+    }
+    let header_lower = format!("## {}", t.to_ascii_lowercase());
+
+    let mut found_start = None;
+    for (byte_offset, _) in full_docs.match_indices("## ") {
+        let line = &full_docs[byte_offset..];
+        let line_end = line.find('\n').unwrap_or(line.len());
+        let current_header = line[..line_end].trim();
+        if current_header.to_ascii_lowercase() == header_lower {
+            found_start = Some(byte_offset);
+            break;
+        }
+    }
+
+    if let Some(start) = found_start {
+        let remainder = &full_docs[start..];
+        let first_nl = remainder.find('\n').unwrap_or(remainder.len());
+        let body = &remainder[first_nl..];
+        if let Some(next_header) = body.find("\n## ") {
+            let section_end = first_nl + next_header;
+            remainder[..section_end].trim().to_string()
+        } else {
+            remainder.trim().to_string()
+        }
+    } else {
+        format!(
+            "Error: Topic '{}' not found in engine documentation. Available topics: quickstart, scene_json, lua_core, lua_ui, lua_vfx_audio, lua_ai_rig, mcp_workflow, all",
+            t
+        )
+    }
+}
+
 pub async fn handle_jsonrpc(
     cmd_tx: &mpsc::Sender<McpCommand>,
     req: JsonRpcRequest,
@@ -254,6 +292,20 @@ pub async fn handle_jsonrpc(
                 id,
                 json!({
                     "tools": [
+                        {
+                            "name": "get_engine_docs",
+                            "description": "CALL THIS FIRST before writing Lua scripts or scene JSONs. Returns compact, token-efficient API signatures and examples so you don't need to inspect engine source files.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "topic": {
+                                        "type": "string",
+                                        "enum": ["all", "quickstart", "scene_json", "lua_core", "lua_ui", "lua_vfx_audio", "lua_ai_rig", "mcp_workflow"],
+                                        "description": "Topic section to retrieve ('all', 'quickstart', 'scene_json', 'lua_core', 'lua_ui', 'lua_vfx_audio', 'lua_ai_rig', 'mcp_workflow'). Default: 'all'"
+                                    }
+                                }
+                            }
+                        },
                         {
                             "name": "inspect_world",
                             "description": "Devuelve la camara y todas las entidades actuales del mundo en formato JSON",
@@ -663,6 +715,21 @@ pub async fn handle_jsonrpc(
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
             match tool_name {
+                "get_engine_docs" => {
+                    let topic = args.get("topic").and_then(|v| v.as_str()).unwrap_or("all");
+                    let text = extract_doc_topic(ENGINE_DOCS, topic);
+                    Some(JsonRpcResponse::success(
+                        id,
+                        json!({
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": text
+                                }
+                            ]
+                        }),
+                    ))
+                }
                 "inspect_world" => {
                     let (tx, rx) = oneshot::channel();
                     if cmd_tx.send(McpCommand::InspectWorld { respond_to: tx }).await.is_err() {
