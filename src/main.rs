@@ -207,6 +207,8 @@ pub struct EngineState {
     pub level_forge_terrain_out_name: String,
     pub level_forge_dungeon: crate::level_forge::DungeonRecipe,
     pub level_forge_scatter: crate::level_forge::ScatterRecipe,
+    pub show_vfx_forge_window: bool,
+    pub vfx_forge_recipe: crate::vfx_forge::VfxRecipe,
     pub show_profiler: bool,
     pub frametime_history: std::collections::VecDeque<f32>,
     pub view_mode: renderer::ViewMode,
@@ -506,6 +508,8 @@ impl EngineState {
             level_forge_terrain_out_name: "terrain_demo".to_string(),
             level_forge_dungeon: crate::level_forge::DungeonRecipe::default(),
             level_forge_scatter: crate::level_forge::ScatterRecipe::default(),
+            show_vfx_forge_window: false,
+            vfx_forge_recipe: crate::vfx_forge::preset_explosion(),
             show_profiler: false,
             frametime_history: std::collections::VecDeque::with_capacity(100),
             view_mode: renderer::ViewMode::Lit,
@@ -2276,6 +2280,67 @@ impl EngineState {
                         })));
                     }
                 }
+                McpCommand::ForgeSpawnVfx { preset, recipe, position, attach_to_entity, respond_to } => {
+                    let resolved_recipe = if let Some(r) = recipe {
+                        r
+                    } else if let Some(p_name) = &preset {
+                        crate::vfx_forge::get_vfx_preset(p_name).unwrap_or_else(crate::vfx_forge::preset_explosion)
+                    } else {
+                        crate::vfx_forge::preset_explosion()
+                    };
+
+                    if let Some(target_id) = attach_to_entity {
+                        let mut found_entity = None;
+                        for er in self.world.iter() {
+                            if let Some(meta) = er.get::<&EntityMeta>() {
+                                if meta.id == target_id {
+                                    found_entity = Some(er.entity());
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(e) = found_entity {
+                            let comp = crate::vfx_forge::VfxEmitterComponent {
+                                recipe: resolved_recipe.clone(),
+                                enabled: true,
+                                looping: true,
+                                offset: [0.0, 0.0, 0.0],
+                                accumulator: 0.0,
+                                burst_fired: false,
+                            };
+                            let _ = self.world.insert_one(e, comp);
+                            let msg = format!("VFX Forge: Attached '{}' to entity '{}'", resolved_recipe.name, target_id);
+                            self.logs.push(msg.clone());
+                            self.add_toast(msg, egui::Color32::from_rgb(34, 197, 94));
+                            let _ = respond_to.send(Ok(serde_json::json!({
+                                "success": true,
+                                "action": "attached",
+                                "entity_id": target_id,
+                                "vfx": resolved_recipe.name
+                            })));
+                        } else {
+                            let _ = respond_to.send(Err(format!("Entidad '{}' no encontrada", target_id)));
+                        }
+                    } else {
+                        let spawn_pos = position.map(Vec3::from).unwrap_or(self.camera.target);
+                        let count = if resolved_recipe.burst_count > 0 {
+                            resolved_recipe.burst_count
+                        } else {
+                            (resolved_recipe.rate_per_sec as usize).max(30)
+                        };
+                        self.particles.spawn_vfx(spawn_pos, &resolved_recipe, count);
+                        let msg = format!("VFX Forge: Spawned '{}' ({} particles) at {:?}", resolved_recipe.name, count, spawn_pos);
+                        self.logs.push(msg.clone());
+                        self.add_toast(msg, egui::Color32::from_rgb(56, 189, 248));
+                        let _ = respond_to.send(Ok(serde_json::json!({
+                            "success": true,
+                            "action": "spawned",
+                            "position": [spawn_pos.x, spawn_pos.y, spawn_pos.z],
+                            "vfx": resolved_recipe.name,
+                            "count": count
+                        })));
+                    }
+                }
             }
         }
     }
@@ -2799,6 +2864,66 @@ impl EngineState {
                                     }
                                     break;
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Handle pending VFX commands from Lua
+            let pending_vfx_cmds = if let Ok(mut v) = self.lua_ctx.pending_vfx_commands.lock() {
+                std::mem::take(&mut *v)
+            } else {
+                Vec::new()
+            };
+            for cmd in pending_vfx_cmds {
+                match cmd {
+                    scripting::VfxCommand::Spawn { recipe_or_preset, position } => {
+                        let recipe = if let Some(p) = crate::vfx_forge::get_vfx_preset(&recipe_or_preset) {
+                            p
+                        } else if let Ok(custom) = serde_json::from_str::<crate::vfx_forge::VfxRecipe>(&recipe_or_preset) {
+                            custom
+                        } else {
+                            crate::vfx_forge::preset_explosion()
+                        };
+                        let count = if recipe.burst_count > 0 { recipe.burst_count } else { (recipe.rate_per_sec as usize).max(30) };
+                        self.particles.spawn_vfx(Vec3::from(position), &recipe, count);
+                    }
+                    scripting::VfxCommand::Attach { entity_id, recipe_or_preset } => {
+                        let recipe = if let Some(p) = crate::vfx_forge::get_vfx_preset(&recipe_or_preset) {
+                            p
+                        } else if let Ok(custom) = serde_json::from_str::<crate::vfx_forge::VfxRecipe>(&recipe_or_preset) {
+                            custom
+                        } else {
+                            crate::vfx_forge::preset_fire()
+                        };
+                        let mut target_e = None;
+                        for er in self.world.iter() {
+                            if let Some(meta) = er.get::<&EntityMeta>() {
+                                if meta.id == entity_id {
+                                    target_e = Some(er.entity());
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(e) = target_e {
+                            let comp = crate::vfx_forge::VfxEmitterComponent::new(recipe);
+                            let _ = self.world.insert_one(e, comp);
+                        }
+                    }
+                    scripting::VfxCommand::Stop { entity_id } => {
+                        let mut target_e = None;
+                        for er in self.world.iter() {
+                            if let Some(meta) = er.get::<&EntityMeta>() {
+                                if meta.id == entity_id {
+                                    target_e = Some(er.entity());
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(e) = target_e {
+                            if let Ok(mut emitter) = self.world.get::<&mut crate::vfx_forge::VfxEmitterComponent>(e) {
+                                emitter.enabled = false;
                             }
                         }
                     }
@@ -3639,6 +3764,11 @@ impl EngineState {
                                     ui.close();
                                 }
                             });
+                            ui.separator();
+                            if ui.button("[V] VFX Forge...").clicked() {
+                                self.show_vfx_forge_window = true;
+                                ui.close();
+                            }
                         });
 
                         ui.separator();
@@ -4646,6 +4776,33 @@ impl EngineState {
                                             });
                                             if ui.button("[Trigger Recoil]").clicked() {
                                                 rig.trigger_recoil(1.0);
+                                            }
+                                        });
+                                    }
+
+                                    ui.add_space(4.0);
+
+                                    // VFX Emitter Card
+                                    if let Ok(mut emitter) = self.world.get::<&mut crate::vfx_forge::VfxEmitterComponent>(entity) {
+                                        ui.add_space(4.0);
+                                        ui_theme::collapsible_card(ui, "insp_vfx", "[V] VFX Emitter", true, |ui| {
+                                            ui.label(format!("Recipe: {}", emitter.recipe.name));
+                                            ui.checkbox(&mut emitter.enabled, "Enabled");
+                                            ui.checkbox(&mut emitter.looping, "Looping");
+                                            ui.horizontal(|ui| {
+                                                ui.label("Rate/s:");
+                                                ui.add(egui::Slider::new(&mut emitter.recipe.rate_per_sec, 0.0..=120.0));
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Burst Count:");
+                                                ui.add(egui::Slider::new(&mut emitter.recipe.burst_count, 0..=150));
+                                            });
+                                            if ui.button("[Trigger Burst]").clicked() {
+                                                if let Ok(transform) = self.world.get::<&Transform>(entity) {
+                                                    let pos = transform.position + Vec3::from(emitter.offset);
+                                                    let count = if emitter.recipe.burst_count > 0 { emitter.recipe.burst_count } else { 30 };
+                                                    self.particles.spawn_vfx(pos, &emitter.recipe, count);
+                                                }
                                             }
                                         });
                                     }
@@ -5796,6 +5953,11 @@ impl EngineState {
                                     ("Spawn Sci-Fi Trooper (Procedural Rig)", "spawn_rig_trooper"),
                                     ("Spawn Spider Drone (Procedural Rig)", "spawn_rig_spider"),
                                     ("Spawn Defense Turret (Procedural Rig)", "spawn_rig_turret"),
+                                    ("VFX Forge (Visual Effects)", "vfx_forge"),
+                                    ("Spawn VFX Explosion", "vfx_explosion"),
+                                    ("Spawn VFX Fire", "vfx_fire"),
+                                    ("Spawn VFX Magic Portal", "vfx_portal"),
+                                    ("Spawn VFX Level Up", "vfx_levelup"),
                                 ];
 
                                 for (name, action_id) in quick_actions {
@@ -5894,6 +6056,21 @@ impl EngineState {
                             }
                             "spawn_rig_turret" => {
                                 self.spawn_rigged_character_preset("defense_turret");
+                            }
+                            "vfx_forge" => {
+                                self.show_vfx_forge_window = true;
+                            }
+                            "vfx_explosion" => {
+                                self.particles.spawn_vfx(self.camera.target, &crate::vfx_forge::preset_explosion(), 90);
+                            }
+                            "vfx_fire" => {
+                                self.particles.spawn_vfx(self.camera.target, &crate::vfx_forge::preset_fire(), 45);
+                            }
+                            "vfx_portal" => {
+                                self.particles.spawn_vfx(self.camera.target, &crate::vfx_forge::preset_magic_portal(), 60);
+                            }
+                            "vfx_levelup" => {
+                                self.particles.spawn_vfx(self.camera.target, &crate::vfx_forge::preset_level_up(), 75);
                             }
                             _ => {}
                         }
@@ -6310,6 +6487,170 @@ impl EngineState {
                         let s_recipe = self.level_forge_scatter.clone();
                         let active_ter = self.lua_ctx.active_terrain.read().ok().and_then(|g| g.clone());
                         self.generate_and_insert_scatter(&s_recipe, active_ter.as_ref());
+                    }
+                }
+
+                // VFX Forge Window
+                if self.show_vfx_forge_window {
+                    let mut close_vfx = false;
+                    let mut spawn_origin_trigger = false;
+                    let mut spawn_target_trigger = false;
+                    let mut attach_trigger = false;
+                    let mut detach_trigger = false;
+
+                    egui::Window::new("[V] VFX Forge — Efectos Visuales Procedurales")
+                        .default_size(egui::vec2(400.0, 480.0))
+                        .resizable(true)
+                        .collapsible(true)
+                        .show(ui.ctx(), |ui| {
+                            ui.heading("[V] Generador VFX y Particulas");
+                            ui.label("Efectos volumetricos y particulas procedimentales en tiempo real.");
+                            ui.separator();
+
+                            // Preset selection
+                            ui.horizontal(|ui| {
+                                ui.label("Preset:");
+                                let presets = crate::vfx_forge::list_vfx_presets();
+                                for p in presets {
+                                    if ui.selectable_label(self.vfx_forge_recipe.name == p, p).clicked() {
+                                        if let Some(r) = crate::vfx_forge::get_vfx_preset(p) {
+                                            self.vfx_forge_recipe = r;
+                                        }
+                                    }
+                                }
+                            });
+
+                            ui.separator();
+
+                            // Emitter parameters
+                            ui.horizontal(|ui| {
+                                ui.label("Emitter Shape:");
+                                let shapes = ["point", "sphere", "ring", "cone"];
+                                for s in shapes {
+                                    if ui.selectable_label(self.vfx_forge_recipe.emitter_shape == s, s).clicked() {
+                                        self.vfx_forge_recipe.emitter_shape = s.to_string();
+                                    }
+                                }
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Shape Radius:");
+                                ui.add(egui::Slider::new(&mut self.vfx_forge_recipe.shape_radius, 0.05..=5.0).suffix(" m"));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Burst Count:");
+                                ui.add(egui::Slider::new(&mut self.vfx_forge_recipe.burst_count, 0..=200));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Rate/s (Loop):");
+                                ui.add(egui::Slider::new(&mut self.vfx_forge_recipe.rate_per_sec, 0.0..=150.0));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Speed Range:");
+                                ui.add(egui::Slider::new(&mut self.vfx_forge_recipe.speed_min, 0.0..=20.0).prefix("min: "));
+                                ui.add(egui::Slider::new(&mut self.vfx_forge_recipe.speed_max, 0.0..=30.0).prefix("max: "));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Lifetime Range:");
+                                ui.add(egui::Slider::new(&mut self.vfx_forge_recipe.lifetime_min, 0.1..=4.0).prefix("min: "));
+                                ui.add(egui::Slider::new(&mut self.vfx_forge_recipe.lifetime_max, 0.1..=5.0).prefix("max: "));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Size Start -> End:");
+                                ui.add(egui::Slider::new(&mut self.vfx_forge_recipe.size_start, 0.01..=0.8).prefix("start: "));
+                                ui.add(egui::Slider::new(&mut self.vfx_forge_recipe.size_end, 0.0..=0.5).prefix("end: "));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("HDR Emissive Boost:");
+                                ui.add(egui::Slider::new(&mut self.vfx_forge_recipe.emissive_boost, 1.0..=8.0).suffix("x"));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Vortex Strength:");
+                                ui.add(egui::Slider::new(&mut self.vfx_forge_recipe.vortex_strength, -15.0..=15.0));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Gravity Y:");
+                                ui.add(egui::Slider::new(&mut self.vfx_forge_recipe.gravity[1], -25.0..=10.0).suffix(" m/s2"));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Drag:");
+                                ui.add(egui::Slider::new(&mut self.vfx_forge_recipe.drag, 0.0..=6.0));
+                            });
+
+                            ui.separator();
+
+                            // Action buttons
+                            ui.horizontal(|ui| {
+                                if ui.button("[Spawn at Origin]").clicked() {
+                                    spawn_origin_trigger = true;
+                                }
+                                if ui.button("[Spawn at Target]").clicked() {
+                                    spawn_target_trigger = true;
+                                }
+                            });
+
+                            ui.horizontal(|ui| {
+                                if ui.button("[Attach to Selected]").clicked() {
+                                    attach_trigger = true;
+                                }
+                                if ui.button("[Detach from Selected]").clicked() {
+                                    detach_trigger = true;
+                                }
+                            });
+
+                            ui.separator();
+                            if ui.button("Close").clicked() {
+                                close_vfx = true;
+                            }
+                        });
+
+                    if close_vfx {
+                        self.show_vfx_forge_window = false;
+                    }
+
+                    if spawn_origin_trigger {
+                        let count = if self.vfx_forge_recipe.burst_count > 0 { self.vfx_forge_recipe.burst_count } else { 40 };
+                        self.particles.spawn_vfx(Vec3::new(0.0, 1.0, 0.0), &self.vfx_forge_recipe, count);
+                        self.add_toast("VFX spawned at origin", egui::Color32::from_rgb(56, 189, 248));
+                    }
+
+                    if spawn_target_trigger {
+                        let count = if self.vfx_forge_recipe.burst_count > 0 { self.vfx_forge_recipe.burst_count } else { 40 };
+                        self.particles.spawn_vfx(self.camera.target, &self.vfx_forge_recipe, count);
+                        self.add_toast("VFX spawned at camera target", egui::Color32::from_rgb(56, 189, 248));
+                    }
+
+                    if attach_trigger {
+                        if let Some(selected) = self.selected_entity {
+                            let comp = crate::vfx_forge::VfxEmitterComponent {
+                                recipe: self.vfx_forge_recipe.clone(),
+                                enabled: true,
+                                looping: true,
+                                offset: [0.0, 0.0, 0.0],
+                                accumulator: 0.0,
+                                burst_fired: false,
+                            };
+                            let _ = self.world.insert_one(selected, comp);
+                            self.add_toast("VFX attached to selected entity", egui::Color32::from_rgb(34, 197, 94));
+                        } else {
+                            self.add_toast("No entity selected", egui::Color32::from_rgb(239, 68, 68));
+                        }
+                    }
+
+                    if detach_trigger {
+                        if let Some(selected) = self.selected_entity {
+                            let _ = self.world.remove_one::<crate::vfx_forge::VfxEmitterComponent>(selected);
+                            self.add_toast("VFX detached from entity", egui::Color32::from_rgb(148, 163, 184));
+                        }
                     }
                 }
             });

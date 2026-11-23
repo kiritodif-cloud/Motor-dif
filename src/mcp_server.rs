@@ -164,6 +164,13 @@ pub enum McpCommand {
         position: [f32; 3],
         respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
     },
+    ForgeSpawnVfx {
+        preset: Option<String>,
+        recipe: Option<crate::vfx_forge::VfxRecipe>,
+        position: Option<[f32; 3]>,
+        attach_to_entity: Option<String>,
+        respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -631,6 +638,19 @@ pub async fn handle_jsonrpc(
                                     "position": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Posicion [x, y, z] del personaje en el mundo" }
                                 },
                                 "required": ["preset"]
+                            }
+                        },
+                        {
+                            "name": "forge_spawn_vfx",
+                            "description": "Dispara un efecto visual procedural o adjunta un emisor continuo (VFX) a una entidad (presets: explosion, fire, magic_portal, hit_spark, level_up)",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "preset": { "type": "string", "enum": ["explosion", "fire", "magic_portal", "hit_spark", "level_up"], "description": "Nombre de preset VFX" },
+                                    "recipe": { "type": "object", "description": "Receta VFX procedural personalizada (VfxRecipe)" },
+                                    "position": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Posicion [x, y, z] de disparo en el mundo" },
+                                    "attach_to_entity": { "type": "string", "description": "ID de la entidad a la que adjuntar el emisor persistente" }
+                                }
                             }
                         }
                     ]
@@ -1259,6 +1279,39 @@ pub async fn handle_jsonrpc(
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al crear personaje riggeado")),
                     }
                 }
+                "forge_spawn_vfx" => {
+                    let preset = args.get("preset").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let recipe = if let Some(rv) = args.get("recipe") {
+                        match serde_json::from_value::<crate::vfx_forge::VfxRecipe>(rv.clone()) {
+                            Ok(r) => Some(r),
+                            Err(e) => return Some(JsonRpcResponse::error(id, -32602, format!("Error en recipe: {}", e))),
+                        }
+                    } else {
+                        None
+                    };
+                    let position = args.get("position").and_then(|v| v.as_array()).map(|arr| [
+                        arr.get(0).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                        arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                        arr.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                    ]);
+                    let attach_to_entity = args.get("attach_to_entity").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::ForgeSpawnVfx {
+                        preset,
+                        recipe,
+                        position,
+                        attach_to_entity,
+                        respond_to: tx,
+                    }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(val)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }], "data": val }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al disparar VFX")),
+                    }
+                }
                 _ => Some(JsonRpcResponse::error(id, -32601, format!("Herramienta desconocida: {}", tool_name))),
             }
         }
@@ -1494,5 +1547,6 @@ mod tests {
         assert!(resp_str.contains("forge_generate_dungeon"));
         assert!(resp_str.contains("forge_scatter_props"));
         assert!(resp_str.contains("forge_create_rigged_character"));
+        assert!(resp_str.contains("forge_spawn_vfx"));
     }
 }

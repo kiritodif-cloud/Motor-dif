@@ -140,6 +140,22 @@ pub struct LuaEngineContext {
     pub pending_nav_bake: Arc<Mutex<Option<(f32, f32)>>>,
     pub active_terrain: Arc<RwLock<Option<crate::level_forge::TerrainRecipe>>>,
     pub pending_rig_commands: Arc<Mutex<Vec<RigCommand>>>,
+    pub pending_vfx_commands: Arc<Mutex<Vec<VfxCommand>>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum VfxCommand {
+    Spawn {
+        recipe_or_preset: String,
+        position: [f32; 3],
+    },
+    Attach {
+        entity_id: String,
+        recipe_or_preset: String,
+    },
+    Stop {
+        entity_id: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -322,6 +338,7 @@ impl LuaEngineContext {
             pending_nav_bake: Arc::new(Mutex::new(None)),
             active_terrain: Arc::new(RwLock::new(None)),
             pending_rig_commands: Arc::new(Mutex::new(Vec::new())),
+            pending_vfx_commands: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -2033,6 +2050,48 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register solve_ik_2bone: {}", e))?;
         lua.globals().set("solve_ik_2bone", solve_ik_2bone).map_err(|e| e.to_string())?;
 
+        // 65. spawn_vfx(preset_or_json, x, y, z)
+        let vfx_spawn_ref = ctx.pending_vfx_commands.clone();
+        let spawn_vfx = lua
+            .create_function(move |_, (preset_or_json, x, y, z): (String, f32, f32, f32)| {
+                if let Ok(mut cmds) = vfx_spawn_ref.lock() {
+                    cmds.push(VfxCommand::Spawn {
+                        recipe_or_preset: preset_or_json,
+                        position: [x, y, z],
+                    });
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register spawn_vfx: {}", e))?;
+        lua.globals().set("spawn_vfx", spawn_vfx).map_err(|e| e.to_string())?;
+
+        // 66. attach_vfx(entity_id, preset_or_json)
+        let vfx_attach_ref = ctx.pending_vfx_commands.clone();
+        let attach_vfx = lua
+            .create_function(move |_, (id, preset_or_json): (String, String)| {
+                if let Ok(mut cmds) = vfx_attach_ref.lock() {
+                    cmds.push(VfxCommand::Attach {
+                        entity_id: id,
+                        recipe_or_preset: preset_or_json,
+                    });
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register attach_vfx: {}", e))?;
+        lua.globals().set("attach_vfx", attach_vfx).map_err(|e| e.to_string())?;
+
+        // 67. stop_vfx(entity_id)
+        let vfx_stop_ref = ctx.pending_vfx_commands.clone();
+        let stop_vfx = lua
+            .create_function(move |_, id: String| {
+                if let Ok(mut cmds) = vfx_stop_ref.lock() {
+                    cmds.push(VfxCommand::Stop { entity_id: id });
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register stop_vfx: {}", e))?;
+        lua.globals().set("stop_vfx", stop_vfx).map_err(|e| e.to_string())?;
+
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
             .exec()
@@ -2886,6 +2945,51 @@ mod tests {
             let lua = lua_arc.lock().unwrap();
             let jy: f32 = lua.globals().get("jy").unwrap();
             assert!(jy > 0.0, "Expected positive knee/elbow height");
+        }
+
+        let _ = std::fs::remove_file(test_script_path);
+    }
+
+    #[test]
+    fn test_lua_vfx_api_bindings() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        let test_script_path = "assets/scripts/temp_vfx_test.lua";
+        let script_code = r#"
+            spawn_vfx("explosion", 5.0, 1.0, -2.0)
+            attach_vfx("torch_1", "fire")
+            stop_vfx("portal_1")
+        "#;
+        std::fs::write(test_script_path, script_code).unwrap();
+
+        let mut comp = ScriptComponent::new(test_script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Init failed: {:?}", res.err());
+
+        let cmds = ctx.pending_vfx_commands.lock().unwrap().clone();
+        assert_eq!(cmds.len(), 3);
+        match &cmds[0] {
+            VfxCommand::Spawn { recipe_or_preset, position } => {
+                assert_eq!(recipe_or_preset, "explosion");
+                assert_eq!(*position, [5.0, 1.0, -2.0]);
+            }
+            _ => panic!("Expected VfxCommand::Spawn"),
+        }
+        match &cmds[1] {
+            VfxCommand::Attach { entity_id, recipe_or_preset } => {
+                assert_eq!(entity_id, "torch_1");
+                assert_eq!(recipe_or_preset, "fire");
+            }
+            _ => panic!("Expected VfxCommand::Attach"),
+        }
+        match &cmds[2] {
+            VfxCommand::Stop { entity_id } => {
+                assert_eq!(entity_id, "portal_1");
+            }
+            _ => panic!("Expected VfxCommand::Stop"),
         }
 
         let _ = std::fs::remove_file(test_script_path);
