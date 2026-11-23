@@ -130,6 +130,18 @@ pub enum McpCommand {
         color_tint: [f32; 4],
         respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
     },
+    ForgeCreateMusic {
+        preset: Option<String>,
+        recipe: Option<crate::music_forge::MusicRecipe>,
+        bake_path: Option<String>,
+        play_now: bool,
+        intensity: Option<f32>,
+        respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
+    SetMusicIntensity {
+        intensity: f32,
+        respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -522,6 +534,31 @@ pub async fn handle_jsonrpc(
                                     }
                                 },
                                 "required": ["style", "filename"]
+                            }
+                        },
+                        {
+                            "name": "forge_create_music",
+                            "description": "Compone musica procedural con Music Forge a partir de un preset o receta JSON, con opcion de hornear a .wav o reproducir en vivo con musica adaptativa",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "preset": { "type": "string", "description": "Nombre de preset: 'space_ambient', 'boss_battle', 'cyber_action', 'menu_chill'" },
+                                    "recipe": { "type": "object", "description": "Objeto MusicRecipe con bpm, scale, chord_progression y tracks" },
+                                    "bake_path": { "type": "string", "description": "Ruta opcional para guardar .wav, ej. 'assets/music/battle.wav'" },
+                                    "play_now": { "type": "boolean", "description": "Si true, reproduce la musica adaptativa en el bus de musica de inmediato" },
+                                    "intensity": { "type": "number", "description": "Nivel de intensidad inicial (0.0 a 1.0)" }
+                                }
+                            }
+                        },
+                        {
+                            "name": "set_music_intensity",
+                            "description": "Ajusta la intensidad adaptativa de la musica procedural en reproduccion (0.0 ambiente tranquilo a 1.0 batalla completa)",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "intensity": { "type": "number", "description": "Nivel de intensidad de 0.0 a 1.0" }
+                                },
+                                "required": ["intensity"]
                             }
                         }
                     ]
@@ -993,6 +1030,55 @@ pub async fn handle_jsonrpc(
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al crear textura en Forge")),
                     }
                 }
+                "forge_create_music" => {
+                    let preset = args.get("preset").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let recipe = if let Some(rv) = args.get("recipe") {
+                        match serde_json::from_value::<crate::music_forge::MusicRecipe>(rv.clone()) {
+                            Ok(r) => Some(r),
+                            Err(e) => return Some(JsonRpcResponse::error(id, -32602, format!("Error en recipe: {}", e))),
+                        }
+                    } else {
+                        None
+                    };
+                    let bake_path = args.get("bake_path").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let play_now = args.get("play_now").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let intensity = args.get("intensity").and_then(|v| v.as_f64()).map(|f| f as f32);
+
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::ForgeCreateMusic {
+                        preset,
+                        recipe,
+                        bake_path,
+                        play_now,
+                        intensity,
+                        respond_to: tx,
+                    }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(val)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }], "data": val }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al crear musica en Music Forge")),
+                    }
+                }
+                "set_music_intensity" => {
+                    let intensity = match args.get("intensity").and_then(|v| v.as_f64()) {
+                        Some(f) => f as f32,
+                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'intensity' (numero)")),
+                    };
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::SetMusicIntensity {
+                        intensity,
+                        respond_to: tx,
+                    }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(val)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }], "data": val }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al ajustar intensidad de musica")),
+                    }
+                }
                 _ => Some(JsonRpcResponse::error(id, -32601, format!("Herramienta desconocida: {}", tool_name))),
             }
         }
@@ -1222,5 +1308,7 @@ mod tests {
         assert!(resp_str.contains("forge_create_model"));
         assert!(resp_str.contains("forge_bake_glb"));
         assert!(resp_str.contains("forge_capture_turnaround"));
+        assert!(resp_str.contains("forge_create_music"));
+        assert!(resp_str.contains("set_music_intensity"));
     }
 }

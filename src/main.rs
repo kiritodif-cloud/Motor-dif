@@ -193,6 +193,11 @@ pub struct EngineState {
     pub show_export_modal: bool,
     pub export_game_name: String,
     pub export_entry_scene: String,
+    pub show_music_forge_window: bool,
+    pub music_forge_preset_idx: usize,
+    pub music_forge_recipe: crate::music_forge::MusicRecipe,
+    pub music_forge_intensity: f32,
+    pub music_forge_bake_name: String,
     pub show_profiler: bool,
     pub frametime_history: std::collections::VecDeque<f32>,
     pub view_mode: renderer::ViewMode,
@@ -481,6 +486,11 @@ impl EngineState {
             show_export_modal: false,
             export_game_name: "MyGame".to_string(),
             export_entry_scene: initial_scene_path.clone(),
+            show_music_forge_window: false,
+            music_forge_preset_idx: 0,
+            music_forge_recipe: crate::music_forge::preset_space_ambient(),
+            music_forge_intensity: 0.65,
+            music_forge_bake_name: "cosmos_theme.wav".to_string(),
             show_profiler: false,
             frametime_history: std::collections::VecDeque::with_capacity(100),
             view_mode: renderer::ViewMode::Lit,
@@ -1772,6 +1782,67 @@ impl EngineState {
                         }
                     }
                 }
+                McpCommand::ForgeCreateMusic { preset, recipe, bake_path, play_now, intensity, respond_to } => {
+                    let target_recipe = if let Some(r) = recipe {
+                        r
+                    } else if let Some(p_name) = &preset {
+                        match crate::music_forge::get_music_preset(p_name) {
+                            Some(pr) => pr,
+                            None => {
+                                let _ = respond_to.send(Err(format!("Preset '{}' no encontrado", p_name)));
+                                continue;
+                            }
+                        }
+                    } else {
+                        crate::music_forge::preset_space_ambient()
+                    };
+
+                    let mut baked = None;
+                    if let Some(path) = &bake_path {
+                        match crate::music_forge::bake_music_to_wav(&target_recipe, path, intensity) {
+                            Ok(p) => {
+                                self.logs.push(format!("Music Forge: Baked WAV to '{}'", p));
+                                self.add_toast(format!("Music baked: {}", p), egui::Color32::from_rgb(34, 197, 94));
+                                baked = Some(p);
+                            }
+                            Err(e) => {
+                                let _ = respond_to.send(Err(format!("Error baking music to wav: {}", e)));
+                                continue;
+                            }
+                        }
+                    }
+
+                    if play_now {
+                        let init_int = intensity.unwrap_or(0.5);
+                        let source = crate::music_forge::AdaptiveMusicSource::new(&target_recipe, init_int);
+                        if let Ok(mut audio) = self.audio.lock() {
+                            let _ = audio.play_adaptive_music(source);
+                        }
+                        self.logs.push(format!("Music Forge: Playing '{}' (intensity: {:.2})", target_recipe.name, init_int));
+                        self.add_toast(format!("Playing music: {}", target_recipe.name), egui::Color32::from_rgb(56, 189, 248));
+                    }
+
+                    let _ = respond_to.send(Ok(serde_json::json!({
+                        "success": true,
+                        "recipe_name": target_recipe.name,
+                        "bpm": target_recipe.bpm,
+                        "bars": target_recipe.bars,
+                        "scale": target_recipe.scale,
+                        "baked_path": baked,
+                        "playing": play_now
+                    })));
+                }
+                McpCommand::SetMusicIntensity { intensity, respond_to } => {
+                    let cl = intensity.clamp(0.0, 1.0);
+                    if let Ok(audio) = self.audio.lock() {
+                        audio.set_music_intensity(cl);
+                    }
+                    self.logs.push(format!("Music Forge: Set intensity to {:.2}", cl));
+                    let _ = respond_to.send(Ok(serde_json::json!({
+                        "success": true,
+                        "intensity": cl
+                    })));
+                }
             }
         }
     }
@@ -2937,6 +3008,11 @@ impl EngineState {
                             ui.separator();
                             if ui.button("[Export] Export Game...").clicked() {
                                 self.show_export_modal = true;
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("🎵 Music Forge...").clicked() {
+                                self.show_music_forge_window = true;
                                 ui.close();
                             }
                         });
@@ -5059,6 +5135,7 @@ impl EngineState {
                                     ("Toggle Colliders Debug", "toggle_col"),
                                     ("Reset Camera View", "reset_cam"),
                                     ("Export Game (Standalone)", "export_game"),
+                                    ("Music Forge (Procedural Music)", "music_forge"),
                                 ];
 
                                 for (name, action_id) in quick_actions {
@@ -5140,6 +5217,9 @@ impl EngineState {
                             "export_game" => {
                                 self.show_export_modal = true;
                             }
+                            "music_forge" => {
+                                self.show_music_forge_window = true;
+                            }
                             _ => {}
                         }
                     }
@@ -5194,6 +5274,139 @@ impl EngineState {
                             }
                             Err(e) => {
                                 let err = format!("Export failed: {}", e);
+                                self.logs.push(err.clone());
+                                self.add_toast(&err, egui::Color32::from_rgb(239, 68, 68));
+                            }
+                        }
+                    }
+                }
+
+                // Music Forge Window
+                if self.show_music_forge_window {
+                    let mut close_music = false;
+                    let mut play_music_trigger = false;
+                    let mut stop_music_trigger = false;
+                    let mut bake_music_trigger = false;
+
+                    egui::Window::new("🎵 Music Forge — Compositor Procedural")
+                        .default_size(egui::vec2(420.0, 380.0))
+                        .resizable(true)
+                        .collapsible(true)
+                        .show(ui.ctx(), |ui| {
+                            ui.heading("🎼 Generador de Música Adaptativa");
+                            ui.label("Crea y reproduce música procedural sin dependencias externas.");
+                            ui.add_space(8.0);
+
+                            // Presets Selector
+                            let presets = ["space_ambient", "boss_battle", "cyber_action", "menu_chill"];
+                            let current_name = presets.get(self.music_forge_preset_idx).copied().unwrap_or("space_ambient");
+                            egui::ComboBox::from_label("Preset Musical")
+                                .selected_text(current_name)
+                                .show_ui(ui, |ui| {
+                                    for (idx, &p_name) in presets.iter().enumerate() {
+                                        if ui.selectable_value(&mut self.music_forge_preset_idx, idx, p_name).clicked() {
+                                            if let Some(r) = crate::music_forge::get_music_preset(p_name) {
+                                                self.music_forge_recipe = r;
+                                            }
+                                        }
+                                    }
+                                });
+
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                ui.label("BPM:");
+                                ui.add(egui::Slider::new(&mut self.music_forge_recipe.bpm, 60.0..=180.0).step_by(1.0));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Escala:");
+                                ui.label(egui::RichText::new(&self.music_forge_recipe.scale).strong().color(egui::Color32::from_rgb(56, 189, 248)));
+                                ui.label(format!("(Compases: {})", self.music_forge_recipe.bars));
+                            });
+
+                            ui.add_space(6.0);
+                            ui.separator();
+                            ui.add_space(4.0);
+
+                            ui.label(egui::RichText::new("🎚️ Control Adaptativo en Vivo").strong());
+                            let prev_intensity = self.music_forge_intensity;
+                            ui.add(egui::Slider::new(&mut self.music_forge_intensity, 0.0..=1.0).text("Intensidad (0.0 Ambiente -> 1.0 Batalla)"));
+                            if (self.music_forge_intensity - prev_intensity).abs() > 0.005 {
+                                if let Ok(audio) = self.audio.lock() {
+                                    audio.set_music_intensity(self.music_forge_intensity);
+                                }
+                            }
+
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                if ui.button(egui::RichText::new("▶ Play Adaptive").strong()).clicked() {
+                                    play_music_trigger = true;
+                                }
+                                if ui.button("⏹ Stop").clicked() {
+                                    stop_music_trigger = true;
+                                }
+                            });
+
+                            ui.add_space(10.0);
+                            ui.separator();
+                            ui.add_space(4.0);
+
+                            ui.label(egui::RichText::new("💾 Horneado a .WAV").strong());
+                            ui.horizontal(|ui| {
+                                ui.label("Archivo:");
+                                ui.text_edit_singleline(&mut self.music_forge_bake_name);
+                            });
+
+                            ui.add_space(4.0);
+                            if ui.button("Bake to assets/music/...").clicked() {
+                                bake_music_trigger = true;
+                            }
+
+                            ui.add_space(8.0);
+                            if ui.button("Cerrar").clicked() {
+                                close_music = true;
+                            }
+                        });
+
+                    if close_music {
+                        self.show_music_forge_window = false;
+                    }
+
+                    if play_music_trigger {
+                        let source = crate::music_forge::AdaptiveMusicSource::new(&self.music_forge_recipe, self.music_forge_intensity);
+                        if let Ok(mut audio) = self.audio.lock() {
+                            let _ = audio.play_adaptive_music(source);
+                        }
+                        let msg = format!("Playing Music Forge: '{}' ({:.0} BPM)", self.music_forge_recipe.name, self.music_forge_recipe.bpm);
+                        self.logs.push(msg.clone());
+                        self.add_toast(&msg, egui::Color32::from_rgb(56, 189, 248));
+                    }
+
+                    if stop_music_trigger {
+                        if let Ok(mut audio) = self.audio.lock() {
+                            audio.stop_music();
+                        }
+                        self.logs.push("Stopped Music Forge playback".to_string());
+                        self.add_toast("Music stopped", egui::Color32::from_rgb(148, 163, 184));
+                    }
+
+                    if bake_music_trigger {
+                        let filename = if self.music_forge_bake_name.trim().is_empty() {
+                            "music_export.wav".to_string()
+                        } else if !self.music_forge_bake_name.to_lowercase().ends_with(".wav") {
+                            format!("{}.wav", self.music_forge_bake_name.trim())
+                        } else {
+                            self.music_forge_bake_name.trim().to_string()
+                        };
+                        let out_path = format!("assets/music/{}", filename);
+                        match crate::music_forge::bake_music_to_wav(&self.music_forge_recipe, &out_path, Some(self.music_forge_intensity)) {
+                            Ok(path) => {
+                                let msg = format!("Baked music to '{}'!", path);
+                                self.logs.push(msg.clone());
+                                self.add_toast(&msg, egui::Color32::from_rgb(34, 197, 94));
+                            }
+                            Err(e) => {
+                                let err = format!("Bake error: {}", e);
                                 self.logs.push(err.clone());
                                 self.add_toast(&err, egui::Color32::from_rgb(239, 68, 68));
                             }
