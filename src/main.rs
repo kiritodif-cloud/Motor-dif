@@ -2,6 +2,7 @@ pub mod assets;
 pub mod audio;
 pub mod camera;
 pub mod ecs;
+pub mod exporter;
 pub mod hot_reload;
 pub mod mcp_server;
 pub mod particles;
@@ -170,6 +171,9 @@ pub struct EngineState {
     pub toasts: Vec<(String, Instant, egui::Color32)>,
     pub command_palette_open: bool,
     pub command_palette_query: String,
+    pub show_export_modal: bool,
+    pub export_game_name: String,
+    pub export_entry_scene: String,
 
     // Mouse & Gizmo Interaction
     pub mouse_pos: [f32; 2],
@@ -444,6 +448,9 @@ impl EngineState {
             toasts: Vec::new(),
             command_palette_open: false,
             command_palette_query: String::new(),
+            show_export_modal: false,
+            export_game_name: "MyGame".to_string(),
+            export_entry_scene: initial_scene_path.clone(),
 
             mouse_pos: [0.0, 0.0],
             is_right_mouse_down: false,
@@ -2406,6 +2413,11 @@ impl EngineState {
                                 trigger_reload_scene = true;
                                 ui.close();
                             }
+                            ui.separator();
+                            if ui.button("[Export] Export Game...").clicked() {
+                                self.show_export_modal = true;
+                                ui.close();
+                            }
                         });
 
                         ui.separator();
@@ -3963,6 +3975,7 @@ impl EngineState {
                                     ("Toggle 2D / 3D Camera", "toggle_cam"),
                                     ("Toggle Colliders Debug", "toggle_col"),
                                     ("Reset Camera View", "reset_cam"),
+                                    ("Export Game (Standalone)", "export_game"),
                                 ];
 
                                 for (name, action_id) in quick_actions {
@@ -4040,12 +4053,67 @@ impl EngineState {
                                 self.camera.up = glam::Vec3::Y;
                                 self.add_toast("Camera view reset", egui::Color32::from_rgb(56, 189, 248));
                             }
+                            "export_game" => {
+                                self.show_export_modal = true;
+                            }
                             _ => {}
                         }
                     }
 
                     if close_palette {
                         self.command_palette_open = false;
+                    }
+                }
+
+                // Export Game Modal
+                if self.show_export_modal {
+                    let screen_rect = ui.ctx().input(|i| i.raw.screen_rect).unwrap_or_else(|| {
+                        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0))
+                    });
+                    let mut export_trigger = false;
+                    let mut close_modal = false;
+
+                    egui::Window::new("Export Game (Standalone)")
+                        .fixed_pos(egui::pos2(screen_rect.center().x - 180.0, screen_rect.center().y - 120.0))
+                        .fixed_size(egui::vec2(360.0, 220.0))
+                        .resizable(false)
+                        .collapsible(false)
+                        .show(ui.ctx(), |ui| {
+                            ui.heading("📦 Standalone Exporter");
+                            ui.add_space(8.0);
+                            ui.label("Game Title / Executable Name:");
+                            ui.text_edit_singleline(&mut self.export_game_name);
+                            ui.add_space(6.0);
+                            ui.label("Entry Scene Path:");
+                            ui.text_edit_singleline(&mut self.export_entry_scene);
+                            ui.add_space(14.0);
+                            ui.horizontal(|ui| {
+                                if ui.button(egui::RichText::new("🚀 Build & Export").strong()).clicked() {
+                                    export_trigger = true;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    close_modal = true;
+                                }
+                            });
+                        });
+
+                    if close_modal {
+                        self.show_export_modal = false;
+                    }
+                    if export_trigger {
+                        match exporter::export_game(&self.export_game_name, &self.export_entry_scene, None) {
+                            Ok(path) => {
+                                let msg = format!("Game exported to '{}'!", path.display());
+                                self.logs.push(msg.clone());
+                                self.add_toast(&msg, egui::Color32::from_rgb(56, 189, 248));
+                                self.show_export_modal = false;
+                            }
+                            Err(e) => {
+                                let err = format!("Export failed: {}", e);
+                                self.logs.push(err.clone());
+                                self.add_toast(&err, egui::Color32::from_rgb(239, 68, 68));
+                            }
+                        }
                     }
                 }
             });
@@ -4435,14 +4503,23 @@ pub struct App {
     state: Option<EngineState>,
     is_play_mode: bool,
     target_scene: String,
+    custom_title: Option<String>,
+    custom_size: Option<(u32, u32)>,
 }
 
 impl App {
-    pub fn new(is_play_mode: bool, target_scene: String) -> Self {
+    pub fn new(
+        is_play_mode: bool,
+        target_scene: String,
+        custom_title: Option<String>,
+        custom_size: Option<(u32, u32)>,
+    ) -> Self {
         Self {
             state: None,
             is_play_mode,
             target_scene,
+            custom_title,
+            custom_size,
         }
     }
 }
@@ -4451,14 +4528,16 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         event_loop.set_control_flow(ControlFlow::Poll);
         if self.state.is_none() {
-            let title = if self.is_play_mode {
+            let default_title = if self.is_play_mode {
                 "Motor-dif | Game Mode"
             } else {
                 "Motor-dif | AI-Native Lightweight 2D/3D Engine (Editor)"
             };
+            let title = self.custom_title.as_deref().unwrap_or(default_title);
+            let (w, h) = self.custom_size.unwrap_or((1280, 720));
             let window_attributes = Window::default_attributes()
                 .with_title(title)
-                .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0))
+                .with_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64))
                 .with_visible(true)
                 .with_active(true)
                 .with_resizable(true);
@@ -4514,30 +4593,41 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut is_play_mode = false;
     let mut target_scene = "assets/scene.json".to_string();
+    let mut custom_title = None;
+    let mut custom_size = None;
 
-    let mut i = 1;
-    while i < args.len() {
-        if args[i] == "--play" {
+    if args.len() <= 1 {
+        if let Some(cfg) = exporter::check_auto_boot_game() {
             is_play_mode = true;
-            if i + 1 < args.len() && !args[i + 1].starts_with("--") {
-                target_scene = args[i + 1].clone();
-                i += 1;
-            }
-        } else if args[i] == "--scene" {
-            if i + 1 < args.len() {
-                target_scene = args[i + 1].clone();
-                i += 1;
-            }
-        } else if args[i].ends_with(".json") {
-            target_scene = args[i].clone();
+            target_scene = cfg.entry_scene;
+            custom_title = Some(cfg.title);
+            custom_size = Some((cfg.width, cfg.height));
         }
-        i += 1;
+    } else {
+        let mut i = 1;
+        while i < args.len() {
+            if args[i] == "--play" {
+                is_play_mode = true;
+                if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                    target_scene = args[i + 1].clone();
+                    i += 1;
+                }
+            } else if args[i] == "--scene" {
+                if i + 1 < args.len() {
+                    target_scene = args[i + 1].clone();
+                    i += 1;
+                }
+            } else if args[i].ends_with(".json") {
+                target_scene = args[i].clone();
+            }
+            i += 1;
+        }
     }
 
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::new(is_play_mode, target_scene);
+    let mut app = App::new(is_play_mode, target_scene, custom_title, custom_size);
     event_loop.run_app(&mut app).expect("Error running event loop");
 }
 

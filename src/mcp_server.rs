@@ -219,6 +219,18 @@ pub async fn handle_jsonrpc(
                             }
                         },
                         {
+                            "name": "export_game",
+                            "description": "Exporta el juego completo a un paquete independiente ejecutable en dist/",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "game_name": { "type": "string", "description": "Nombre del juego y del ejecutable generado" },
+                                    "entry_scene": { "type": "string", "description": "Ruta de la escena inicial (ej. 'assets/scene.json')" }
+                                },
+                                "required": ["game_name", "entry_scene"]
+                            }
+                        },
+                        {
                             "name": "delete_entity",
                             "description": "Elimina una entidad del mundo ECS y sus fisicas en tiempo real",
                             "inputSchema": {
@@ -427,6 +439,26 @@ pub async fn handle_jsonrpc(
                         }
                         Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, format!("Error capturando viewport: {}", err))),
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout o canal cerrado al capturar viewport")),
+                    }
+                }
+                "export_game" => {
+                    let game_name = args.get("game_name").and_then(|v| v.as_str()).unwrap_or("MotorGame");
+                    let entry_scene = args.get("entry_scene").and_then(|v| v.as_str()).unwrap_or("assets/scene.json");
+
+                    match crate::exporter::export_game(game_name, entry_scene, None) {
+                        Ok(out_path) => {
+                            Some(JsonRpcResponse::success(
+                                id,
+                                json!({
+                                    "content": [{
+                                        "type": "text",
+                                        "text": format!("Juego exportado exitosamente en '{}'", out_path.display())
+                                    }],
+                                    "dist_path": out_path.to_string_lossy()
+                                }),
+                            ))
+                        }
+                        Err(e) => Some(JsonRpcResponse::error(id, -32000, format!("Error al exportar: {}", e))),
                     }
                 }
                 "delete_entity" => {
