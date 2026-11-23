@@ -2219,8 +2219,118 @@ impl EngineState {
                         "positions": positions
                     })));
                 }
+                McpCommand::ForgeCreateRiggedCharacter { preset, id_prefix, position, respond_to } => {
+                    let defs = crate::procedural_rig::build_modular_character(&preset, &id_prefix, position);
+                    if defs.is_empty() {
+                        let _ = respond_to.send(Err(format!("Preset '{}' no reconocido. Opciones: mech_biped, sci_fi_trooper, spider_drone, defense_turret", preset)));
+                    } else {
+                        let current_scene = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
+                        self.history.push(current_scene);
+                        let mut created_ids = Vec::new();
+                        let mut first_ent = None;
+                        for def in &defs {
+                            created_ids.push(def.id.clone());
+                            let meta = EntityMeta {
+                                id: def.id.clone(),
+                                name: def.id.clone(),
+                                parent: def.parent.clone(),
+                            };
+                            let transform = Transform::new(
+                                Vec3::from(def.position),
+                                Vec3::from(def.rotation),
+                                Vec3::from(def.scale),
+                            );
+                            let mesh = MeshRender {
+                                mesh_type: def.mesh.clone(),
+                                color: def.color,
+                                texture: def.texture.clone(),
+                                emissive: def.emissive,
+                                fresnel_color: def.fresnel_color,
+                                fresnel_power: def.fresnel_power,
+                                blend_mode: def.blend_mode.clone(),
+                                wireframe: def.wireframe,
+                                uv_scroll: def.uv_scroll,
+                            };
+                            let e = self.world.spawn((meta, transform, mesh));
+                            if let Some(ref rig) = def.procedural_rig {
+                                let _ = self.world.insert_one(e, rig.clone());
+                            }
+                            if first_ent.is_none() {
+                                first_ent = Some(e);
+                            }
+                        }
+                        if let Some(e) = first_ent {
+                            self.selected_entity = Some(e);
+                        }
+                        let msg = format!("Rig Forge: Spawned '{}' with {} entities", preset, defs.len());
+                        self.logs.push(msg.clone());
+                        self.add_toast(msg, egui::Color32::from_rgb(34, 197, 94));
+                        let _ = respond_to.send(Ok(serde_json::json!({
+                            "success": true,
+                            "preset": preset,
+                            "id_prefix": id_prefix,
+                            "position": position,
+                            "entity_count": defs.len(),
+                            "entities": created_ids
+                        })));
+                    }
+                }
             }
         }
+    }
+
+    pub fn spawn_rigged_character_preset(&mut self, preset: &str) -> Vec<String> {
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_millis()).unwrap_or(1);
+        let id_prefix = format!("{}_{}", preset, ts % 1000);
+        let forward = (self.camera.target - self.camera.eye).normalize();
+        let spawn_pos = self.camera.eye + forward * 4.0;
+        let pos = [spawn_pos.x, spawn_pos.y.max(0.0), spawn_pos.z];
+        let defs = crate::procedural_rig::build_modular_character(preset, &id_prefix, pos);
+        if defs.is_empty() {
+            return Vec::new();
+        }
+        let current_scene = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
+        self.history.push(current_scene);
+        let mut created_ids = Vec::new();
+        let mut first_ent = None;
+        for def in &defs {
+            created_ids.push(def.id.clone());
+            let meta = EntityMeta {
+                id: def.id.clone(),
+                name: def.id.clone(),
+                parent: def.parent.clone(),
+            };
+            let transform = Transform::new(
+                Vec3::from(def.position),
+                Vec3::from(def.rotation),
+                Vec3::from(def.scale),
+            );
+            let mesh = MeshRender {
+                mesh_type: def.mesh.clone(),
+                color: def.color,
+                texture: def.texture.clone(),
+                emissive: def.emissive,
+                fresnel_color: def.fresnel_color,
+                fresnel_power: def.fresnel_power,
+                blend_mode: def.blend_mode.clone(),
+                wireframe: def.wireframe,
+                uv_scroll: def.uv_scroll,
+            };
+            let e = self.world.spawn((meta, transform, mesh));
+            if let Some(ref rig) = def.procedural_rig {
+                let _ = self.world.insert_one(e, rig.clone());
+            }
+            if first_ent.is_none() {
+                first_ent = Some(e);
+            }
+        }
+        if let Some(e) = first_ent {
+            self.selected_entity = Some(e);
+        }
+        let msg = format!("Spawned rigged character: '{}' ({} parts)", preset, defs.len());
+        self.logs.push(msg.clone());
+        self.add_toast(msg, egui::Color32::from_rgb(34, 197, 94));
+        created_ids
     }
 
     pub fn update_and_render(&mut self) {
@@ -2494,6 +2604,14 @@ impl EngineState {
                     let _ = s.init_or_reload(self.lua_ctx.clone());
                     let _ = self.world.insert_one(e, s);
                 }
+
+                if let Some(rig) = &def.procedural_rig {
+                    let _ = self.world.insert_one(e, rig.clone());
+                }
+
+                if let Some(anim) = &def.animation_player {
+                    let _ = self.world.insert_one(e, anim.clone());
+                }
             }
 
             // 7. Handle pending destroys from Lua
@@ -2612,6 +2730,56 @@ impl EngineState {
                 if let Ok(mut grid) = self.lua_ctx.nav_grid.write() {
                     *grid = nav::NavGrid::new(cs, extent);
                     grid.bake_from_world(&self.world);
+                }
+            }
+
+            // Handle pending rig commands from Lua
+            let pending_rig_cmds = if let Ok(mut r) = self.lua_ctx.pending_rig_commands.lock() {
+                std::mem::take(&mut *r)
+            } else {
+                Vec::new()
+            };
+            for cmd in pending_rig_cmds {
+                match cmd {
+                    scripting::RigCommand::SetLookTarget { entity_id, target } => {
+                        for entity_ref in self.world.iter() {
+                            if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                                if meta.id == entity_id {
+                                    let e = entity_ref.entity();
+                                    if let Ok(mut rig) = self.world.get::<&mut crate::procedural_rig::ProceduralRig>(e) {
+                                        rig.look_target = Some(target);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    scripting::RigCommand::ClearLookTarget { entity_id } => {
+                        for entity_ref in self.world.iter() {
+                            if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                                if meta.id == entity_id {
+                                    let e = entity_ref.entity();
+                                    if let Ok(mut rig) = self.world.get::<&mut crate::procedural_rig::ProceduralRig>(e) {
+                                        rig.look_target = None;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    scripting::RigCommand::TriggerRecoil { entity_id, strength } => {
+                        for entity_ref in self.world.iter() {
+                            if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                                if meta.id == entity_id {
+                                    let e = entity_ref.entity();
+                                    if let Ok(mut rig) = self.world.get::<&mut crate::procedural_rig::ProceduralRig>(e) {
+                                        rig.trigger_recoil(strength);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -3400,6 +3568,25 @@ impl EngineState {
                                 self.show_level_forge_window = true;
                                 ui.close();
                             }
+                            ui.separator();
+                            ui.menu_button("[R] Rig Forge", |ui| {
+                                if ui.button("Spawn Mech Biped").clicked() {
+                                    self.spawn_rigged_character_preset("mech_biped");
+                                    ui.close();
+                                }
+                                if ui.button("Spawn Sci-Fi Trooper").clicked() {
+                                    self.spawn_rigged_character_preset("sci_fi_trooper");
+                                    ui.close();
+                                }
+                                if ui.button("Spawn Spider Drone").clicked() {
+                                    self.spawn_rigged_character_preset("spider_drone");
+                                    ui.close();
+                                }
+                                if ui.button("Spawn Defense Turret").clicked() {
+                                    self.spawn_rigged_character_preset("defense_turret");
+                                    ui.close();
+                                }
+                            });
                         });
 
                         ui.separator();
@@ -4379,6 +4566,37 @@ impl EngineState {
                                              }
                                         }
                                     });
+
+                                    ui.add_space(4.0);
+
+                                    // Procedural Rig Card
+                                    if let Ok(mut rig) = self.world.get::<&mut crate::procedural_rig::ProceduralRig>(entity) {
+                                        ui.add_space(4.0);
+                                        ui_theme::collapsible_card(ui, "insp_rig", "[R] Procedural Rig", true, |ui| {
+                                            ui.label(format!("Rig Type: {}", rig.rig_type));
+                                            ui.label(format!("Speed: {:.2} m/s", rig.current_speed));
+
+                                            ui.horizontal(|ui| {
+                                                ui.label("Stride Angle:");
+                                                ui.add(egui::Slider::new(&mut rig.stride_angle_deg, 5.0..=60.0).suffix(" deg"));
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Bob Amplitude:");
+                                                ui.add(egui::Slider::new(&mut rig.bob_amplitude, 0.0..=0.3).suffix(" m"));
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Breath Speed:");
+                                                ui.add(egui::Slider::new(&mut rig.breath_speed, 0.5..=6.0));
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Breath Amplitude:");
+                                                ui.add(egui::Slider::new(&mut rig.breath_amplitude, 0.0..=0.1).suffix(" m"));
+                                            });
+                                            if ui.button("[Trigger Recoil]").clicked() {
+                                                rig.trigger_recoil(1.0);
+                                            }
+                                        });
+                                    }
 
                                     ui.add_space(4.0);
 
@@ -5522,6 +5740,10 @@ impl EngineState {
                                     ("Export Game (Standalone)", "export_game"),
                                     ("Music Forge (Procedural Music)", "music_forge"),
                                     ("Level Forge (Worlds & Dungeons)", "level_forge"),
+                                    ("Spawn Mech Biped (Procedural Rig)", "spawn_rig_mech"),
+                                    ("Spawn Sci-Fi Trooper (Procedural Rig)", "spawn_rig_trooper"),
+                                    ("Spawn Spider Drone (Procedural Rig)", "spawn_rig_spider"),
+                                    ("Spawn Defense Turret (Procedural Rig)", "spawn_rig_turret"),
                                 ];
 
                                 for (name, action_id) in quick_actions {
@@ -5608,6 +5830,18 @@ impl EngineState {
                             }
                             "level_forge" => {
                                 self.show_level_forge_window = true;
+                            }
+                            "spawn_rig_mech" => {
+                                self.spawn_rigged_character_preset("mech_biped");
+                            }
+                            "spawn_rig_trooper" => {
+                                self.spawn_rigged_character_preset("sci_fi_trooper");
+                            }
+                            "spawn_rig_spider" => {
+                                self.spawn_rigged_character_preset("spider_drone");
+                            }
+                            "spawn_rig_turret" => {
+                                self.spawn_rigged_character_preset("defense_turret");
                             }
                             _ => {}
                         }

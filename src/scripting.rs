@@ -139,6 +139,22 @@ pub struct LuaEngineContext {
     pub nav_grid: Arc<RwLock<crate::nav::NavGrid>>,
     pub pending_nav_bake: Arc<Mutex<Option<(f32, f32)>>>,
     pub active_terrain: Arc<RwLock<Option<crate::level_forge::TerrainRecipe>>>,
+    pub pending_rig_commands: Arc<Mutex<Vec<RigCommand>>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum RigCommand {
+    SetLookTarget {
+        entity_id: String,
+        target: [f32; 3],
+    },
+    ClearLookTarget {
+        entity_id: String,
+    },
+    TriggerRecoil {
+        entity_id: String,
+        strength: f32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -305,6 +321,7 @@ impl LuaEngineContext {
             nav_grid: Arc::new(RwLock::new(crate::nav::NavGrid::new(1.0, 20.0))),
             pending_nav_bake: Arc::new(Mutex::new(None)),
             active_terrain: Arc::new(RwLock::new(None)),
+            pending_rig_commands: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -1948,6 +1965,73 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register get_terrain_height: {}", e))?;
         lua.globals().set("get_terrain_height", get_terrain_height).map_err(|e| e.to_string())?;
 
+        // 61. rig_set_look_target(entity_id, x, y, z)
+        let rig_look_ref = ctx.pending_rig_commands.clone();
+        let rig_set_look_target = lua
+            .create_function(move |_, (id, x, y, z): (String, f32, f32, f32)| {
+                if let Ok(mut cmds) = rig_look_ref.lock() {
+                    cmds.push(RigCommand::SetLookTarget {
+                        entity_id: id,
+                        target: [x, y, z],
+                    });
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register rig_set_look_target: {}", e))?;
+        lua.globals().set("rig_set_look_target", rig_set_look_target).map_err(|e| e.to_string())?;
+
+        // 62. rig_clear_look_target(entity_id)
+        let rig_clear_ref = ctx.pending_rig_commands.clone();
+        let rig_clear_look_target = lua
+            .create_function(move |_, id: String| {
+                if let Ok(mut cmds) = rig_clear_ref.lock() {
+                    cmds.push(RigCommand::ClearLookTarget { entity_id: id });
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register rig_clear_look_target: {}", e))?;
+        lua.globals().set("rig_clear_look_target", rig_clear_look_target).map_err(|e| e.to_string())?;
+
+        // 63. rig_trigger_recoil(entity_id, strength)
+        let rig_recoil_ref = ctx.pending_rig_commands.clone();
+        let rig_trigger_recoil = lua
+            .create_function(move |_, (id, strength): (String, f32)| {
+                if let Ok(mut cmds) = rig_recoil_ref.lock() {
+                    cmds.push(RigCommand::TriggerRecoil {
+                        entity_id: id,
+                        strength,
+                    });
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register rig_trigger_recoil: {}", e))?;
+        lua.globals().set("rig_trigger_recoil", rig_trigger_recoil).map_err(|e| e.to_string())?;
+
+        // 64. solve_ik_2bone(rx, ry, rz, tx, ty, tz, len1, len2) -> table
+        let solve_ik_2bone = lua
+            .create_function(move |lua, (rx, ry, rz, tx, ty, tz, len1, len2): (f32, f32, f32, f32, f32, f32, f32, f32)| {
+                let ik = crate::procedural_rig::solve_two_bone_ik(
+                    glam::Vec3::new(rx, ry, rz),
+                    glam::Vec3::new(tx, ty, tz),
+                    glam::Vec3::new(0.0, 1.0, 0.0),
+                    len1,
+                    len2,
+                );
+                let tbl = lua.create_table()?;
+                tbl.set("jx", ik.joint_pos[0])?;
+                tbl.set("jy", ik.joint_pos[1])?;
+                tbl.set("jz", ik.joint_pos[2])?;
+                tbl.set("pitch1", ik.rot1_euler[0])?;
+                tbl.set("yaw1", ik.rot1_euler[1])?;
+                tbl.set("roll1", ik.rot1_euler[2])?;
+                tbl.set("pitch2", ik.rot2_euler[0])?;
+                tbl.set("yaw2", ik.rot2_euler[1])?;
+                tbl.set("roll2", ik.rot2_euler[2])?;
+                Ok(tbl)
+            })
+            .map_err(|e| format!("Failed to register solve_ik_2bone: {}", e))?;
+        lua.globals().set("solve_ik_2bone", solve_ik_2bone).map_err(|e| e.to_string())?;
+
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
             .exec()
@@ -2747,5 +2831,62 @@ mod tests {
         let res_step = comp.update(&mut transform, 0.016);
         assert!(res_step.is_ok(), "Update error: {:?}", res_step.err());
         assert!(transform.position.y > 0.0, "Expected hover_y to be above ground, got {}", transform.position.y);
+    }
+
+    #[test]
+    fn test_lua_rig_api_and_ik_binding() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        let test_script_path = "assets/scripts/temp_rig_test.lua";
+        let script_code = r#"
+            rig_set_look_target("mech_root", 10.0, 2.5, -5.0)
+            rig_trigger_recoil("mech_root", 1.5)
+            rig_clear_look_target("turret_root")
+            ik = solve_ik_2bone(0, 0, 0, 0, 1.2, 0.8, 1.0, 1.0)
+            jx = ik.jx
+            jy = ik.jy
+            jz = ik.jz
+        "#;
+        std::fs::write(test_script_path, script_code).unwrap();
+
+        let mut comp = ScriptComponent::new(test_script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Init failed: {:?}", res.err());
+
+        // Check commands queued
+        let cmds = ctx.pending_rig_commands.lock().unwrap().clone();
+        assert_eq!(cmds.len(), 3);
+        match &cmds[0] {
+            RigCommand::SetLookTarget { entity_id, target } => {
+                assert_eq!(entity_id, "mech_root");
+                assert_eq!(*target, [10.0, 2.5, -5.0]);
+            }
+            _ => panic!("Expected SetLookTarget"),
+        }
+        match &cmds[1] {
+            RigCommand::TriggerRecoil { entity_id, strength } => {
+                assert_eq!(entity_id, "mech_root");
+                assert!((strength - 1.5).abs() < 1e-4);
+            }
+            _ => panic!("Expected TriggerRecoil"),
+        }
+        match &cmds[2] {
+            RigCommand::ClearLookTarget { entity_id } => {
+                assert_eq!(entity_id, "turret_root");
+            }
+            _ => panic!("Expected ClearLookTarget"),
+        }
+
+        // Check IK results in Lua
+        if let Some(lua_arc) = &comp.lua {
+            let lua = lua_arc.lock().unwrap();
+            let jy: f32 = lua.globals().get("jy").unwrap();
+            assert!(jy > 0.0, "Expected positive knee/elbow height");
+        }
+
+        let _ = std::fs::remove_file(test_script_path);
     }
 }

@@ -158,6 +158,12 @@ pub enum McpCommand {
         terrain_recipe: Option<crate::level_forge::TerrainRecipe>,
         respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
     },
+    ForgeCreateRiggedCharacter {
+        preset: String,
+        id_prefix: String,
+        position: [f32; 3],
+        respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -612,6 +618,19 @@ pub async fn handle_jsonrpc(
                                     "terrain_recipe": { "type": "object", "description": "TerrainRecipe opcional para muestreo de alturas y pendientes (si se omite usa el terreno activo)" }
                                 },
                                 "required": ["recipe"]
+                            }
+                        },
+                        {
+                            "name": "forge_create_rigged_character",
+                            "description": "Construye e inserta un personaje o mecha modular articulado con Procedural Rig (presets: mech_biped, sci_fi_trooper, spider_drone, defense_turret)",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "preset": { "type": "string", "enum": ["mech_biped", "sci_fi_trooper", "spider_drone", "defense_turret"], "description": "Tipo de personaje modular" },
+                                    "id_prefix": { "type": "string", "description": "Prefijo para los IDs de las entidades hijas generadas" },
+                                    "position": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Posicion [x, y, z] del personaje en el mundo" }
+                                },
+                                "required": ["preset"]
                             }
                         }
                     ]
@@ -1213,6 +1232,33 @@ pub async fn handle_jsonrpc(
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al dispersar props en Level Forge")),
                     }
                 }
+                "forge_create_rigged_character" => {
+                    let preset = args.get("preset").and_then(|v| v.as_str()).unwrap_or("mech_biped").to_string();
+                    let id_prefix = args.get("id_prefix").and_then(|v| v.as_str()).unwrap_or("char").to_string();
+                    let position = if let Some(arr) = args.get("position").and_then(|v| v.as_array()) {
+                        [
+                            arr.get(0).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                            arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                            arr.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                        ]
+                    } else {
+                        [0.0, 0.0, 0.0]
+                    };
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::ForgeCreateRiggedCharacter {
+                        preset,
+                        id_prefix,
+                        position,
+                        respond_to: tx,
+                    }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(val)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }], "data": val }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al crear personaje riggeado")),
+                    }
+                }
                 _ => Some(JsonRpcResponse::error(id, -32601, format!("Herramienta desconocida: {}", tool_name))),
             }
         }
@@ -1447,5 +1493,6 @@ mod tests {
         assert!(resp_str.contains("forge_generate_terrain"));
         assert!(resp_str.contains("forge_generate_dungeon"));
         assert!(resp_str.contains("forge_scatter_props"));
+        assert!(resp_str.contains("forge_create_rigged_character"));
     }
 }
