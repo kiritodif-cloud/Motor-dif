@@ -17,6 +17,7 @@ pub struct CollisionRecord {
     pub collider_1: ColliderHandle,
     pub collider_2: ColliderHandle,
     pub started: bool,
+    pub is_sensor: bool,
 }
 
 pub struct CollisionCollector {
@@ -33,11 +34,21 @@ impl EventHandler for CollisionCollector {
     ) {
         if let Ok(mut list) = self.events.lock() {
             match event {
-                CollisionEvent::Started(c1, c2, _) => {
-                    list.push(CollisionRecord { collider_1: c1, collider_2: c2, started: true });
+                CollisionEvent::Started(c1, c2, flags) => {
+                    list.push(CollisionRecord {
+                        collider_1: c1,
+                        collider_2: c2,
+                        started: true,
+                        is_sensor: flags.contains(CollisionEventFlags::SENSOR),
+                    });
                 }
-                CollisionEvent::Stopped(c1, c2, _) => {
-                    list.push(CollisionRecord { collider_1: c1, collider_2: c2, started: false });
+                CollisionEvent::Stopped(c1, c2, flags) => {
+                    list.push(CollisionRecord {
+                        collider_1: c1,
+                        collider_2: c2,
+                        started: false,
+                        is_sensor: flags.contains(CollisionEventFlags::SENSOR),
+                    });
                 }
             }
         }
@@ -147,9 +158,11 @@ impl PhysicsEngine {
             ColliderBuilder::cuboid(hx, hy, hz)
         };
 
+        let is_sensor = physics_def.is_sensor.unwrap_or(false);
         let collider = collider_builder
             .restitution(physics_def.restitution)
             .mass(physics_def.mass)
+            .sensor(is_sensor)
             .active_events(ActiveEvents::COLLISION_EVENTS)
             .build();
 

@@ -123,6 +123,16 @@ pub struct LuaEngineContext {
     pub floating_texts: Arc<Mutex<Vec<FloatingText>>>,
     pub pending_environment: Arc<Mutex<Option<crate::assets::EnvironmentDef>>>,
     pub environment_settings: Arc<RwLock<crate::assets::EnvironmentDef>>,
+    pub physics_raycaster: Arc<RwLock<Option<PhysicsRaycaster>>>,
+}
+
+#[derive(Clone)]
+pub struct PhysicsRaycaster {
+    pub broad_phase: rapier3d::geometry::DefaultBroadPhase,
+    pub narrow_phase: rapier3d::geometry::NarrowPhase,
+    pub rigid_body_set: rapier3d::dynamics::RigidBodySet,
+    pub collider_set: rapier3d::geometry::ColliderSet,
+    pub collider_to_entity: HashMap<rapier3d::geometry::ColliderHandle, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -240,6 +250,7 @@ impl LuaEngineContext {
             floating_texts: Arc::new(Mutex::new(Vec::new())),
             pending_environment: Arc::new(Mutex::new(None)),
             environment_settings: Arc::new(RwLock::new(crate::assets::EnvironmentDef::default())),
+            physics_raycaster: Arc::new(RwLock::new(None)),
         }
     }
 }
@@ -360,6 +371,7 @@ impl ScriptComponent {
                         collider: pt.get("collider").unwrap_or_else(|_| "cuboid".to_string()),
                         mass: pt.get("mass").unwrap_or(1.0),
                         restitution: pt.get("restitution").unwrap_or(0.4),
+                        is_sensor: pt.get("is_sensor").ok(),
                     })
                 } else {
                     None
@@ -1119,6 +1131,88 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register get_environment: {}", e))?;
         lua.globals().set("get_environment", get_environment).map_err(|e| e.to_string())?;
 
+        // 35. raycast(ox, oy, oz, dx, dy, dz, max_dist)
+        let raycaster_arc = ctx.physics_raycaster.clone();
+        let raycast = lua
+            .create_function(
+                move |lua,
+                      (ox, oy, oz, dx, dy, dz, max_dist): (
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                )| {
+                    let hit_table = lua.create_table()?;
+                    if let Ok(guard) = raycaster_arc.read() {
+                        if let Some(raycaster) = guard.as_ref() {
+                            let dir = glam::Vec3::new(dx, dy, dz);
+                            let dir_norm = dir.normalize_or_zero();
+                            if dir_norm.length_squared() >= 0.0001 {
+                                let query_pipeline = raycaster.broad_phase.as_query_pipeline(
+                                    raycaster.narrow_phase.query_dispatcher(),
+                                    &raycaster.rigid_body_set,
+                                    &raycaster.collider_set,
+                                    rapier3d::pipeline::QueryFilter::default().exclude_sensors(),
+                                );
+                                let ray = rapier3d::geometry::Ray::new(
+                                    glam::Vec3::new(ox, oy, oz),
+                                    dir_norm,
+                                );
+                                if let Some((col_handle, hit)) =
+                                    query_pipeline.cast_ray_and_get_normal(&ray, max_dist, true)
+                                {
+                                    let entity_id = raycaster
+                                        .collider_to_entity
+                                        .get(&col_handle)
+                                        .cloned()
+                                        .unwrap_or_default();
+                                    hit_table.set("hit", true)?;
+                                    hit_table.set("entity", entity_id)?;
+                                    hit_table.set("dist", hit.time_of_impact)?;
+                                    hit_table.set("nx", hit.normal.x)?;
+                                    hit_table.set("ny", hit.normal.y)?;
+                                    hit_table.set("nz", hit.normal.z)?;
+                                    return Ok(hit_table);
+                                }
+                            }
+                        }
+                    }
+                    hit_table.set("hit", false)?;
+                    hit_table.set("entity", "")?;
+                    hit_table.set("dist", 0.0)?;
+                    hit_table.set("nx", 0.0)?;
+                    hit_table.set("ny", 0.0)?;
+                    hit_table.set("nz", 0.0)?;
+                    Ok(hit_table)
+                },
+            )
+            .map_err(|e| format!("Failed to register raycast: {}", e))?;
+        lua.globals().set("raycast", raycast).map_err(|e| e.to_string())?;
+
+        // 36. play_tone(f_start, f_end, wave_type, duration, vol)
+        let audio_tone_ref = ctx.audio.clone();
+        let play_tone = lua
+            .create_function(
+                move |_,
+                      (f_start, f_end, wave_type, duration, vol): (
+                    f32,
+                    f32,
+                    String,
+                    f32,
+                    f32,
+                )| {
+                    if let Ok(audio) = audio_tone_ref.lock() {
+                        let _ = audio.play_tone(f_start, f_end, &wave_type, duration, vol);
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register play_tone: {}", e))?;
+        lua.globals().set("play_tone", play_tone).map_err(|e| e.to_string())?;
+
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
             .exec()
@@ -1143,6 +1237,24 @@ impl ScriptComponent {
                 entity_tbl.set("id", self_id).map_err(|e| e.to_string())?;
                 func.call::<()>((entity_tbl, other_id))
                     .map_err(|e| format!("Lua on_collision error on '{}': {}", self_id, e))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn on_trigger_enter(&self, self_id: &str, other_id: &str) -> Result<(), String> {
+        if self.has_error {
+            return Ok(());
+        }
+
+        if let Some(lua_arc) = &self.lua {
+            let lua = lua_arc.lock().map_err(|e| e.to_string())?;
+            let on_trigger_fn: mlua::Result<mlua::Function> = lua.globals().get("on_trigger_enter");
+            if let Ok(func) = on_trigger_fn {
+                let entity_tbl = lua.create_table().map_err(|e| e.to_string())?;
+                entity_tbl.set("id", self_id).map_err(|e| e.to_string())?;
+                func.call::<()>((other_id, entity_tbl))
+                    .map_err(|e| format!("Lua on_trigger_enter error on '{}': {}", self_id, e))?;
             }
         }
         Ok(())
@@ -1299,5 +1411,45 @@ mod tests {
         let mut comp = ScriptComponent::new("assets/scripts/cosmos_game.lua".to_string());
         let res = comp.init_or_reload(ctx);
         assert!(res.is_ok(), "Failed to compile cosmos_game.lua: {:?}", res.err());
+    }
+
+    #[test]
+    fn test_raycast_and_tone_and_trigger() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        let test_script = r#"
+            trigger_called = false
+            other_entity_id = ""
+
+            function on_trigger_enter(other_id)
+                trigger_called = true
+                other_entity_id = other_id
+                play_tone(440, 880, "sine", 0.05, 0.5)
+            end
+
+            function on_update(entity, dt)
+                local hit = raycast(0, 5, 0, 0, -1, 0, 10)
+                assert(hit.hit == false)
+            end
+        "#;
+
+        let script_path = "assets/scripts/test_trigger.lua";
+        std::fs::write(script_path, test_script).unwrap();
+
+        let mut comp = ScriptComponent::new(script_path.to_string());
+        let res = comp.init_or_reload(ctx);
+        assert!(res.is_ok(), "Init failed: {:?}", res.err());
+
+        let mut transform = Transform::from_xyz(0.0, 0.0, 0.0);
+        let res_update = comp.update(&mut transform, 0.016);
+        assert!(res_update.is_ok(), "Update failed: {:?}", res_update.err());
+
+        let res_trigger = comp.on_trigger_enter("sensor_zone", "player");
+        assert!(res_trigger.is_ok(), "Trigger failed: {:?}", res_trigger.err());
+
+        let _ = std::fs::remove_file(script_path);
     }
 }

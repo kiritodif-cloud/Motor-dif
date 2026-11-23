@@ -29,6 +29,8 @@ pub struct PhysicsDef {
     pub mass: f32,
     #[serde(default = "default_restitution")]
     pub restitution: f32,
+    #[serde(default)]
+    pub is_sensor: Option<bool>,
 }
 
 fn default_mass() -> f32 {
@@ -301,11 +303,14 @@ pub fn extract_scene_from_world(
                     }
                 }).unwrap_or_else(|| "cuboid".to_string());
 
+                let is_sensor = body.colliders().first().and_then(|h| physics.collider_set.get(*h)).map(|c| c.is_sensor());
+
                 PhysicsDef {
                     body: if body.is_dynamic() { "dynamic".to_string() } else { "fixed".to_string() },
                     collider: collider_shape,
                     mass: body.mass(),
                     restitution: 0.5,
+                    is_sensor,
                 }
             })
         });
@@ -469,11 +474,18 @@ pub fn extract_entity_def(
                 0.4
             };
 
+            let is_sensor = if let Some(&c_handle) = body.colliders().first() {
+                physics.collider_set.get(c_handle).map(|c| c.is_sensor())
+            } else {
+                None
+            };
+
             Some(PhysicsDef {
                 body: body_type.to_string(),
                 collider: collider_type.to_string(),
                 mass: body.mass(),
                 restitution,
+                is_sensor,
             })
         } else {
             None

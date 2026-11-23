@@ -640,6 +640,7 @@ impl EngineState {
                     collider: "cuboid".to_string(),
                     mass,
                     restitution: 0.5,
+                    is_sensor: None,
                 };
                 let handle = self.physics.add_body(&new_trans, &phys_def);
                 let _ = self.world.insert_one(new_e, RigidBodyComponent { handle });
@@ -1553,6 +1554,27 @@ impl EngineState {
                 }
             }
 
+            // Update physics raycaster snapshot for Lua raycast queries
+            let mut collider_to_entity = HashMap::new();
+            for entity_ref in self.world.iter() {
+                if let (Some(meta), Some(rb)) = (entity_ref.get::<&EntityMeta>(), entity_ref.get::<&RigidBodyComponent>()) {
+                    if let Some(rb_obj) = self.physics.rigid_body_set.get(rb.handle) {
+                        for col_h in rb_obj.colliders() {
+                            collider_to_entity.insert(*col_h, meta.id.clone());
+                        }
+                    }
+                }
+            }
+            if let Ok(mut rc) = self.lua_ctx.physics_raycaster.write() {
+                *rc = Some(scripting::PhysicsRaycaster {
+                    broad_phase: self.physics.broad_phase.clone(),
+                    narrow_phase: self.physics.narrow_phase.clone(),
+                    rigid_body_set: self.physics.rigid_body_set.clone(),
+                    collider_set: self.physics.collider_set.clone(),
+                    collider_to_entity,
+                });
+            }
+
             // 2. Run Lua scripts update
             for (meta, transform, script) in self.world.query_mut::<(&EntityMeta, &mut Transform, &mut ScriptComponent)>() {
                 if let Err(e) = script.update(transform, dt) {
@@ -1610,14 +1632,34 @@ impl EngineState {
                         let b_info = handle_to_info.get(&h_b).cloned();
 
                         if let (Some((e_a, id_a)), Some((e_b, id_b))) = (a_info, b_info) {
-                            if let Ok(script) = self.world.get::<&ScriptComponent>(e_a) {
-                                if let Err(e) = script.on_collision(&id_a, &id_b) {
-                                    self.logs.push(format!("Collision error on '{}': {}", id_a, e));
+                            let is_sensor_a = self.physics.collider_set.get(col.collider_1).map(|c| c.is_sensor()).unwrap_or(false);
+                            let is_sensor_b = self.physics.collider_set.get(col.collider_2).map(|c| c.is_sensor()).unwrap_or(false);
+
+                            if is_sensor_a || is_sensor_b || col.is_sensor {
+                                if is_sensor_a {
+                                    if let Ok(script) = self.world.get::<&ScriptComponent>(e_a) {
+                                        if let Err(e) = script.on_trigger_enter(&id_a, &id_b) {
+                                            self.logs.push(format!("Trigger error on '{}': {}", id_a, e));
+                                        }
+                                    }
                                 }
-                            }
-                            if let Ok(script) = self.world.get::<&ScriptComponent>(e_b) {
-                                if let Err(e) = script.on_collision(&id_b, &id_a) {
-                                    self.logs.push(format!("Collision error on '{}': {}", id_b, e));
+                                if is_sensor_b {
+                                    if let Ok(script) = self.world.get::<&ScriptComponent>(e_b) {
+                                        if let Err(e) = script.on_trigger_enter(&id_b, &id_a) {
+                                            self.logs.push(format!("Trigger error on '{}': {}", id_b, e));
+                                        }
+                                    }
+                                }
+                            } else {
+                                if let Ok(script) = self.world.get::<&ScriptComponent>(e_a) {
+                                    if let Err(e) = script.on_collision(&id_a, &id_b) {
+                                        self.logs.push(format!("Collision error on '{}': {}", id_a, e));
+                                    }
+                                }
+                                if let Ok(script) = self.world.get::<&ScriptComponent>(e_b) {
+                                    if let Err(e) = script.on_collision(&id_b, &id_a) {
+                                        self.logs.push(format!("Collision error on '{}': {}", id_b, e));
+                                    }
                                 }
                             }
                         }
@@ -2836,6 +2878,7 @@ impl EngineState {
                                                         collider: "cuboid".to_string(),
                                                         mass: 1.0,
                                                         restitution: 0.4,
+                                                        is_sensor: None,
                                                     };
                                                     let handle = self.physics.add_body(&trans, &phys_def);
                                                     let _ = self.world.insert_one(entity, RigidBodyComponent { handle });
@@ -2861,6 +2904,15 @@ impl EngineState {
                                                         body.set_body_type(rapier3d::prelude::RigidBodyType::Dynamic, true);
                                                     } else {
                                                         body.set_body_type(rapier3d::prelude::RigidBodyType::Fixed, true);
+                                                    }
+                                                }
+
+                                                if let Some(&c_handle) = body.colliders().first() {
+                                                    if let Some(col) = self.physics.collider_set.get_mut(c_handle) {
+                                                        let mut is_sensor = col.is_sensor();
+                                                        if ui.checkbox(&mut is_sensor, "Is Trigger / Sensor").changed() {
+                                                            col.set_sensor(is_sensor);
+                                                        }
                                                     }
                                                 }
 
