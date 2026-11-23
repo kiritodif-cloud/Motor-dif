@@ -349,6 +349,15 @@ impl LuaEngineContext {
         if let Ok(mut e) = self.pending_events.lock() {
             e.clear();
         }
+        if let Ok(mut ui) = self.game_ui_elements.write() {
+            ui.clear();
+        }
+        if let Ok(mut labels) = self.world_labels.write() {
+            labels.clear();
+        }
+        if let Ok(mut ft) = self.floating_texts.lock() {
+            ft.clear();
+        }
     }
 }
 

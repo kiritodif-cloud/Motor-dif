@@ -406,7 +406,8 @@ impl EngineState {
                 if let Some(env) = &scene.environment {
                     loaded_env = env.clone();
                 }
-                assets::apply_scene_to_world(&scene, &mut world, &mut camera, &mut physics, Some(&lua_ctx));
+                let ctx_opt = if is_standalone_play { Some(&lua_ctx) } else { None };
+                assets::apply_scene_to_world(&scene, &mut world, &mut camera, &mut physics, ctx_opt);
                 logs.push(format!("Scene loaded from '{}' ({} entities)", initial_scene_path, world.len()));
             }
             Err(e) => {
@@ -583,7 +584,7 @@ impl EngineState {
     pub fn undo(&mut self) {
         let current = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
         if let Some(prev) = self.history.undo(current) {
-            assets::apply_scene_to_world(&prev, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
+            assets::apply_scene_to_world(&prev, &mut self.world, &mut self.camera, &mut self.physics, None);
             self.selected_entity = None;
             self.logs.push("Undo performed".to_string());
         }
@@ -592,7 +593,7 @@ impl EngineState {
     pub fn redo(&mut self) {
         let current = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
         if let Some(next) = self.history.redo(current) {
-            assets::apply_scene_to_world(&next, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
+            assets::apply_scene_to_world(&next, &mut self.world, &mut self.camera, &mut self.physics, None);
             self.selected_entity = None;
             self.logs.push("Redo performed".to_string());
         }
@@ -620,9 +621,14 @@ impl EngineState {
 
     pub fn reload_scene(&mut self) {
         let path = self.scene_path.clone();
+        let ctx_opt = if self.play_mode == PlayMode::Play || self.is_standalone_play {
+            Some(&self.lua_ctx)
+        } else {
+            None
+        };
         match assets::load_scene_from_file(&path) {
             Ok(scene) => {
-                assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
+                assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, ctx_opt);
                 if let Some(pp) = &scene.post_process {
                     self.post_process_settings = pp.clone();
                     if let Ok(mut lock) = self.lua_ctx.post_process_settings.write() {
@@ -653,14 +659,17 @@ impl EngineState {
     pub fn open_scene(&mut self, path: &str) -> Result<(), String> {
         // 1. If currently playing/simulating, stop cleanly
         if self.play_mode != PlayMode::Edit {
-            if let Some(snapshot) = self.play_snapshot.take() {
-                let _ = snapshot;
-            }
-            self.particles.clear();
-            self.lua_ctx.clear_timers_and_events();
+            self.play_snapshot = None;
             self.play_mode = PlayMode::Edit;
             self.logs.push("Simulation stopped to open new scene.".to_string());
         }
+
+        // Clean up audio, particles, and Lua timers/events/UI
+        if let Ok(mut audio) = self.audio.lock() {
+            audio.stop_music();
+        }
+        self.particles.clear();
+        self.lua_ctx.clear_timers_and_events();
 
         self.push_history();
 
@@ -674,8 +683,13 @@ impl EngineState {
         self.particles.clear();
         self.selected_entity = None;
 
-        // 4. Populate world
-        assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
+        // 4. Populate world (WITHOUT running Lua scripts if in Edit mode!)
+        let ctx_opt = if self.play_mode == PlayMode::Play || self.is_standalone_play {
+            Some(&self.lua_ctx)
+        } else {
+            None
+        };
+        assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, ctx_opt);
 
         // 5. Apply post-process and environment settings
         if let Some(pp) = &scene.post_process {
@@ -703,6 +717,42 @@ impl EngineState {
         self.logs.push(format!("Scene opened from '{}' ({} entities)", path, self.world.len()));
 
         Ok(())
+    }
+
+    pub fn start_play_mode(&mut self) {
+        if self.play_mode == PlayMode::Edit {
+            self.play_snapshot = Some(assets::extract_scene_from_world(&self.world, &self.camera, &self.physics));
+        }
+        self.play_mode = PlayMode::Play;
+
+        // Initialize and execute all Lua scripts now that Play mode is active
+        for (meta, script) in self.world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
+            if let Err(e) = script.init_or_reload(self.lua_ctx.clone()) {
+                let err_msg = format!("Script compile error on '{}': {}", meta.id, e);
+                self.logs.push(err_msg.clone());
+                self.last_lua_error = Some(err_msg);
+            }
+        }
+
+        self.logs.push("Simulation started (Play Mode)".to_string());
+        self.add_toast("Play mode active", egui::Color32::from_rgb(34, 197, 94));
+    }
+
+    pub fn stop_simulation(&mut self) {
+        if let Some(snapshot) = self.play_snapshot.take() {
+            assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, None);
+            self.logs.push("Simulation stopped. Scene restored to initial snapshot.".to_string());
+            self.add_toast("Simulation stopped & restored", egui::Color32::from_rgb(239, 68, 68));
+        }
+        self.particles.clear();
+        self.lua_ctx.clear_timers_and_events();
+        if let Ok(mut audio) = self.audio.lock() {
+            audio.stop_music();
+        }
+        for (_meta, script) in self.world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
+            script.lua = None;
+        }
+        self.play_mode = PlayMode::Edit;
     }
 
     pub fn spawn_primitive(&mut self, mesh_type: &str, color: [f32; 4]) {
@@ -1641,12 +1691,8 @@ impl EngineState {
                 McpCommand::SetPlayMode { mode, respond_to } => {
                     match mode.to_lowercase().as_str() {
                         "play" => {
-                            if self.play_mode == PlayMode::Edit {
-                                self.play_snapshot = Some(assets::extract_scene_from_world(&self.world, &self.camera, &self.physics));
-                            }
-                            self.play_mode = PlayMode::Play;
+                            self.start_play_mode();
                             let msg = "Play mode set to Play".to_string();
-                            self.logs.push(msg.clone());
                             let _ = respond_to.send(Ok(msg));
                         }
                         "pause" => {
@@ -1656,14 +1702,8 @@ impl EngineState {
                             let _ = respond_to.send(Ok(msg));
                         }
                         "stop" => {
-                            if let Some(snapshot) = self.play_snapshot.take() {
-                                assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
-                            }
-                            self.particles.clear();
-                            self.lua_ctx.clear_timers_and_events();
-                            self.play_mode = PlayMode::Edit;
+                            self.stop_simulation();
                             let msg = "Play mode set to Stop (Scene restored)".to_string();
-                            self.logs.push(msg.clone());
                             let _ = respond_to.send(Ok(msg));
                         }
                         _ => {
@@ -2525,18 +2565,26 @@ impl EngineState {
                     for (meta, script) in self.world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
                         let comp_str = script.path.replace('\\', "/");
                         if script_str.ends_with(&comp_str) || comp_str.ends_with(&script_str) {
-                            match script.init_or_reload(self.lua_ctx.clone()) {
-                                Ok(()) => {
-                                    let msg = format!("Hot-Reload: Script '{}' reloaded for entity '{}'", script.path, meta.id);
-                                    self.logs.push(msg.clone());
-                                    self.hot_reload.last_reload_status = Some(msg);
-                                    self.last_lua_error = None;
-                                    reloaded = true;
+                            if self.play_mode == PlayMode::Play || self.is_standalone_play {
+                                match script.init_or_reload(self.lua_ctx.clone()) {
+                                    Ok(()) => {
+                                        let msg = format!("Hot-Reload: Script '{}' reloaded for entity '{}'", script.path, meta.id);
+                                        self.logs.push(msg.clone());
+                                        self.hot_reload.last_reload_status = Some(msg);
+                                        self.last_lua_error = None;
+                                        reloaded = true;
+                                    }
+                                    Err(e) => {
+                                        self.last_lua_error = Some(e.clone());
+                                        self.logs.push(format!("Script compile error: {}", e));
+                                    }
                                 }
-                                Err(e) => {
-                                    self.last_lua_error = Some(e.clone());
-                                    self.logs.push(format!("Script compile error: {}", e));
-                                }
+                            } else {
+                                script.lua = None;
+                                let msg = format!("Hot-Reload: Script '{}' updated (will initialize on Play)", script.path);
+                                self.logs.push(msg.clone());
+                                self.hot_reload.last_reload_status = Some(msg);
+                                reloaded = true;
                             }
                         }
                     }
@@ -3894,12 +3942,7 @@ impl EngineState {
                         let is_paused = self.play_mode == PlayMode::Pause;
 
                         if ui.selectable_label(is_playing, "> Play").clicked() {
-                            if self.play_mode == PlayMode::Edit {
-                                self.play_snapshot = Some(assets::extract_scene_from_world(&self.world, &self.camera, &self.physics));
-                            }
-                            self.play_mode = PlayMode::Play;
-                            self.logs.push("Simulation started (Play Mode)".to_string());
-                            self.add_toast("Play mode active", egui::Color32::from_rgb(34, 197, 94));
+                            self.start_play_mode();
                         }
 
                         if ui.selectable_label(is_paused, "|| Pause").clicked() {
@@ -3909,14 +3952,7 @@ impl EngineState {
                         }
 
                         if ui.button("[] Stop").clicked() {
-                            if let Some(snapshot) = self.play_snapshot.take() {
-                                assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
-                                self.logs.push("Simulation stopped. Scene restored to initial snapshot.".to_string());
-                                self.add_toast("Simulation stopped & restored", egui::Color32::from_rgb(239, 68, 68));
-                            }
-                            self.particles.clear();
-                            self.lua_ctx.clear_timers_and_events();
-                            self.play_mode = PlayMode::Edit;
+                            self.stop_simulation();
                         }
 
                         ui.separator();
@@ -6134,24 +6170,14 @@ impl EngineState {
                             "cone" => trigger_spawn_mesh = Some(("cone", [0.9, 0.6, 0.2, 1.0])),
                             "icosphere" => trigger_spawn_mesh = Some(("icosphere", [0.4, 0.8, 0.9, 1.0])),
                             "play" => {
-                                if self.play_mode == PlayMode::Edit {
-                                    self.play_snapshot = Some(assets::extract_scene_from_world(&self.world, &self.camera, &self.physics));
-                                }
-                                self.play_mode = PlayMode::Play;
-                                self.add_toast("Play mode active", egui::Color32::from_rgb(34, 197, 94));
+                                self.start_play_mode();
                             }
                             "pause" => {
                                 self.play_mode = PlayMode::Pause;
                                 self.add_toast("Simulation paused", egui::Color32::from_rgb(250, 204, 21));
                             }
                             "stop" => {
-                                if let Some(snapshot) = self.play_snapshot.take() {
-                                    assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
-                                }
-                                self.particles.clear();
-                                self.lua_ctx.clear_timers_and_events();
-                                self.play_mode = PlayMode::Edit;
-                                self.add_toast("Simulation stopped & restored", egui::Color32::from_rgb(239, 68, 68));
+                                self.stop_simulation();
                             }
                             "save" => trigger_save_scene = true,
                             "reload" => trigger_reload_scene = true,
@@ -6792,7 +6818,12 @@ impl EngineState {
             self.push_history();
             self.world.clear();
             self.physics.clear();
+            self.particles.clear();
             self.selected_entity = None;
+            self.lua_ctx.clear_timers_and_events();
+            if let Ok(mut audio) = self.audio.lock() {
+                audio.stop_music();
+            }
             self.scene_path = "assets/scene.json".to_string();
             self.export_entry_scene = "assets/scene.json".to_string();
             self.logs.push("Created new empty scene".to_string());
@@ -6801,13 +6832,22 @@ impl EngineState {
 
         if let Some(template_name) = trigger_template {
             self.push_history();
+            if let Ok(mut audio) = self.audio.lock() {
+                audio.stop_music();
+            }
+            self.lua_ctx.clear_timers_and_events();
             match templates::create_template_scene(template_name) {
                 Ok(scene) => {
                     self.world.clear();
                     self.physics.clear();
                     self.particles.clear();
                     self.selected_entity = None;
-                    assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
+                    let ctx_opt = if self.play_mode == PlayMode::Play || self.is_standalone_play {
+                        Some(&self.lua_ctx)
+                    } else {
+                        None
+                    };
+                    assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, ctx_opt);
                     if let Some(env) = &scene.environment {
                         self.environment_settings = env.clone();
                     }
@@ -6872,11 +6912,13 @@ impl EngineState {
                         self.logs.push(msg.clone());
                         self.hot_reload.last_reload_status = Some(msg);
                         self.add_toast("Script saved & hot-reloaded", egui::Color32::from_rgb(34, 197, 94));
-                        // Trigger reload on all entities using this script
-                        for (meta, script) in self.world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
-                            if script.path == path {
-                                let _ = script.init_or_reload(self.lua_ctx.clone());
-                                self.logs.push(format!("Reloaded script for entity '{}'", meta.id));
+                        // Trigger reload on all entities using this script only if in Play mode
+                        if self.play_mode == PlayMode::Play || self.is_standalone_play {
+                            for (meta, script) in self.world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
+                                if script.path == path {
+                                    let _ = script.init_or_reload(self.lua_ctx.clone());
+                                    self.logs.push(format!("Reloaded script for entity '{}'", meta.id));
+                                }
                             }
                         }
                     }
@@ -7432,6 +7474,42 @@ mod tests {
             assert!(scenes.iter().any(|s| s.ends_with("showcase_v20_vfx.json")));
             assert!(!scenes.iter().any(|s| s.ends_with("input_map.json")));
             assert!(!scenes.iter().any(|s| s.ends_with("save_data.json")));
+        }
+    }
+
+    #[test]
+    fn test_editor_mode_scripts_not_initialized_until_play() {
+        let mut world = hecs::World::new();
+        let mut camera = Camera::new_3d(Vec3::new(0.0, 3.0, 5.0), Vec3::ZERO, 1.77);
+        let mut physics = PhysicsEngine::new();
+        let scene_path = Path::new("assets/showcase_v20_vfx.json");
+        if scene_path.exists() {
+            let scene = assets::load_scene_from_file(scene_path).unwrap();
+            // 1. In Editor mode, ctx is None -> scripts must NOT be initialized (script.lua == None)
+            assets::apply_scene_to_world(&scene, &mut world, &mut camera, &mut physics, None);
+            let mut script_count = 0;
+            for (_meta, script) in world.query::<(&EntityMeta, &ScriptComponent)>().iter() {
+                script_count += 1;
+                assert!(script.lua.is_none(), "Script must NOT be initialized in Editor mode!");
+            }
+            assert!(script_count > 0, "Showcase scene must have at least one script component");
+
+            // 2. When entering Play mode, scripts are initialized
+            let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+            let (_, audio_inner) = audio::AudioManager::init();
+            let audio_mgr = Arc::new(std::sync::Mutex::new(audio_inner));
+            let lua_ctx = scripting::LuaEngineContext::new(pressed_keys, audio_mgr);
+            for (_meta, script) in world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
+                let res = script.init_or_reload(lua_ctx.clone());
+                assert!(res.is_ok());
+                assert!(script.lua.is_some(), "Script must be initialized after Play mode starts!");
+            }
+
+            // 3. When exiting Play mode back to Edit, script.lua is cleared
+            for (_meta, script) in world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
+                script.lua = None;
+                assert!(script.lua.is_none(), "Script must be reset to None on Stop!");
+            }
         }
     }
 }
