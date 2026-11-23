@@ -17,6 +17,7 @@ pub mod renderer;
 pub mod scripting;
 pub mod sdf;
 pub mod templates;
+pub mod texture_forge;
 pub mod tweens;
 pub mod ui_theme;
 
@@ -1741,6 +1742,24 @@ impl EngineState {
                     self.camera.target = target;
                     self.gpu.update_camera(&self.camera);
                     self.pending_viewport_capture = Some(respond_to);
+                }
+                McpCommand::ForgeCreateTexture { style, filename, size, seed, color_tint, respond_to } => {
+                    match crate::texture_forge::save_procedural_texture(&style, &filename, size, seed, color_tint) {
+                        Ok(saved_path) => {
+                            self.gpu.get_or_load_texture(&saved_path);
+                            self.logs.push(format!("Generated procedural texture '{}' (style: {}, {}x{})", saved_path, style, size, size));
+                            self.add_toast(format!("Texture created: {}", saved_path), egui::Color32::from_rgb(34, 197, 94));
+                            let _ = respond_to.send(Ok(serde_json::json!({
+                                "success": true,
+                                "path": saved_path,
+                                "style": style,
+                                "size": size,
+                            })));
+                        }
+                        Err(e) => {
+                            let _ = respond_to.send(Err(format!("Error generating procedural texture: {}", e)));
+                        }
+                    }
                 }
             }
         }
@@ -3553,6 +3572,47 @@ impl EngineState {
                                                 }
                                                 if mesh.texture.is_some() && ui.button("X").on_hover_text("Clear Texture").clicked() {
                                                     mesh.texture = None;
+                                                }
+                                            });
+
+                                            // Procedural Texture Generator in Material Inspector
+                                            ui.separator();
+                                            ui.label(egui::RichText::new("Texture Forge (Procedural)").size(11.0).strong());
+                                            ui.horizontal_wrapped(|ui| {
+                                                if ui.small_button("🎨 Planet").clicked() {
+                                                    let name = format!("tex_planet_{}", entity.id());
+                                                    if let Ok(path) = crate::texture_forge::save_procedural_texture("planet", &name, 256, 42, mesh.color) {
+                                                        self.gpu.get_or_load_texture(&path);
+                                                        mesh.texture = Some(path);
+                                                    }
+                                                }
+                                                if ui.small_button("🎨 SciFi").clicked() {
+                                                    let name = format!("tex_scifi_{}", entity.id());
+                                                    if let Ok(path) = crate::texture_forge::save_procedural_texture("scifi_panel", &name, 256, 42, mesh.color) {
+                                                        self.gpu.get_or_load_texture(&path);
+                                                        mesh.texture = Some(path);
+                                                    }
+                                                }
+                                                if ui.small_button("🎨 Plasma").clicked() {
+                                                    let name = format!("tex_plasma_{}", entity.id());
+                                                    if let Ok(path) = crate::texture_forge::save_procedural_texture("plasma", &name, 256, 42, mesh.color) {
+                                                        self.gpu.get_or_load_texture(&path);
+                                                        mesh.texture = Some(path);
+                                                    }
+                                                }
+                                                if ui.small_button("🎨 Grid").clicked() {
+                                                    let name = format!("tex_grid_{}", entity.id());
+                                                    if let Ok(path) = crate::texture_forge::save_procedural_texture("grid_neon", &name, 256, 42, mesh.color) {
+                                                        self.gpu.get_or_load_texture(&path);
+                                                        mesh.texture = Some(path);
+                                                    }
+                                                }
+                                                if ui.small_button("🎨 Rock").clicked() {
+                                                    let name = format!("tex_rock_{}", entity.id());
+                                                    if let Ok(path) = crate::texture_forge::save_procedural_texture("rock", &name, 256, 42, mesh.color) {
+                                                        self.gpu.get_or_load_texture(&path);
+                                                        mesh.texture = Some(path);
+                                                    }
                                                 }
                                             });
                                         }

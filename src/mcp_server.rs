@@ -122,6 +122,14 @@ pub enum McpCommand {
         angle: String,
         respond_to: oneshot::Sender<Result<String, String>>,
     },
+    ForgeCreateTexture {
+        style: String,
+        filename: String,
+        size: u32,
+        seed: u32,
+        color_tint: [f32; 4],
+        respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -480,6 +488,40 @@ pub async fn handle_jsonrpc(
                                     }
                                 },
                                 "required": ["angle"]
+                            }
+                        },
+                        {
+                            "name": "forge_create_texture",
+                            "description": "Genera una textura procedural PNG en assets/textures/ ('planet', 'scifi_panel', 'plasma', 'grid_neon', 'rock') y la carga en el motor",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "style": {
+                                        "type": "string",
+                                        "enum": ["planet", "scifi_panel", "plasma", "grid_neon", "rock"],
+                                        "description": "Estilo procedural de la textura ('planet', 'scifi_panel', 'plasma', 'grid_neon', 'rock')"
+                                    },
+                                    "filename": {
+                                        "type": "string",
+                                        "description": "Nombre del archivo a guardar (ej. 'lava_world' o 'plasma_glow')"
+                                    },
+                                    "size": {
+                                        "type": "integer",
+                                        "description": "Tamano de la textura en pixeles (cuadrado, ej. 256 o 512, por defecto 256)"
+                                    },
+                                    "seed": {
+                                        "type": "integer",
+                                        "description": "Semilla determinista del generador de ruido (por defecto 42)"
+                                    },
+                                    "color_rgba": {
+                                        "type": "array",
+                                        "items": { "type": "number" },
+                                        "minItems": 4,
+                                        "maxItems": 4,
+                                        "description": "Tinte de color base [r, g, b, a] normalizado 0..1"
+                                    }
+                                },
+                                "required": ["style", "filename"]
                             }
                         }
                     ]
@@ -906,6 +948,49 @@ pub async fn handle_jsonrpc(
                         }
                         Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, format!("Error capturando turnaround: {}", err))),
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al capturar turnaround")),
+                    }
+                }
+                "forge_create_texture" => {
+                    let style = match args.get("style").and_then(|v| v.as_str()) {
+                        Some(s) => s.to_string(),
+                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'style'")),
+                    };
+                    let filename = match args.get("filename").and_then(|v| v.as_str()) {
+                        Some(f) => f.to_string(),
+                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'filename'")),
+                    };
+                    let size = args.get("size").and_then(|v| v.as_u64()).unwrap_or(256) as u32;
+                    let seed = args.get("seed").and_then(|v| v.as_u64()).unwrap_or(42) as u32;
+                    let color_tint = if let Some(arr) = args.get("color_rgba").and_then(|v| v.as_array()) {
+                        if arr.len() == 4 {
+                            [
+                                arr[0].as_f64().unwrap_or(0.3) as f32,
+                                arr[1].as_f64().unwrap_or(0.7) as f32,
+                                arr[2].as_f64().unwrap_or(0.9) as f32,
+                                arr[3].as_f64().unwrap_or(1.0) as f32,
+                            ]
+                        } else {
+                            [0.3, 0.7, 0.9, 1.0]
+                        }
+                    } else {
+                        [0.3, 0.7, 0.9, 1.0]
+                    };
+
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::ForgeCreateTexture {
+                        style,
+                        filename,
+                        size,
+                        seed,
+                        color_tint,
+                        respond_to: tx,
+                    }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(val)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }], "data": val }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al crear textura en Forge")),
                     }
                 }
                 _ => Some(JsonRpcResponse::error(id, -32601, format!("Herramienta desconocida: {}", tool_name))),
