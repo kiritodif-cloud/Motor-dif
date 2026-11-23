@@ -648,4 +648,16 @@ mod tests {
         assert_eq!(def_env.zenith_color, [0.071, 0.082, 0.118]);
         assert_eq!(def_env.horizon_color, [0.133, 0.153, 0.212]);
     }
+
+    #[test]
+    fn test_load_showcase_v11() {
+        let p = Path::new("assets/showcase_v11.json");
+        assert!(p.exists());
+        let scene = load_scene_from_file(p).expect("Failed to parse showcase_v11.json");
+        assert_eq!(scene.entities.len(), 7);
+        let core = scene.entities.iter().find(|e| e.id == "celestial_core").unwrap();
+        assert!(core.animation_player.is_some());
+        let anim_player = core.animation_player.as_ref().unwrap();
+        assert_eq!(anim_player.active_clip, Some("pulse_loop".to_string()));
+    }
 }

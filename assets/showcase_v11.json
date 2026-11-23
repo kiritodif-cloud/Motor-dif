@@ -1,0 +1,166 @@
+{
+  "camera": {
+    "mode": "3d",
+    "position": [0.0, 4.5, 9.5],
+    "target": [0.0, 2.0, 0.0],
+    "ortho_size": 10.0
+  },
+  "post_process": {
+    "bloom_enabled": true,
+    "bloom_intensity": 1.4,
+    "bloom_threshold": 0.9,
+    "vignette_intensity": 0.35,
+    "exposure": 1.15
+  },
+  "environment": {
+    "sky_mode": "space",
+    "zenith_color": [0.04, 0.06, 0.16],
+    "horizon_color": [0.015, 0.02, 0.05],
+    "fog_color": [0.03, 0.04, 0.12],
+    "fog_density": 0.012
+  },
+  "entities": [
+    {
+      "id": "arena_platform",
+      "mesh": "plane",
+      "position": [0.0, 0.0, 0.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [36.0, 1.0, 36.0],
+      "color": [0.08, 0.09, 0.14, 1.0],
+      "emissive": 0.0,
+      "wireframe": false,
+      "blend_mode": "opaque",
+      "physics": {
+        "body": "fixed",
+        "collider": "cuboid",
+        "mass": 0.0,
+        "restitution": 0.5
+      }
+    },
+    {
+      "id": "celestial_core",
+      "mesh": "icosphere",
+      "position": [0.0, 1.8, 0.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [1.2, 1.2, 1.2],
+      "color": [0.2, 0.8, 1.0, 1.0],
+      "emissive": 2.5,
+      "fresnel_color": [0.4, 0.95, 1.0],
+      "fresnel_power": 3.0,
+      "blend_mode": "opaque",
+      "point_light": {
+        "color": [0.3, 0.85, 1.0],
+        "intensity": 6.0,
+        "radius": 20.0
+      },
+      "animation_player": {
+        "active_clip": "pulse_loop",
+        "current_time": 0.0,
+        "speed": 1.0,
+        "looping": true,
+        "playing": true,
+        "animations": {
+          "pulse_loop": {
+            "name": "pulse_loop",
+            "duration": 3.0,
+            "keyframes": [
+              {
+                "time": 0.0,
+                "position": [0.0, 1.8, 0.0],
+                "rotation": [0.0, 0.0, 0.0],
+                "scale": [1.2, 1.2, 1.2],
+                "color": [0.2, 0.8, 1.0, 1.0],
+                "emissive": 2.0
+              },
+              {
+                "time": 1.5,
+                "position": [0.0, 2.6, 0.0],
+                "rotation": [0.0, 3.14159, 1.57],
+                "scale": [1.6, 1.6, 1.6],
+                "color": [0.85, 0.25, 0.95, 1.0],
+                "emissive": 5.0
+              },
+              {
+                "time": 3.0,
+                "position": [0.0, 1.8, 0.0],
+                "rotation": [0.0, 6.28318, 0.0],
+                "scale": [1.2, 1.2, 1.2],
+                "color": [0.2, 0.8, 1.0, 1.0],
+                "emissive": 2.0
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "orbit_satellite",
+      "parent": "celestial_core",
+      "mesh": "sphere",
+      "position": [2.6, 0.0, 0.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [0.45, 0.45, 0.45],
+      "color": [1.0, 0.8, 0.2, 1.0],
+      "emissive": 4.0,
+      "blend_mode": "opaque",
+      "point_light": {
+        "color": [1.0, 0.8, 0.2],
+        "intensity": 3.0,
+        "radius": 8.0
+      }
+    },
+    {
+      "id": "halo_ring",
+      "parent": "celestial_core",
+      "mesh": "torus",
+      "position": [0.0, 0.0, 0.0],
+      "rotation": [1.2, 0.0, 0.0],
+      "scale": [2.0, 2.0, 0.4],
+      "color": [0.35, 0.85, 1.0, 0.6],
+      "emissive": 2.5,
+      "fresnel_color": [0.5, 0.9, 1.0],
+      "fresnel_power": 2.0,
+      "blend_mode": "additive"
+    },
+    {
+      "id": "pillar_alpha",
+      "mesh": "cylinder",
+      "position": [-5.5, 2.0, -2.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [0.8, 4.0, 0.8],
+      "color": [0.15, 0.2, 0.3, 1.0],
+      "emissive": 0.5,
+      "blend_mode": "opaque",
+      "point_light": {
+        "color": [0.2, 0.6, 1.0],
+        "intensity": 4.0,
+        "radius": 12.0
+      }
+    },
+    {
+      "id": "pillar_beta",
+      "mesh": "cylinder",
+      "position": [5.5, 2.0, -2.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [0.8, 4.0, 0.8],
+      "color": [0.15, 0.2, 0.3, 1.0],
+      "emissive": 0.5,
+      "blend_mode": "opaque",
+      "point_light": {
+        "color": [0.9, 0.3, 0.9],
+        "intensity": 4.0,
+        "radius": 12.0
+      }
+    },
+    {
+      "id": "showcase_controller",
+      "mesh": "cube",
+      "position": [0.0, -100.0, 0.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [0.01, 0.01, 0.01],
+      "color": [0.0, 0.0, 0.0, 0.0],
+      "emissive": 0.0,
+      "script": "assets/scripts/showcase_v11.lua"
+    }
+  ]
+}

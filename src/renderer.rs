@@ -465,9 +465,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         fresnel_contrib = in.fresnel.rgb * rim;
     }
 
-    // 5. Emissive Material Glow
-    let emissive = base_color.rgb * in.emissive * 2.0;
-
     // 6. Combined Lighting
     let lit_color = base_color.rgb * (ambient + diffuse + point_diffuse) + specular + point_specular + emissive + fresnel_contrib;
 

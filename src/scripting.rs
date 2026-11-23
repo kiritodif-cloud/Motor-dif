@@ -1645,6 +1645,18 @@ mod tests {
     }
 
     #[test]
+    fn test_showcase_v11_script_compilation() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+        let mut comp = ScriptComponent::new("assets/scripts/showcase_v11.lua".to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Failed to compile showcase_v11.lua: {:?}", res.err());
+        assert_eq!(ctx.game_ui_elements.read().unwrap().len(), 10);
+    }
+
+    #[test]
     fn test_raycast_and_tone_and_trigger() {
         let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
         let (_, audio_inner) = crate::audio::AudioManager::init();
