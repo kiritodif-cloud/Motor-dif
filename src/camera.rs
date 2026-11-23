@@ -226,6 +226,18 @@ impl Camera {
         }
     }
 
+    pub fn intersect_horizontal_plane(&self, screen_pos: [f32; 2], screen_size: [f32; 2], plane_y: f32) -> Option<Vec3> {
+        let (origin, dir) = self.screen_to_ray(screen_pos, screen_size);
+        if dir.y.abs() < 1e-6 {
+            return None;
+        }
+        let t = (plane_y - origin.y) / dir.y;
+        if t < 0.0 {
+            return None;
+        }
+        Some(origin + dir * t)
+    }
+
     pub fn world_to_screen(&self, world_pos: Vec3, screen_size: [f32; 2]) -> Option<[f32; 2]> {
         let vp = self.build_view_projection_matrix();
         let clip = vp * glam::Vec4::new(world_pos.x, world_pos.y, world_pos.z, 1.0);

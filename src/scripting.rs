@@ -131,6 +131,9 @@ pub struct LuaEngineContext {
     pub pending_events: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
     pub timers: Arc<Mutex<Vec<LuaTimer>>>,
     pub next_timer_id: Arc<std::sync::atomic::AtomicU64>,
+    pub input_map: Arc<RwLock<crate::input_map::InputMap>>,
+    pub mouse_info: Arc<RwLock<crate::input_map::MouseInfo>>,
+    pub active_camera: Arc<RwLock<crate::camera::Camera>>,
 }
 
 #[derive(Debug, Clone)]
@@ -285,6 +288,9 @@ impl LuaEngineContext {
             pending_events: Arc::new(Mutex::new(Vec::new())),
             timers: Arc::new(Mutex::new(Vec::new())),
             next_timer_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            input_map: Arc::new(RwLock::new(crate::input_map::InputMap::load_or_default(std::path::Path::new("assets/input_map.json")))),
+            mouse_info: Arc::new(RwLock::new(crate::input_map::MouseInfo::default())),
+            active_camera: Arc::new(RwLock::new(crate::camera::Camera::new_3d(glam::Vec3::new(0.0, 3.5, 9.0), glam::Vec3::ZERO, 16.0 / 9.0))),
         }
     }
 
@@ -1582,6 +1588,72 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register clear_timers: {}", e))?;
         lua.globals().set("clear_timers", clear_timers).map_err(|e| e.to_string())?;
 
+        // 52. is_action_down(action) -> bool
+        let im_down_ref = ctx.input_map.clone();
+        let keys_down_ref = ctx.pressed_keys.clone();
+        let mouse_down_ref = ctx.mouse_info.clone();
+        let is_action_down = lua
+            .create_function(move |_, action: String| {
+                let map = im_down_ref.read().unwrap();
+                let keys = keys_down_ref.read().unwrap();
+                let mouse = mouse_down_ref.read().unwrap();
+                Ok(map.is_action_down(&action, &keys, &mouse.buttons_down))
+            })
+            .map_err(|e| format!("Failed to register is_action_down: {}", e))?;
+        lua.globals().set("is_action_down", is_action_down).map_err(|e| e.to_string())?;
+
+        // 53. is_action_just_pressed(action) -> bool
+        let im_jp_ref = ctx.input_map.clone();
+        let jp_keys_ref = ctx.just_pressed_keys.clone();
+        let mouse_jp_ref = ctx.mouse_info.clone();
+        let is_action_just_pressed = lua
+            .create_function(move |_, action: String| {
+                let map = im_jp_ref.read().unwrap();
+                let keys = jp_keys_ref.read().unwrap();
+                let mouse = mouse_jp_ref.read().unwrap();
+                Ok(map.is_action_just_pressed(&action, &keys, &mouse.buttons_just_pressed))
+            })
+            .map_err(|e| format!("Failed to register is_action_just_pressed: {}", e))?;
+        lua.globals().set("is_action_just_pressed", is_action_just_pressed).map_err(|e| e.to_string())?;
+
+        // 54. bind_action(action, input) -> bool
+        let im_bind_ref = ctx.input_map.clone();
+        let bind_action = lua
+            .create_function(move |_, (action, input): (String, String)| {
+                if let Ok(mut map) = im_bind_ref.write() {
+                    map.bind(&action, &input);
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register bind_action: {}", e))?;
+        lua.globals().set("bind_action", bind_action).map_err(|e| e.to_string())?;
+
+        // 55. get_mouse_world_pos([plane_y]) -> table { hit = bool, x = f32, y = f32, z = f32 }
+        let mouse_pos_ref = ctx.mouse_info.clone();
+        let cam_pos_ref = ctx.active_camera.clone();
+        let get_mouse_world_pos = lua
+            .create_function(move |lua, plane_y: Option<f32>| {
+                let py = plane_y.unwrap_or(0.0);
+                let mouse = mouse_pos_ref.read().unwrap();
+                let cam = cam_pos_ref.read().unwrap();
+                let hit_pos = cam.intersect_horizontal_plane(mouse.screen_pos, mouse.screen_size, py);
+                let tbl = lua.create_table()?;
+                if let Some(pos) = hit_pos {
+                    tbl.set("hit", true)?;
+                    tbl.set("x", pos.x)?;
+                    tbl.set("y", pos.y)?;
+                    tbl.set("z", pos.z)?;
+                } else {
+                    tbl.set("hit", false)?;
+                    tbl.set("x", 0.0)?;
+                    tbl.set("y", py)?;
+                    tbl.set("z", 0.0)?;
+                }
+                Ok(tbl)
+            })
+            .map_err(|e| format!("Failed to register get_mouse_world_pos: {}", e))?;
+        lua.globals().set("get_mouse_world_pos", get_mouse_world_pos).map_err(|e| e.to_string())?;
+
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
             .exec()
@@ -2086,6 +2158,60 @@ mod tests {
         }
 
         // Clean up test file
+        let _ = std::fs::remove_file(test_script_path);
+    }
+
+    #[test]
+    fn test_action_input_and_mouse_world_pos() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys.clone(), audio);
+
+        // Position camera looking down from (0, 10, 0) to (0, 0, 0)
+        {
+            let mut cam = ctx.active_camera.write().unwrap();
+            cam.eye = glam::Vec3::new(0.0, 10.0, 0.0001);
+            cam.target = glam::Vec3::new(0.0, 0.0, 0.0);
+            cam.up = glam::Vec3::Z;
+        }
+
+        // Mouse centered on screen 1280x720
+        {
+            let mut mouse = ctx.mouse_info.write().unwrap();
+            mouse.screen_pos = [640.0, 360.0];
+            mouse.screen_size = [1280.0, 720.0];
+            mouse.buttons_down[0] = true; // Left click
+        }
+
+        let test_script_path = "assets/scripts/temp_action_test.lua";
+        let script_code = r#"
+            is_firing = is_action_down("fire")
+            mouse_hit = get_mouse_world_pos(0.0)
+            bind_action("boost", "Space")
+            has_boost = is_action_down("boost")
+        "#;
+        std::fs::write(test_script_path, script_code).unwrap();
+
+        let mut comp = ScriptComponent::new(test_script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Init failed: {:?}", res.err());
+
+        if let Some(lua_arc) = &comp.lua {
+            let lua = lua_arc.lock().unwrap();
+            let is_firing: bool = lua.globals().get("is_firing").unwrap();
+            assert!(is_firing, "Expected is_action_down('fire') to be true with Left Click");
+
+            let mouse_hit: mlua::Table = lua.globals().get("mouse_hit").unwrap();
+            let hit: bool = mouse_hit.get("hit").unwrap();
+            let y: f32 = mouse_hit.get("y").unwrap();
+            assert!(hit, "Expected mouse ray to hit horizontal plane");
+            assert!((y - 0.0).abs() < 1e-4);
+
+            let has_boost: bool = lua.globals().get("has_boost").unwrap();
+            assert!(!has_boost, "Boost should not be active yet");
+        }
+
         let _ = std::fs::remove_file(test_script_path);
     }
 }

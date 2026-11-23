@@ -6,6 +6,7 @@ pub mod ecs;
 pub mod exporter;
 pub mod game_ui;
 pub mod hot_reload;
+pub mod input_map;
 pub mod mcp_server;
 pub mod particles;
 pub mod physics;
@@ -188,6 +189,8 @@ pub struct EngineState {
     pub is_right_mouse_down: bool,
     pub is_middle_mouse_down: bool,
     pub is_left_mouse_down: bool,
+    pub just_pressed_mouse: [bool; 3],
+    pub viewport_rect: egui::Rect,
     pub active_gizmo_axis: Option<GizmoAxis>,
     pub hovered_gizmo_axis: Option<GizmoAxis>,
     pub gizmo_drag_start_pos: Option<Vec3>,
@@ -469,6 +472,8 @@ impl EngineState {
             is_right_mouse_down: false,
             is_middle_mouse_down: false,
             is_left_mouse_down: false,
+            just_pressed_mouse: [false; 3],
+            viewport_rect: egui::Rect::NOTHING,
             active_gizmo_axis: None,
             hovered_gizmo_axis: None,
             gizmo_drag_start_pos: None,
@@ -889,9 +894,24 @@ impl EngineState {
             WindowEvent::MouseInput { state, button, .. } => {
                 let is_pressed = *state == winit::event::ElementState::Pressed;
                 match button {
-                    winit::event::MouseButton::Right => self.is_right_mouse_down = is_pressed,
-                    winit::event::MouseButton::Middle => self.is_middle_mouse_down = is_pressed,
-                    winit::event::MouseButton::Left => self.is_left_mouse_down = is_pressed,
+                    winit::event::MouseButton::Left => {
+                        if is_pressed && !self.is_left_mouse_down {
+                            self.just_pressed_mouse[0] = true;
+                        }
+                        self.is_left_mouse_down = is_pressed;
+                    }
+                    winit::event::MouseButton::Right => {
+                        if is_pressed && !self.is_right_mouse_down {
+                            self.just_pressed_mouse[1] = true;
+                        }
+                        self.is_right_mouse_down = is_pressed;
+                    }
+                    winit::event::MouseButton::Middle => {
+                        if is_pressed && !self.is_middle_mouse_down {
+                            self.just_pressed_mouse[2] = true;
+                        }
+                        self.is_middle_mouse_down = is_pressed;
+                    }
                     _ => {}
                 }
                 self.window.request_redraw();
@@ -1711,6 +1731,29 @@ impl EngineState {
 
         // Run simulation only if PlayMode::Play
         if self.play_mode == PlayMode::Play {
+            // Sync active camera to Lua context
+            if let Ok(mut cam) = self.lua_ctx.active_camera.write() {
+                *cam = self.camera.clone();
+            }
+
+            // Sync mouse info to Lua context
+            let (screen_pos, screen_size) = if self.is_standalone_play || !self.viewport_rect.is_positive() {
+                (self.mouse_pos, [self.gpu.config.width as f32, self.gpu.config.height as f32])
+            } else {
+                let v_min = self.viewport_rect.min;
+                (
+                    [self.mouse_pos[0] - v_min.x, self.mouse_pos[1] - v_min.y],
+                    [self.viewport_rect.width().max(1.0), self.viewport_rect.height().max(1.0)],
+                )
+            };
+
+            if let Ok(mut m) = self.lua_ctx.mouse_info.write() {
+                m.screen_pos = screen_pos;
+                m.screen_size = screen_size;
+                m.buttons_down = [self.is_left_mouse_down, self.is_right_mouse_down, self.is_middle_mouse_down];
+                m.buttons_just_pressed = self.just_pressed_mouse;
+            }
+
             // 1. Sync entity positions to LuaEngineContext for get_entity(id)
             if let Ok(mut we) = self.lua_ctx.world_entities.write() {
                 we.clear();
@@ -2197,6 +2240,7 @@ impl EngineState {
         if let Ok(mut jp) = self.lua_ctx.just_pressed_keys.write() {
             jp.clear();
         }
+        self.just_pressed_mouse = [false; 3];
 
         // Compute world transforms (ParentWorld * Local) with cycle detection
         let world_transforms = compute_world_transforms(&self.world);
@@ -3652,6 +3696,7 @@ impl EngineState {
                     .show(ui, |ui| {
                         let painter = ui.painter();
                         let viewport_rect = ui.max_rect();
+                        self.viewport_rect = viewport_rect;
 
                         let (
                             screen_rect,
