@@ -660,4 +660,14 @@ mod tests {
         let anim_player = core.animation_player.as_ref().unwrap();
         assert_eq!(anim_player.active_clip, Some("pulse_loop".to_string()));
     }
+
+    #[test]
+    fn test_load_showcase_v12() {
+        let p = Path::new("assets/showcase_v12.json");
+        assert!(p.exists());
+        let scene = load_scene_from_file(p).expect("Failed to parse showcase_v12.json");
+        assert_eq!(scene.entities.len(), 12);
+        let hero = scene.entities.iter().find(|e| e.id == "hero_agent").unwrap();
+        assert_eq!(hero.script, Some("assets/scripts/showcase_v12.lua".to_string()));
+    }
 }

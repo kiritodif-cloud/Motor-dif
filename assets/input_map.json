@@ -1,0 +1,35 @@
+{
+  "actions": {
+    "jump": [
+      "SPACE"
+    ],
+    "fire": [
+      "MOUSELEFT",
+      "F",
+      "E"
+    ],
+    "alt_fire": [
+      "MOUSERIGHT",
+      "C"
+    ],
+    "move_up": [
+      "W",
+      "ARROWUP"
+    ],
+    "move_down": [
+      "S",
+      "ARROWDOWN"
+    ],
+    "move_right": [
+      "D",
+      "ARROWRIGHT"
+    ],
+    "move_left": [
+      "A",
+      "ARROWLEFT"
+    ],
+    "interact": [
+      "E"
+    ]
+  }
+}
