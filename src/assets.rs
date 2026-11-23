@@ -92,6 +92,8 @@ pub struct EntityDef {
     pub point_light: Option<PointLightDef>,
     #[serde(default)]
     pub animation_player: Option<crate::animation::AnimationPlayer>,
+    #[serde(default)]
+    pub procedural_rig: Option<crate::procedural_rig::ProceduralRig>,
 }
 
 fn default_scale() -> [f32; 3] {
@@ -202,6 +204,7 @@ impl Default for SceneDef {
                     physics: None,
                     point_light: None,
                     animation_player: None,
+                    procedural_rig: None,
                 },
                 EntityDef {
                     id: "cube_green".to_string(),
@@ -222,6 +225,7 @@ impl Default for SceneDef {
                     physics: None,
                     point_light: None,
                     animation_player: None,
+                    procedural_rig: None,
                 },
                 EntityDef {
                     id: "cube_blue".to_string(),
@@ -242,6 +246,7 @@ impl Default for SceneDef {
                     physics: None,
                     point_light: None,
                     animation_player: None,
+                    procedural_rig: None,
                 },
             ],
         }
@@ -286,7 +291,7 @@ pub fn extract_scene_from_world(
     };
 
     let mut entities = Vec::new();
-    for (meta, transform, mesh, script_opt, rb_opt, light_comp_opt, anim_comp_opt) in world
+    for (meta, transform, mesh, script_opt, rb_opt, light_comp_opt, anim_comp_opt, rig_comp_opt) in world
         .query::<(
             &EntityMeta,
             &Transform,
@@ -295,6 +300,7 @@ pub fn extract_scene_from_world(
             Option<&RigidBodyComponent>,
             Option<&crate::ecs::PointLight>,
             Option<&crate::animation::AnimationPlayer>,
+            Option<&crate::procedural_rig::ProceduralRig>,
         )>()
         .iter()
     {
@@ -328,6 +334,7 @@ pub fn extract_scene_from_world(
         });
 
         let anim_opt = anim_comp_opt.cloned();
+        let rig_opt = rig_comp_opt.cloned();
 
         entities.push(EntityDef {
             id: meta.id.clone(),
@@ -348,6 +355,7 @@ pub fn extract_scene_from_world(
             physics: phys_def,
             point_light: light_opt,
             animation_player: anim_opt,
+            procedural_rig: rig_opt,
         });
     }
 
@@ -432,6 +440,10 @@ pub fn apply_scene_to_world(
         if let Some(anim_player) = &entity.animation_player {
             let _ = world.insert_one(e, anim_player.clone());
         }
+
+        if let Some(rig) = &entity.procedural_rig {
+            let _ = world.insert_one(e, rig.clone());
+        }
     }
 }
 
@@ -514,6 +526,8 @@ pub fn extract_entity_def(
         radius: l.radius,
     });
 
+    let rig_opt = world.get::<&crate::procedural_rig::ProceduralRig>(entity).ok().map(|r| (*r).clone());
+
     Some(EntityDef {
         id: meta.id.clone(),
         mesh: mesh.mesh_type.clone(),
@@ -533,6 +547,7 @@ pub fn extract_entity_def(
         physics: phys_def,
         point_light,
         animation_player: anim_opt,
+        procedural_rig: rig_opt,
     })
 }
 
@@ -588,6 +603,7 @@ mod tests {
                 radius: 12.0,
             }),
             animation_player: None,
+            procedural_rig: None,
         };
         let json = serde_json::to_string(&def).unwrap();
         assert!(json.contains("\"parent\":\"parent_node\""));
@@ -618,6 +634,7 @@ mod tests {
             physics: None,
             point_light: None,
             animation_player: None,
+            procedural_rig: None,
         };
         let json = serde_json::to_string(&def).unwrap();
         assert!(json.contains("\"blend_mode\":\"additive\""));

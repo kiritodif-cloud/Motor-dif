@@ -15,6 +15,7 @@ pub mod music_forge;
 pub mod nav;
 pub mod particles;
 pub mod physics;
+pub mod procedural_rig;
 pub mod renderer;
 pub mod scripting;
 pub mod sdf;
@@ -1680,7 +1681,7 @@ impl EngineState {
                             id, mesh, position: [x,y,z], rotation: [rx,ry,rz], scale: [sx,sy,sz],
                             color, texture, parent, emissive: 0.0,
                             fresnel_color: None, fresnel_power: None, blend_mode: None, wireframe: None, uv_scroll: None,
-                            script: None, physics: None, point_light: None, animation_player: None
+                            script: None, physics: None, point_light: None, animation_player: None, procedural_rig: None
                         };
                         if let Ok(mut list) = spawns_ref.lock() { list.push(def); }
                         Ok(())
@@ -2629,6 +2630,11 @@ impl EngineState {
                     }
                 }
             }
+        }
+
+        // Evaluate Procedural Rigs (locomotion, idle breathing, look-at and recoil)
+        if self.play_mode != PlayMode::Pause {
+            crate::procedural_rig::update_procedural_rigs(&mut self.world, dt);
         }
 
         // Check for pending scene transition from Lua

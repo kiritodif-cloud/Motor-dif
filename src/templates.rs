@@ -62,6 +62,7 @@ fn template_empty_3d() -> SceneDef {
                 }),
                 point_light: None,
                 animation_player: None,
+                procedural_rig: None,
             },
             EntityDef {
                 id: "sun_light".to_string(),
@@ -86,6 +87,7 @@ fn template_empty_3d() -> SceneDef {
                     radius: 25.0,
                 }),
                 animation_player: None,
+                procedural_rig: None,
             },
             EntityDef {
                 id: "starter_cube".to_string(),
@@ -112,6 +114,7 @@ fn template_empty_3d() -> SceneDef {
                 }),
                 point_light: None,
                 animation_player: None,
+                procedural_rig: None,
             },
         ],
     }
@@ -153,6 +156,7 @@ fn template_top_down_2d() -> SceneDef {
                 physics: None,
                 point_light: None,
                 animation_player: None,
+                procedural_rig: None,
             },
             EntityDef {
                 id: "player_ship".to_string(),
@@ -183,6 +187,7 @@ fn template_top_down_2d() -> SceneDef {
                     radius: 10.0,
                 }),
                 animation_player: None,
+                procedural_rig: None,
             },
             EntityDef {
                 id: "top_down_light".to_string(),
@@ -207,6 +212,7 @@ fn template_top_down_2d() -> SceneDef {
                     radius: 20.0,
                 }),
                 animation_player: None,
+                procedural_rig: None,
             },
         ],
     }
@@ -254,6 +260,7 @@ fn template_platformer_3d() -> SceneDef {
                 }),
                 point_light: None,
                 animation_player: None,
+                procedural_rig: None,
             },
             EntityDef {
                 id: "platform_step1".to_string(),
@@ -280,6 +287,7 @@ fn template_platformer_3d() -> SceneDef {
                 }),
                 point_light: None,
                 animation_player: None,
+                procedural_rig: None,
             },
             EntityDef {
                 id: "platform_step2".to_string(),
@@ -306,6 +314,7 @@ fn template_platformer_3d() -> SceneDef {
                 }),
                 point_light: None,
                 animation_player: None,
+                procedural_rig: None,
             },
             EntityDef {
                 id: "goal_orb".to_string(),
@@ -330,6 +339,7 @@ fn template_platformer_3d() -> SceneDef {
                     radius: 12.0,
                 }),
                 animation_player: None,
+                procedural_rig: None,
             },
             EntityDef {
                 id: "player_pawn".to_string(),
@@ -356,6 +366,7 @@ fn template_platformer_3d() -> SceneDef {
                 }),
                 point_light: None,
                 animation_player: None,
+                procedural_rig: None,
             },
         ],
     }
@@ -409,6 +420,7 @@ fn template_space_arena() -> SceneDef {
                 }),
                 point_light: None,
                 animation_player: None,
+                procedural_rig: None,
             },
             EntityDef {
                 id: "warp_beacon".to_string(),
@@ -433,6 +445,7 @@ fn template_space_arena() -> SceneDef {
                     radius: 20.0,
                 }),
                 animation_player: None,
+                procedural_rig: None,
             },
             EntityDef {
                 id: "shield_ring".to_string(),
@@ -453,6 +466,7 @@ fn template_space_arena() -> SceneDef {
                 physics: None,
                 point_light: None,
                 animation_player: None,
+                procedural_rig: None,
             },
         ],
     }

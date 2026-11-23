@@ -466,6 +466,7 @@ impl ScriptComponent {
                     physics: phys_def,
                     point_light: None,
                     animation_player: None,
+                    procedural_rig: None,
                 };
 
                 if let Ok(mut spawns) = spawns_ref.lock() {
