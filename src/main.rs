@@ -903,7 +903,16 @@ impl EngineState {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.mouse_pos = [position.x as f32, position.y as f32];
+                let new_x = position.x as f32;
+                let new_y = position.y as f32;
+                let dx = new_x - self.mouse_pos[0];
+                let dy = new_y - self.mouse_pos[1];
+                self.mouse_pos = [new_x, new_y];
+                if let Ok(mut minfo) = self.lua_ctx.mouse_info.write() {
+                    minfo.screen_pos = [new_x, new_y];
+                    minfo.delta[0] += dx;
+                    minfo.delta[1] += dy;
+                }
                 self.window.request_redraw();
             }
             WindowEvent::MouseWheel { .. } => {
@@ -2104,6 +2113,26 @@ impl EngineState {
                             }
                         }
                     }
+                    scripting::AnimationCommand::PlayPreset { entity_id, preset_name } => {
+                        let mut target = None;
+                        for entity_ref in self.world.iter() {
+                            if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                                if meta.id == entity_id {
+                                    target = Some(entity_ref.entity());
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(e) = target {
+                            if let Ok(mut player) = self.world.get::<&mut crate::animation::AnimationPlayer>(e) {
+                                player.play_preset(&preset_name);
+                            } else {
+                                let mut player = crate::animation::AnimationPlayer::new();
+                                player.play_preset(&preset_name);
+                                let _ = self.world.insert_one(e, player);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -2324,6 +2353,24 @@ impl EngineState {
             self.camera.shake(intensity, duration);
         }
 
+        let pending_cam_lerps = if let Ok(mut c) = self.lua_ctx.pending_camera_lerps.lock() {
+            std::mem::take(&mut *c)
+        } else {
+            Vec::new()
+        };
+        for (eye, target, duration) in pending_cam_lerps {
+            self.camera.start_lerp_to(Vec3::from(eye), Vec3::from(target), duration);
+        }
+
+        let pending_cam_orbits = if let Ok(mut c) = self.lua_ctx.pending_camera_orbits.lock() {
+            std::mem::take(&mut *c)
+        } else {
+            Vec::new()
+        };
+        for (target_id, distance, pitch, yaw_speed) in pending_cam_orbits {
+            self.camera.start_orbit_target(target_id, distance, pitch, yaw_speed);
+        }
+
         // Drain pending tweens from Lua
         let pending_tweens = if let Ok(mut t) = self.lua_ctx.pending_tweens.lock() {
             std::mem::take(&mut *t)
@@ -2356,14 +2403,31 @@ impl EngineState {
         // Update active particles
         self.particles.update(dt);
 
-        // Clear just_pressed_keys at end of frame
+        // Clear just_pressed_keys and mouse delta at end of frame
         if let Ok(mut jp) = self.lua_ctx.just_pressed_keys.write() {
             jp.clear();
         }
         self.just_pressed_mouse = [false; 3];
+        if let Ok(mut minfo) = self.lua_ctx.mouse_info.write() {
+            minfo.delta = [0.0, 0.0];
+            minfo.buttons_just_pressed = [false; 3];
+        }
 
         // Compute world transforms (ParentWorld * Local) with cycle detection
         let world_transforms = compute_world_transforms(&self.world);
+
+        // Update camera cinematics (lerp & orbit)
+        let mut entity_pos_map = HashMap::new();
+        for entity_ref in self.world.iter() {
+            if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                if let Some((_, pos)) = world_transforms.get(&entity_ref.entity()) {
+                    entity_pos_map.insert(meta.id.clone(), *pos);
+                } else if let Some(t) = entity_ref.get::<&Transform>() {
+                    entity_pos_map.insert(meta.id.clone(), t.position);
+                }
+            }
+        }
+        self.camera.update_cinematics(dt, &entity_pos_map);
 
         // Update camera follow (smooth lerp towards target entity world position)
         if let Some((ref target_id, offset, smoothness)) = self.camera.follow_target.clone() {

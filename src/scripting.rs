@@ -104,6 +104,8 @@ pub struct LuaEngineContext {
     pub pending_camera_sets: Arc<Mutex<Vec<([f32; 3], [f32; 3])>>>,
     pub pending_camera_follows: Arc<Mutex<Vec<(Option<String>, [f32; 3], f32)>>>,
     pub pending_camera_shakes: Arc<Mutex<Vec<(f32, f32)>>>,
+    pub pending_camera_lerps: Arc<Mutex<Vec<([f32; 3], [f32; 3], f32)>>>,
+    pub pending_camera_orbits: Arc<Mutex<Vec<(Option<String>, f32, f32, f32)>>>,
     pub pending_tweens: Arc<Mutex<Vec<crate::tweens::TweenRequest>>>,
     pub pending_scene_load: Arc<Mutex<Option<String>>>,
     pub pending_sprite_frames: Arc<Mutex<Vec<(String, u32, u32, u32)>>>,
@@ -155,6 +157,10 @@ pub enum AnimationCommand {
     },
     Stop {
         entity_id: String,
+    },
+    PlayPreset {
+        entity_id: String,
+        preset_name: String,
     },
 }
 
@@ -263,6 +269,8 @@ impl LuaEngineContext {
             pending_camera_sets: Arc::new(Mutex::new(Vec::new())),
             pending_camera_follows: Arc::new(Mutex::new(Vec::new())),
             pending_camera_shakes: Arc::new(Mutex::new(Vec::new())),
+            pending_camera_lerps: Arc::new(Mutex::new(Vec::new())),
+            pending_camera_orbits: Arc::new(Mutex::new(Vec::new())),
             pending_tweens: Arc::new(Mutex::new(Vec::new())),
             pending_scene_load: Arc::new(Mutex::new(None)),
             pending_sprite_frames: Arc::new(Mutex::new(Vec::new())),
@@ -810,6 +818,38 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register camera_shake: {}", e))?;
         lua.globals()
             .set("camera_shake", camera_shake)
+            .map_err(|e| e.to_string())?;
+
+        // 17b. camera_lerp_to(eye_x, eye_y, eye_z, target_x, target_y, target_z, duration)
+        let cam_lerp_ref = ctx.pending_camera_lerps.clone();
+        let camera_lerp_to = lua
+            .create_function(
+                move |_, (ex, ey, ez, tx, ty, tz, duration): (f32, f32, f32, f32, f32, f32, f32)| {
+                    if let Ok(mut list) = cam_lerp_ref.lock() {
+                        list.push(([ex, ey, ez], [tx, ty, tz], duration));
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register camera_lerp_to: {}", e))?;
+        lua.globals()
+            .set("camera_lerp_to", camera_lerp_to)
+            .map_err(|e| e.to_string())?;
+
+        // 17c. camera_orbit_target(entity_id, distance, pitch_deg, yaw_speed)
+        let cam_orbit_ref = ctx.pending_camera_orbits.clone();
+        let camera_orbit_target = lua
+            .create_function(
+                move |_, (target_id, distance, pitch_deg, yaw_speed): (Option<String>, f32, f32, f32)| {
+                    if let Ok(mut list) = cam_orbit_ref.lock() {
+                        list.push((target_id, distance, pitch_deg, yaw_speed));
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register camera_orbit_target: {}", e))?;
+        lua.globals()
+            .set("camera_orbit_target", camera_orbit_target)
             .map_err(|e| e.to_string())?;
 
         // 18. tween_position(id, x, y, z, duration)
@@ -1516,6 +1556,23 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register play_anim: {}", e))?;
         lua.globals().set("play_anim", play_anim).map_err(|e| e.to_string())?;
 
+        // 42b. play_preset_anim(entity_id, preset_name)
+        let anim_preset_ref = ctx.pending_anims.clone();
+        let play_preset_anim = lua
+            .create_function(
+                move |_, (entity_id, preset_name): (String, String)| {
+                    if let Ok(mut list) = anim_preset_ref.lock() {
+                        list.push(AnimationCommand::PlayPreset {
+                            entity_id,
+                            preset_name,
+                        });
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register play_preset_anim: {}", e))?;
+        lua.globals().set("play_preset_anim", play_preset_anim).map_err(|e| e.to_string())?;
+
         // 43. stop_anim(entity_id)
         let anim_stop_ref = ctx.pending_anims.clone();
         let stop_anim = lua
@@ -1719,6 +1776,23 @@ impl ScriptComponent {
             })
             .map_err(|e| format!("Failed to register get_mouse_world_pos: {}", e))?;
         lua.globals().set("get_mouse_world_pos", get_mouse_world_pos).map_err(|e| e.to_string())?;
+
+        // 55b. get_mouse_delta() -> table { dx, dy }
+        let mouse_delta_ref = ctx.mouse_info.clone();
+        let get_mouse_delta = lua
+            .create_function(move |lua, ()| {
+                let delta = if let Ok(m) = mouse_delta_ref.read() {
+                    m.delta
+                } else {
+                    [0.0, 0.0]
+                };
+                let tbl = lua.create_table()?;
+                tbl.set("dx", delta[0])?;
+                tbl.set("dy", delta[1])?;
+                Ok(tbl)
+            })
+            .map_err(|e| format!("Failed to register get_mouse_delta: {}", e))?;
+        lua.globals().set("get_mouse_delta", get_mouse_delta).map_err(|e| e.to_string())?;
 
         // 56. nav_bake([cell_size], [half_extent]) -> bool
         let nav_grid_bake_ref = ctx.nav_grid.clone();
@@ -2204,6 +2278,61 @@ mod tests {
                 assert_eq!(entity_id, "boss_minion");
             }
             _ => panic!("Expected Stop command"),
+        }
+
+        let _ = std::fs::remove_file(script_path);
+    }
+
+    #[test]
+    fn test_cinematics_and_preset_anim_lua_bindings() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        if let Ok(mut minfo) = ctx.mouse_info.write() {
+            minfo.delta = [12.5, -7.0];
+        }
+
+        let test_script = r#"
+            camera_lerp_to(0, 10, 20, 0, 0, 0, 1.5)
+            camera_orbit_target("boss_entity", 15.0, 30.0, 0.8)
+            play_preset_anim("player_hero", "hover_idle")
+
+            local delta = get_mouse_delta()
+            assert(delta.dx == 12.5)
+            assert(delta.dy == -7.0)
+
+            function on_update(entity, dt)
+            end
+        "#;
+
+        let script_path = "assets/scripts/test_cinematics_lua.lua";
+        std::fs::write(script_path, test_script).unwrap();
+
+        let mut comp = ScriptComponent::new(script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Init failed: {:?}", res.err());
+
+        let lerps = ctx.pending_camera_lerps.lock().unwrap();
+        assert_eq!(lerps.len(), 1);
+        assert_eq!(lerps[0].0, [0.0, 10.0, 20.0]);
+        assert_eq!(lerps[0].1, [0.0, 0.0, 0.0]);
+        assert_eq!(lerps[0].2, 1.5);
+
+        let orbits = ctx.pending_camera_orbits.lock().unwrap();
+        assert_eq!(orbits.len(), 1);
+        assert_eq!(orbits[0].0.as_deref(), Some("boss_entity"));
+        assert_eq!(orbits[0].1, 15.0);
+
+        let anims = ctx.pending_anims.lock().unwrap();
+        assert_eq!(anims.len(), 1);
+        match &anims[0] {
+            AnimationCommand::PlayPreset { entity_id, preset_name } => {
+                assert_eq!(entity_id, "player_hero");
+                assert_eq!(preset_name, "hover_idle");
+            }
+            _ => panic!("Expected PlayPreset command"),
         }
 
         let _ = std::fs::remove_file(script_path);

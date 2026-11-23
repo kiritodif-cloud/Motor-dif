@@ -32,6 +32,29 @@ pub struct Camera {
     pub shake_offset: Vec3,
     #[serde(skip)]
     pub follow_target: Option<(String, Vec3, f32)>,
+    #[serde(skip)]
+    pub lerp_cinematic: Option<CameraLerpState>,
+    #[serde(skip)]
+    pub orbit_cinematic: Option<CameraOrbitState>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CameraLerpState {
+    pub start_eye: Vec3,
+    pub target_eye: Vec3,
+    pub start_target: Vec3,
+    pub target_target: Vec3,
+    pub duration: f32,
+    pub elapsed: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct CameraOrbitState {
+    pub target_id: Option<String>,
+    pub distance: f32,
+    pub pitch_deg: f32,
+    pub yaw_speed: f32,
+    pub current_yaw: f32,
 }
 
 impl Camera {
@@ -51,6 +74,8 @@ impl Camera {
             shake_timer: 0.0,
             shake_offset: Vec3::ZERO,
             follow_target: None,
+            lerp_cinematic: None,
+            orbit_cinematic: None,
         }
     }
 
@@ -70,6 +95,66 @@ impl Camera {
             shake_timer: 0.0,
             shake_offset: Vec3::ZERO,
             follow_target: None,
+            lerp_cinematic: None,
+            orbit_cinematic: None,
+        }
+    }
+
+    pub fn start_lerp_to(&mut self, target_eye: Vec3, target_target: Vec3, duration: f32) {
+        self.lerp_cinematic = Some(CameraLerpState {
+            start_eye: self.eye,
+            target_eye,
+            start_target: self.target,
+            target_target,
+            duration: duration.max(0.01),
+            elapsed: 0.0,
+        });
+        self.orbit_cinematic = None;
+    }
+
+    pub fn start_orbit_target(&mut self, target_id: Option<String>, distance: f32, pitch_deg: f32, yaw_speed: f32) {
+        let initial_yaw = (self.eye.z - self.target.z).atan2(self.eye.x - self.target.x);
+        self.orbit_cinematic = Some(CameraOrbitState {
+            target_id,
+            distance: distance.max(0.5),
+            pitch_deg: pitch_deg.clamp(-85.0, 85.0),
+            yaw_speed,
+            current_yaw: initial_yaw,
+        });
+        self.lerp_cinematic = None;
+    }
+
+    pub fn stop_cinematics(&mut self) {
+        self.lerp_cinematic = None;
+        self.orbit_cinematic = None;
+    }
+
+    pub fn update_cinematics(&mut self, dt: f32, entity_world_positions: &std::collections::HashMap<String, Vec3>) {
+        if let Some(ref mut lerp) = self.lerp_cinematic {
+            lerp.elapsed += dt;
+            let t = (lerp.elapsed / lerp.duration).clamp(0.0, 1.0);
+            let smooth_t = t * t * (3.0 - 2.0 * t);
+            self.eye = lerp.start_eye.lerp(lerp.target_eye, smooth_t);
+            self.target = lerp.start_target.lerp(lerp.target_target, smooth_t);
+
+            if lerp.elapsed >= lerp.duration {
+                self.lerp_cinematic = None;
+            }
+        } else if let Some(ref mut orb) = self.orbit_cinematic {
+            orb.current_yaw += orb.yaw_speed * dt;
+            let center = if let Some(ref id) = orb.target_id {
+                entity_world_positions.get(id).copied().unwrap_or(Vec3::ZERO)
+            } else {
+                self.target
+            };
+            self.target = center;
+            let pitch_rad = orb.pitch_deg.to_radians();
+            let cos_p = pitch_rad.cos();
+            let sin_p = pitch_rad.sin();
+            let x = center.x + orb.distance * cos_p * orb.current_yaw.cos();
+            let y = center.y + orb.distance * sin_p;
+            let z = center.z + orb.distance * cos_p * orb.current_yaw.sin();
+            self.eye = Vec3::new(x, y, z);
         }
     }
 
@@ -361,5 +446,42 @@ impl CameraUniform {
 impl Default for CameraUniform {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_camera_lerp_cinematics() {
+        let mut cam = Camera::new_3d(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, 1.77);
+        cam.start_lerp_to(Vec3::new(0.0, 5.0, 20.0), Vec3::new(0.0, 2.0, 0.0), 1.0);
+        assert!(cam.lerp_cinematic.is_some());
+
+        let entity_pos = HashMap::new();
+        cam.update_cinematics(0.5, &entity_pos);
+        // Halfway smoothstep is 0.5
+        assert!((cam.eye.y - 2.5).abs() < 0.2);
+        assert!((cam.eye.z - 15.0).abs() < 0.2);
+
+        cam.update_cinematics(0.6, &entity_pos);
+        assert!(cam.lerp_cinematic.is_none());
+        assert!((cam.eye.y - 5.0).abs() < 1e-4);
+        assert!((cam.eye.z - 20.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_camera_orbit_cinematics() {
+        let mut cam = Camera::new_3d(Vec3::new(5.0, 0.0, 0.0), Vec3::ZERO, 1.77);
+        cam.start_orbit_target(None, 5.0, 0.0, 1.0);
+        assert!(cam.orbit_cinematic.is_some());
+
+        let entity_pos = HashMap::new();
+        cam.update_cinematics(std::f32::consts::PI * 0.5, &entity_pos);
+        // After 90 deg rotation, eye should be near (0, 0, 5)
+        assert!(cam.eye.x.abs() < 0.1);
+        assert!((cam.eye.z - 5.0).abs() < 0.1);
     }
 }

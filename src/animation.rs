@@ -271,6 +271,19 @@ impl AnimationPlayer {
         self.playing && self.active_clip.is_some()
     }
 
+    pub fn play_preset(&mut self, preset_name: &str) -> bool {
+        let clean = preset_name.to_lowercase();
+        let looping = clean != "recoil";
+        if !self.animations.contains_key(&clean) {
+            if let Some(clip) = create_preset_clip(&clean) {
+                self.add_clip(clip);
+            } else {
+                return false;
+            }
+        }
+        self.play(&clean, looping)
+    }
+
     pub fn update(&mut self, dt: f32) -> Option<InterpolatedState> {
         let clip_name = self.active_clip.as_ref()?;
         let clip = self.animations.get(clip_name)?;
@@ -359,6 +372,124 @@ impl AnimationPlayer {
     }
 }
 
+pub fn create_preset_clip(preset_name: &str) -> Option<AnimationClip> {
+    match preset_name.to_lowercase().as_str() {
+        "hover_idle" | "hover" => {
+            let mut clip = AnimationClip::new("hover_idle", 2.0);
+            clip.add_keyframe(Keyframe {
+                time: 0.0,
+                position: Some([0.0, 0.0, 0.0]),
+                rotation: None,
+                scale: None,
+                color: None,
+                emissive: None,
+            });
+            clip.add_keyframe(Keyframe {
+                time: 1.0,
+                position: Some([0.0, 0.2, 0.0]),
+                rotation: None,
+                scale: None,
+                color: None,
+                emissive: None,
+            });
+            clip.add_keyframe(Keyframe {
+                time: 2.0,
+                position: Some([0.0, 0.0, 0.0]),
+                rotation: None,
+                scale: None,
+                color: None,
+                emissive: None,
+            });
+            Some(clip)
+        }
+        "spin_y" | "spin" => {
+            let mut clip = AnimationClip::new("spin_y", 1.5);
+            clip.add_keyframe(Keyframe {
+                time: 0.0,
+                position: None,
+                rotation: Some([0.0, 0.0, 0.0]),
+                scale: None,
+                color: None,
+                emissive: None,
+            });
+            clip.add_keyframe(Keyframe {
+                time: 0.75,
+                position: None,
+                rotation: Some([0.0, 180.0, 0.0]),
+                scale: None,
+                color: None,
+                emissive: None,
+            });
+            clip.add_keyframe(Keyframe {
+                time: 1.5,
+                position: None,
+                rotation: Some([0.0, 360.0, 0.0]),
+                scale: None,
+                color: None,
+                emissive: None,
+            });
+            Some(clip)
+        }
+        "pulse_glow" | "pulse" => {
+            let mut clip = AnimationClip::new("pulse_glow", 0.8);
+            clip.add_keyframe(Keyframe {
+                time: 0.0,
+                position: None,
+                rotation: None,
+                scale: Some([1.0, 1.0, 1.0]),
+                color: None,
+                emissive: Some(0.0),
+            });
+            clip.add_keyframe(Keyframe {
+                time: 0.4,
+                position: None,
+                rotation: None,
+                scale: Some([1.25, 1.25, 1.25]),
+                color: None,
+                emissive: Some(2.0),
+            });
+            clip.add_keyframe(Keyframe {
+                time: 0.8,
+                position: None,
+                rotation: None,
+                scale: Some([1.0, 1.0, 1.0]),
+                color: None,
+                emissive: Some(0.0),
+            });
+            Some(clip)
+        }
+        "recoil" => {
+            let mut clip = AnimationClip::new("recoil", 0.25);
+            clip.add_keyframe(Keyframe {
+                time: 0.0,
+                position: Some([0.0, 0.0, 0.0]),
+                rotation: None,
+                scale: None,
+                color: None,
+                emissive: None,
+            });
+            clip.add_keyframe(Keyframe {
+                time: 0.06,
+                position: Some([0.0, 0.0, -0.4]),
+                rotation: None,
+                scale: None,
+                color: None,
+                emissive: None,
+            });
+            clip.add_keyframe(Keyframe {
+                time: 0.25,
+                position: Some([0.0, 0.0, 0.0]),
+                rotation: None,
+                scale: None,
+                color: None,
+                emissive: None,
+            });
+            Some(clip)
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,5 +563,31 @@ mod tests {
         player.stop();
         assert!(!player.is_playing());
         assert_eq!(player.current_time, 0.0);
+    }
+
+    #[test]
+    fn test_animation_presets_and_player_play_preset() {
+        let hover = create_preset_clip("hover_idle").unwrap();
+        assert_eq!(hover.name, "hover_idle");
+        assert_eq!(hover.duration, 2.0);
+
+        let spin = create_preset_clip("spin_y").unwrap();
+        assert_eq!(spin.duration, 1.5);
+
+        let pulse = create_preset_clip("pulse_glow").unwrap();
+        assert_eq!(pulse.duration, 0.8);
+
+        let recoil = create_preset_clip("recoil").unwrap();
+        assert_eq!(recoil.duration, 0.25);
+
+        let mut player = AnimationPlayer::new();
+        assert!(player.play_preset("pulse_glow"));
+        assert!(player.is_playing());
+        assert_eq!(player.active_clip.as_deref(), Some("pulse_glow"));
+
+        // Step by 0.4s (midpoint of pulse)
+        let s = player.update(0.4).unwrap();
+        assert_eq!(s.scale, Some([1.25, 1.25, 1.25]));
+        assert_eq!(s.emissive, Some(2.0));
     }
 }

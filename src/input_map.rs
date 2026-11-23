@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy)]
 pub struct MouseInfo {
     pub screen_pos: [f32; 2],
+    pub delta: [f32; 2],
     pub screen_size: [f32; 2],
     pub buttons_down: [bool; 3], // 0: Left, 1: Right, 2: Middle
     pub buttons_just_pressed: [bool; 3],
@@ -15,6 +16,7 @@ impl Default for MouseInfo {
     fn default() -> Self {
         Self {
             screen_pos: [0.0, 0.0],
+            delta: [0.0, 0.0],
             screen_size: [1280.0, 720.0],
             buttons_down: [false; 3],
             buttons_just_pressed: [false; 3],
