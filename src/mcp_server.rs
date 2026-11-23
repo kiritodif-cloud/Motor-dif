@@ -717,7 +717,11 @@ pub async fn handle_jsonrpc(
             match tool_name {
                 "get_engine_docs" => {
                     let topic = args.get("topic").and_then(|v| v.as_str()).unwrap_or("all");
-                    let text = extract_doc_topic(ENGINE_DOCS, topic);
+                    let doc_text = extract_doc_topic(ENGINE_DOCS, topic);
+                    let cwd = std::env::current_dir()
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_else(|_| ".".to_string());
+                    let text = format!("Working Dir: {} | Assets Dir: {}/assets\n\n{}", cwd, cwd, doc_text);
                     Some(JsonRpcResponse::success(
                         id,
                         json!({
@@ -1640,6 +1644,8 @@ mod tests {
         let resp_json = serde_json::to_value(&resp).unwrap();
         let content_text = resp_json["result"]["content"][0]["text"].as_str().unwrap();
 
+        assert!(content_text.contains("Working Dir:"));
+        assert!(content_text.contains("Assets Dir:"));
         assert!(content_text.contains("## quickstart"));
         assert!(content_text.contains("## scene_json"));
         assert!(content_text.contains("## lua_core"));
@@ -1686,6 +1692,7 @@ mod tests {
         let resp_ui_json = serde_json::to_value(&resp_ui).unwrap();
         let ui_text = resp_ui_json["result"]["content"][0]["text"].as_str().unwrap();
 
+        assert!(ui_text.contains("Working Dir:"));
         assert!(ui_text.contains("## lua_ui"));
         assert!(ui_text.contains("ui_button"));
         assert!(ui_text.contains("ui_panel"));

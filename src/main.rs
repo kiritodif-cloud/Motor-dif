@@ -752,6 +752,8 @@ impl EngineState {
         for (_meta, script) in self.world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
             script.lua = None;
         }
+        self.active_gizmo_axis = None;
+        self.hovered_gizmo_axis = None;
         self.play_mode = PlayMode::Edit;
     }
 
@@ -3711,12 +3713,17 @@ impl EngineState {
                     CentralPanel::default()
                         .frame(Frame::new().fill(egui::Color32::TRANSPARENT))
                         .show(ui, |ui| {
+                            let viewport_rect = ui.max_rect();
+                            let painter = ui.painter().with_clip_rect(viewport_rect);
+
                             if let Ok(hud) = self.lua_ctx.hud_texts.read() {
                                 if !hud.is_empty() {
                                     let hud_area = egui::Area::new(ui.make_persistent_id("lua_hud_overlay_standalone"))
-                                        .fixed_pos(egui::pos2(25.0, 25.0))
+                                        .fixed_pos(viewport_rect.min + egui::vec2(25.0, 25.0))
+                                        .constrain_to(viewport_rect)
                                         .interactable(false);
                                     hud_area.show(ui.ctx(), |ui| {
+                                        ui.set_clip_rect(viewport_rect);
                                         egui::Frame::new()
                                             .fill(egui::Color32::from_black_alpha(180))
                                             .corner_radius(8.0)
@@ -3736,8 +3743,10 @@ impl EngineState {
                             if let Ok(btns) = self.lua_ctx.hud_buttons.read() {
                                 for btn in btns.values() {
                                     let btn_area = egui::Area::new(ui.make_persistent_id(format!("hud_btn_std_{}", btn.id)))
-                                        .fixed_pos(egui::pos2(btn.x, btn.y));
+                                        .fixed_pos(viewport_rect.min + egui::vec2(btn.x, btn.y))
+                                        .constrain_to(viewport_rect);
                                     btn_area.show(ui.ctx(), |ui| {
+                                        ui.set_clip_rect(viewport_rect);
                                         if ui.button(egui::RichText::new(&btn.text).size(15.0).strong()).clicked() {
                                             if let Ok(mut clicks) = self.lua_ctx.pending_button_clicks.lock() {
                                                 clicks.push(btn.callback.clone());
@@ -3747,9 +3756,7 @@ impl EngineState {
                                 }
                             }
 
-                            let painter = ui.painter();
                             let screen_size = [self.gpu.config.width as f32, self.gpu.config.height as f32];
-                            let viewport_rect = ui.max_rect();
 
                             // Declarative In-Game UI from Lua (game_ui)
                             if let Ok(elements) = self.lua_ctx.game_ui_elements.read() {
@@ -5318,261 +5325,273 @@ impl EngineState {
                             )
                         });
                         let screen_size = [screen_rect.width(), screen_rect.height()];
+                        let is_playing = self.is_standalone_play || self.play_mode == PlayMode::Play;
 
-                        // 1. Raycast Selection & Gizmo Interaction
+                        // 1. Raycast Selection & Gizmo Interaction (Editor mode only)
                         let mut hovered_axis = None;
                         let gizmo_len = 1.4f32;
 
-                        if let Some(entity) = self.selected_entity {
-                            let transform_data = self.world.get::<&Transform>(entity).map(|t| (t.position, t.rotation, t.scale)).ok();
-                            if let Some((pos, rot, scale)) = transform_data {
-                                // 1. Selection Outline
-                                let corners = [
-                                    Vec3::new(-0.5, -0.5, -0.5),
-                                    Vec3::new( 0.5, -0.5, -0.5),
-                                    Vec3::new( 0.5,  0.5, -0.5),
-                                    Vec3::new(-0.5,  0.5, -0.5),
-                                    Vec3::new(-0.5, -0.5,  0.5),
-                                    Vec3::new( 0.5, -0.5,  0.5),
-                                    Vec3::new( 0.5,  0.5,  0.5),
-                                    Vec3::new(-0.5,  0.5,  0.5),
-                                ];
-                                let mat = glam::Mat4::from_scale_rotation_translation(
-                                    scale,
-                                    Quat::from_euler(EulerRot::XYZ, rot.x, rot.y, rot.z),
-                                    pos,
-                                );
-                                let mut screen_corners = [None; 8];
-                                for i in 0..8 {
-                                    let world_pt = mat.transform_point3(corners[i]);
-                                    screen_corners[i] = self.camera.world_to_screen(world_pt, screen_size);
-                                }
-
-                                let outline_color = egui::Color32::from_rgb(80, 220, 255);
-                                let outline_stroke = egui::Stroke::new(1.5, outline_color);
-
-                                let edges = [
-                                    (0, 1), (1, 2), (2, 3), (3, 0),
-                                    (4, 5), (5, 6), (6, 7), (7, 4),
-                                    (0, 4), (1, 5), (2, 6), (3, 7),
-                                ];
-                                for (a, b) in edges {
-                                    if let (Some(pa), Some(pb)) = (screen_corners[a], screen_corners[b]) {
-                                        painter.line_segment([egui::pos2(pa[0], pa[1]), egui::pos2(pb[0], pb[1])], outline_stroke);
-                                    }
-                                }
-
-                                // 2. 3D Gizmo
-                                let origin_pt = self.camera.world_to_screen(pos, screen_size);
-                                if let Some(origin) = origin_pt {
-                                    let origin_pos = egui::pos2(origin[0], origin[1]);
-                                    painter.circle_filled(origin_pos, 4.0, egui::Color32::WHITE);
-
-                                    let pt_x = self.camera.world_to_screen(pos + Vec3::X * gizmo_len, screen_size);
-                                    let pt_y = self.camera.world_to_screen(pos + Vec3::Y * gizmo_len, screen_size);
-                                    let pt_z = self.camera.world_to_screen(pos + Vec3::Z * gizmo_len, screen_size);
-
-                                    let axes = [
-                                        (GizmoAxis::X, pt_x, egui::Color32::from_rgb(235, 60, 60), "X"),
-                                        (GizmoAxis::Y, pt_y, egui::Color32::from_rgb(60, 220, 60), "Y"),
-                                        (GizmoAxis::Z, pt_z, egui::Color32::from_rgb(60, 130, 245), "Z"),
+                        if !is_playing {
+                            if let Some(entity) = self.selected_entity {
+                                let transform_data = self.world.get::<&Transform>(entity).map(|t| (t.position, t.rotation, t.scale)).ok();
+                                if let Some((pos, rot, scale)) = transform_data {
+                                    // 1. Selection Outline
+                                    let corners = [
+                                        Vec3::new(-0.5, -0.5, -0.5),
+                                        Vec3::new( 0.5, -0.5, -0.5),
+                                        Vec3::new( 0.5,  0.5, -0.5),
+                                        Vec3::new(-0.5,  0.5, -0.5),
+                                        Vec3::new(-0.5, -0.5,  0.5),
+                                        Vec3::new( 0.5, -0.5,  0.5),
+                                        Vec3::new( 0.5,  0.5,  0.5),
+                                        Vec3::new(-0.5,  0.5,  0.5),
                                     ];
+                                    let mat = glam::Mat4::from_scale_rotation_translation(
+                                        scale,
+                                        Quat::from_euler(EulerRot::XYZ, rot.x, rot.y, rot.z),
+                                        pos,
+                                    );
+                                    let mut screen_corners = [None; 8];
+                                    for i in 0..8 {
+                                        let world_pt = mat.transform_point3(corners[i]);
+                                        screen_corners[i] = self.camera.world_to_screen(world_pt, screen_size);
+                                    }
 
-                                    // Hit test axes with generous 15px margin
-                                    if let Some(cursor) = pointer_pos {
-                                        if viewport_rect.contains(cursor) || self.active_gizmo_axis.is_some() {
-                                            let mut closest_d = 15.0f32;
-                                            for (axis, pt_opt, _, _) in &axes {
-                                                if let Some(pt) = pt_opt {
-                                                    let dist = dist_to_segment_2d([cursor.x, cursor.y], origin, *pt);
-                                                    if dist <= closest_d {
-                                                        closest_d = dist;
-                                                        hovered_axis = Some(*axis);
-                                                    }
-                                                }
-                                            }
+                                    let outline_color = egui::Color32::from_rgb(80, 220, 255);
+                                    let outline_stroke = egui::Stroke::new(1.5, outline_color);
+
+                                    let edges = [
+                                        (0, 1), (1, 2), (2, 3), (3, 0),
+                                        (4, 5), (5, 6), (6, 7), (7, 4),
+                                        (0, 4), (1, 5), (2, 6), (3, 7),
+                                    ];
+                                    for (a, b) in edges {
+                                        if let (Some(pa), Some(pb)) = (screen_corners[a], screen_corners[b]) {
+                                            painter.line_segment([egui::pos2(pa[0], pa[1]), egui::pos2(pb[0], pb[1])], outline_stroke);
                                         }
                                     }
 
-                                    for (axis, pt_opt, base_color, label) in axes {
-                                        if let Some(pt) = pt_opt {
-                                            let end_pos = egui::pos2(pt[0], pt[1]);
-                                            let is_active = self.active_gizmo_axis == Some(axis);
-                                            let is_hovered = self.active_gizmo_axis.is_none() && hovered_axis == Some(axis);
+                                    // 2. 3D Gizmo
+                                    let origin_pt = self.camera.world_to_screen(pos, screen_size);
+                                    if let Some(origin) = origin_pt {
+                                        let origin_pos = egui::pos2(origin[0], origin[1]);
+                                        painter.circle_filled(origin_pos, 4.0, egui::Color32::WHITE);
 
-                                            let color = if is_active || is_hovered {
-                                                egui::Color32::from_rgb(255, 240, 50)
-                                            } else {
-                                                base_color
-                                            };
+                                        let pt_x = self.camera.world_to_screen(pos + Vec3::X * gizmo_len, screen_size);
+                                        let pt_y = self.camera.world_to_screen(pos + Vec3::Y * gizmo_len, screen_size);
+                                        let pt_z = self.camera.world_to_screen(pos + Vec3::Z * gizmo_len, screen_size);
 
-                                            let stroke = egui::Stroke::new(if is_active || is_hovered { 3.5 } else { 2.5 }, color);
+                                        let axes = [
+                                            (GizmoAxis::X, pt_x, egui::Color32::from_rgb(235, 60, 60), "X"),
+                                            (GizmoAxis::Y, pt_y, egui::Color32::from_rgb(60, 220, 60), "Y"),
+                                            (GizmoAxis::Z, pt_z, egui::Color32::from_rgb(60, 130, 245), "Z"),
+                                        ];
 
-                                            match self.gizmo_mode {
-                                                GizmoMode::Translate => {
-                                                    painter.line_segment([origin_pos, end_pos], stroke);
-                                                    painter.circle_filled(end_pos, 6.0, color);
-                                                }
-                                                GizmoMode::Rotate => {
-                                                    painter.line_segment([origin_pos, end_pos], stroke);
-                                                    painter.circle_stroke(end_pos, 7.0, stroke);
-                                                }
-                                                GizmoMode::Scale => {
-                                                    painter.line_segment([origin_pos, end_pos], stroke);
-                                                    painter.rect_filled(
-                                                        egui::Rect::from_center_size(end_pos, egui::vec2(10.0, 10.0)),
-                                                        2.0,
-                                                        color,
-                                                    );
-                                                }
-                                            }
-
-                                            painter.text(
-                                                end_pos + egui::vec2(6.0, -6.0),
-                                                egui::Align2::LEFT_BOTTOM,
-                                                label,
-                                                egui::FontId::monospace(13.0),
-                                                color,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        self.hovered_gizmo_axis = hovered_axis;
-
-                        // Click Priority: Gizmo Axis BEFORE Raycast
-                        if is_primary_pressed {
-                            if let Some(cursor) = pointer_pos {
-                                if viewport_rect.contains(cursor) {
-                                    if let (Some(entity), Some(axis)) = (self.selected_entity, hovered_axis) {
-                                        self.active_gizmo_axis = Some(axis);
-                                        self.gizmo_drag_mouse_origin = Some([cursor.x, cursor.y]);
-                                        if let Ok(transform) = self.world.get::<&Transform>(entity) {
-                                            self.gizmo_drag_start_pos = Some(transform.position);
-                                            self.gizmo_drag_start_rot = Some(transform.rotation);
-                                            self.gizmo_drag_start_scale = Some(transform.scale);
-                                        }
-                                    } else if hovered_axis.is_none() {
-                                        // Viewport Raycasting selection
-                                        let (ray_origin, ray_dir) = self.camera.screen_to_ray([cursor.x, cursor.y], screen_size);
-                                        let mut closest_hit: Option<(hecs::Entity, f32)> = None;
-
-                                        for entity_ref in self.world.iter() {
-                                            let entity = entity_ref.entity();
-                                            if let Some(transform) = entity_ref.get::<&Transform>() {
-                                                let half_s = transform.scale.abs() * 0.5;
-                                                let min = transform.position - half_s;
-                                                let max = transform.position + half_s;
-
-                                                if let Some(t) = camera::ray_intersects_aabb(ray_origin, ray_dir, min, max) {
-                                                    if t > 0.0 {
-                                                        match closest_hit {
-                                                            None => closest_hit = Some((entity, t)),
-                                                            Some((_, cur_t)) if t < cur_t => closest_hit = Some((entity, t)),
-                                                            _ => {}
+                                        // Hit test axes with generous 15px margin
+                                        if let Some(cursor) = pointer_pos {
+                                            if viewport_rect.contains(cursor) || self.active_gizmo_axis.is_some() {
+                                                let mut closest_d = 15.0f32;
+                                                for (axis, pt_opt, _, _) in &axes {
+                                                    if let Some(pt) = pt_opt {
+                                                        let dist = dist_to_segment_2d([cursor.x, cursor.y], origin, *pt);
+                                                        if dist <= closest_d {
+                                                            closest_d = dist;
+                                                            hovered_axis = Some(*axis);
                                                         }
                                                     }
                                                 }
                                             }
                                         }
 
-                                        self.selected_entity = closest_hit.map(|(e, _)| e);
+                                        for (axis, pt_opt, base_color, label) in axes {
+                                            if let Some(pt) = pt_opt {
+                                                let end_pos = egui::pos2(pt[0], pt[1]);
+                                                let is_active = self.active_gizmo_axis == Some(axis);
+                                                let is_hovered = self.active_gizmo_axis.is_none() && hovered_axis == Some(axis);
+
+                                                let color = if is_active || is_hovered {
+                                                    egui::Color32::from_rgb(255, 240, 50)
+                                                } else {
+                                                    base_color
+                                                };
+
+                                                let stroke = egui::Stroke::new(if is_active || is_hovered { 3.5 } else { 2.5 }, color);
+
+                                                match self.gizmo_mode {
+                                                    GizmoMode::Translate => {
+                                                        painter.line_segment([origin_pos, end_pos], stroke);
+                                                        painter.circle_filled(end_pos, 6.0, color);
+                                                    }
+                                                    GizmoMode::Rotate => {
+                                                        painter.line_segment([origin_pos, end_pos], stroke);
+                                                        painter.circle_stroke(end_pos, 7.0, stroke);
+                                                    }
+                                                    GizmoMode::Scale => {
+                                                        painter.line_segment([origin_pos, end_pos], stroke);
+                                                        painter.rect_filled(
+                                                            egui::Rect::from_center_size(end_pos, egui::vec2(10.0, 10.0)),
+                                                            2.0,
+                                                            color,
+                                                        );
+                                                    }
+                                                }
+
+                                                painter.text(
+                                                    end_pos + egui::vec2(6.0, -6.0),
+                                                    egui::Align2::LEFT_BOTTOM,
+                                                    label,
+                                                    egui::FontId::monospace(13.0),
+                                                    color,
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        // Real-time Gizmo Dragging & Physics Sync
-                        if is_primary_down {
-                            if let (Some(entity), Some(axis), Some(start_m), Some(start_pos), Some(start_rot), Some(start_scale)) = (
-                                self.selected_entity,
-                                self.active_gizmo_axis,
-                                self.gizmo_drag_mouse_origin,
-                                self.gizmo_drag_start_pos,
-                                self.gizmo_drag_start_rot,
-                                self.gizmo_drag_start_scale,
-                            ) {
+                            self.hovered_gizmo_axis = hovered_axis;
+
+                            // Click Priority: Gizmo Axis BEFORE Raycast
+                            if is_primary_pressed {
                                 if let Some(cursor) = pointer_pos {
-                                    let axis_vec = match axis {
-                                        GizmoAxis::X => Vec3::X,
-                                        GizmoAxis::Y => Vec3::Y,
-                                        GizmoAxis::Z => Vec3::Z,
-                                    };
+                                    if viewport_rect.contains(cursor) {
+                                        if let (Some(entity), Some(axis)) = (self.selected_entity, hovered_axis) {
+                                            self.active_gizmo_axis = Some(axis);
+                                            self.gizmo_drag_mouse_origin = Some([cursor.x, cursor.y]);
+                                            if let Ok(transform) = self.world.get::<&Transform>(entity) {
+                                                self.gizmo_drag_start_pos = Some(transform.position);
+                                                self.gizmo_drag_start_rot = Some(transform.rotation);
+                                                self.gizmo_drag_start_scale = Some(transform.scale);
+                                            }
+                                        } else if hovered_axis.is_none() {
+                                            // Viewport Raycasting selection
+                                            let (ray_origin, ray_dir) = self.camera.screen_to_ray([cursor.x, cursor.y], screen_size);
+                                            let mut closest_hit: Option<(hecs::Entity, f32)> = None;
 
-                                    let origin_2d = self.camera.world_to_screen(start_pos, screen_size);
-                                    let tip_2d = self.camera.world_to_screen(start_pos + axis_vec * gizmo_len, screen_size);
+                                            for entity_ref in self.world.iter() {
+                                                let entity = entity_ref.entity();
+                                                if let Some(transform) = entity_ref.get::<&Transform>() {
+                                                    let half_s = transform.scale.abs() * 0.5;
+                                                    let min = transform.position - half_s;
+                                                    let max = transform.position + half_s;
 
-                                    if let (Some(o), Some(a)) = (origin_2d, tip_2d) {
-                                        let dir_x = a[0] - o[0];
-                                        let dir_y = a[1] - o[1];
-                                        let len = (dir_x * dir_x + dir_y * dir_y).sqrt().max(1.0);
-                                        let ndir_x = dir_x / len;
-                                        let ndir_y = dir_y / len;
-
-                                        let total_dx = cursor.x - start_m[0];
-                                        let total_dy = cursor.y - start_m[1];
-                                        let proj_pixels = total_dx * ndir_x + total_dy * ndir_y;
-                                        let delta_world = proj_pixels * (gizmo_len / len);
-
-                                        match self.gizmo_mode {
-                                            GizmoMode::Translate => {
-                                                let mut new_pos = start_pos + axis_vec * delta_world;
-                                                if is_snap {
-                                                    new_pos.x = (new_pos.x * 2.0).round() * 0.5;
-                                                    new_pos.y = (new_pos.y * 2.0).round() * 0.5;
-                                                    new_pos.z = (new_pos.z * 2.0).round() * 0.5;
-                                                }
-                                                {
-                                                    if let Ok(mut transform) = self.world.get::<&mut Transform>(entity) {
-                                                        transform.position = new_pos;
+                                                    if let Some(t) = camera::ray_intersects_aabb(ray_origin, ray_dir, min, max) {
+                                                        if t > 0.0 {
+                                                            match closest_hit {
+                                                                None => closest_hit = Some((entity, t)),
+                                                                Some((_, cur_t)) if t < cur_t => closest_hit = Some((entity, t)),
+                                                                _ => {}
+                                                            }
+                                                        }
                                                     }
                                                 }
-                                                self.sync_entity_to_physics(entity);
                                             }
-                                            GizmoMode::Rotate => {
-                                                let angle = (proj_pixels * 0.02) % (std::f32::consts::PI * 2.0);
-                                                let final_angle = if is_snap {
-                                                    let step = 15.0f32.to_radians();
-                                                    (angle / step).round() * step
-                                                } else {
-                                                    angle
-                                                };
-                                                let new_rot = start_rot + axis_vec * final_angle;
-                                                {
-                                                    if let Ok(mut transform) = self.world.get::<&mut Transform>(entity) {
-                                                        transform.rotation = new_rot;
+
+                                            self.selected_entity = closest_hit.map(|(e, _)| e);
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Real-time Gizmo Dragging & Physics Sync
+                            if is_primary_down {
+                                if let (Some(entity), Some(axis), Some(start_m), Some(start_pos), Some(start_rot), Some(start_scale)) = (
+                                    self.selected_entity,
+                                    self.active_gizmo_axis,
+                                    self.gizmo_drag_mouse_origin,
+                                    self.gizmo_drag_start_pos,
+                                    self.gizmo_drag_start_rot,
+                                    self.gizmo_drag_start_scale,
+                                ) {
+                                    if let Some(cursor) = pointer_pos {
+                                        let axis_vec = match axis {
+                                            GizmoAxis::X => Vec3::X,
+                                            GizmoAxis::Y => Vec3::Y,
+                                            GizmoAxis::Z => Vec3::Z,
+                                        };
+
+                                        let origin_2d = self.camera.world_to_screen(start_pos, screen_size);
+                                        let tip_2d = self.camera.world_to_screen(start_pos + axis_vec * gizmo_len, screen_size);
+
+                                        if let (Some(o), Some(a)) = (origin_2d, tip_2d) {
+                                            let dir_x = a[0] - o[0];
+                                            let dir_y = a[1] - o[1];
+                                            let len = (dir_x * dir_x + dir_y * dir_y).sqrt().max(1.0);
+                                            let ndir_x = dir_x / len;
+                                            let ndir_y = dir_y / len;
+
+                                            let total_dx = cursor.x - start_m[0];
+                                            let total_dy = cursor.y - start_m[1];
+                                            let proj_pixels = total_dx * ndir_x + total_dy * ndir_y;
+                                            let delta_world = proj_pixels * (gizmo_len / len);
+
+                                            match self.gizmo_mode {
+                                                GizmoMode::Translate => {
+                                                    let mut new_pos = start_pos + axis_vec * delta_world;
+                                                    if is_snap {
+                                                        new_pos.x = (new_pos.x * 2.0).round() * 0.5;
+                                                        new_pos.y = (new_pos.y * 2.0).round() * 0.5;
+                                                        new_pos.z = (new_pos.z * 2.0).round() * 0.5;
                                                     }
+                                                    {
+                                                        if let Ok(mut transform) = self.world.get::<&mut Transform>(entity) {
+                                                            transform.position = new_pos;
+                                                        }
+                                                    }
+                                                    self.sync_entity_to_physics(entity);
                                                 }
-                                                self.sync_entity_to_physics(entity);
-                                            }
-                                            GizmoMode::Scale => {
-                                                let scale_delta = proj_pixels * 0.015;
-                                                let mut new_scale = (start_scale + axis_vec * scale_delta).max(Vec3::splat(0.05));
-                                                if is_snap {
-                                                    new_scale.x = (new_scale.x * 4.0).round() * 0.25;
-                                                    new_scale.y = (new_scale.y * 4.0).round() * 0.25;
-                                                    new_scale.z = (new_scale.z * 4.0).round() * 0.25;
+                                                GizmoMode::Rotate => {
+                                                    let angle = (proj_pixels * 0.02) % (std::f32::consts::PI * 2.0);
+                                                    let final_angle = if is_snap {
+                                                        let step = 15.0f32.to_radians();
+                                                        (angle / step).round() * step
+                                                    } else {
+                                                        angle
+                                                    };
+                                                    let new_rot = start_rot + axis_vec * final_angle;
+                                                    {
+                                                        if let Ok(mut transform) = self.world.get::<&mut Transform>(entity) {
+                                                            transform.rotation = new_rot;
+                                                        }
+                                                    }
+                                                    self.sync_entity_to_physics(entity);
                                                 }
-                                                if let Ok(mut transform) = self.world.get::<&mut Transform>(entity) {
-                                                    transform.scale = new_scale;
+                                                GizmoMode::Scale => {
+                                                    let scale_delta = proj_pixels * 0.015;
+                                                    let mut new_scale = (start_scale + axis_vec * scale_delta).max(Vec3::splat(0.05));
+                                                    if is_snap {
+                                                        new_scale.x = (new_scale.x * 4.0).round() * 0.25;
+                                                        new_scale.y = (new_scale.y * 4.0).round() * 0.25;
+                                                        new_scale.z = (new_scale.z * 4.0).round() * 0.25;
+                                                    }
+                                                    if let Ok(mut transform) = self.world.get::<&mut Transform>(entity) {
+                                                        transform.scale = new_scale;
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
 
-                        // Release Drag -> Push Undo History
-                        if (is_primary_released || !is_primary_down) && self.active_gizmo_axis.is_some() {
-                            self.push_history();
-                            self.active_gizmo_axis = None;
-                            self.gizmo_drag_mouse_origin = None;
-                            self.gizmo_drag_start_pos = None;
-                            self.gizmo_drag_start_rot = None;
-                            self.gizmo_drag_start_scale = None;
+                            // Release Drag -> Push Undo History
+                            if (is_primary_released || !is_primary_down) && self.active_gizmo_axis.is_some() {
+                                self.push_history();
+                                self.active_gizmo_axis = None;
+                                self.gizmo_drag_mouse_origin = None;
+                                self.gizmo_drag_start_pos = None;
+                                self.gizmo_drag_start_rot = None;
+                                self.gizmo_drag_start_scale = None;
+                            }
+                        } else {
+                            if self.active_gizmo_axis.is_some() {
+                                self.active_gizmo_axis = None;
+                                self.gizmo_drag_mouse_origin = None;
+                                self.gizmo_drag_start_pos = None;
+                                self.gizmo_drag_start_rot = None;
+                                self.gizmo_drag_start_scale = None;
+                            }
+                            self.hovered_gizmo_axis = None;
                         }
 
                         // Camera Orbit, Pan & Zoom when not dragging gizmo
@@ -5669,9 +5688,11 @@ impl EngineState {
                         if let Ok(hud) = self.lua_ctx.hud_texts.read() {
                             if !hud.is_empty() {
                                 let hud_area = egui::Area::new(ui.make_persistent_id("lua_hud_overlay"))
-                                    .fixed_pos(egui::pos2(270.0, 50.0))
+                                    .fixed_pos(viewport_rect.min + egui::vec2(15.0, 15.0))
+                                    .constrain_to(viewport_rect)
                                     .interactable(false);
                                 hud_area.show(ui.ctx(), |ui| {
+                                    ui.set_clip_rect(viewport_rect);
                                     egui::Frame::new()
                                         .fill(egui::Color32::from_black_alpha(180))
                                         .corner_radius(6.0)
@@ -5689,8 +5710,10 @@ impl EngineState {
                         if let Ok(btns) = self.lua_ctx.hud_buttons.read() {
                             for btn in btns.values() {
                                 let btn_area = egui::Area::new(ui.make_persistent_id(format!("hud_btn_ed_{}", btn.id)))
-                                    .fixed_pos(egui::pos2(btn.x, btn.y));
+                                    .fixed_pos(viewport_rect.min + egui::vec2(btn.x, btn.y))
+                                    .constrain_to(viewport_rect);
                                 btn_area.show(ui.ctx(), |ui| {
+                                    ui.set_clip_rect(viewport_rect);
                                     if ui.button(egui::RichText::new(&btn.text).size(14.0).strong()).clicked() {
                                         if let Ok(mut clicks) = self.lua_ctx.pending_button_clicks.lock() {
                                             clicks.push(btn.callback.clone());
@@ -5703,7 +5726,7 @@ impl EngineState {
                         // 5b. Declarative In-Game UI from Lua (game_ui)
                         if self.play_mode == PlayMode::Play {
                             if let Ok(elements) = self.lua_ctx.game_ui_elements.read() {
-                                game_ui::render_declarative_ui(ui.ctx(), &painter, viewport_rect, &elements, &self.lua_ctx.pending_button_clicks);
+                                game_ui::render_declarative_ui(ui.ctx(), &painter.with_clip_rect(viewport_rect), viewport_rect, &elements, &self.lua_ctx.pending_button_clicks);
                             }
                         }
 
@@ -7146,8 +7169,9 @@ impl EngineState {
                 render_pass.draw(0..debug_line_vertices.len() as u32, 0..1);
             }
 
-            // Render 3D Grid on Y=0 (editor mode only)
-            if !self.is_standalone_play {
+            // Render 3D Grid on Y=0 (editor mode only when not playing)
+            let is_playing = self.is_standalone_play || self.play_mode == PlayMode::Play;
+            if !is_playing {
                 render_pass.set_pipeline(&self.gpu.line_pipeline);
                 render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.gpu.grid_mesh.vertex_buffer.slice(..));

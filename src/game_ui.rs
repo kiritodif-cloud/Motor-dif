@@ -103,6 +103,7 @@ pub fn render_declarative_ui(
     elements: &[UiElement],
     pending_clicks: &Arc<Mutex<Vec<String>>>,
 ) {
+    let painter = painter.with_clip_rect(viewport_rect);
     for elem in elements {
         match elem {
             UiElement::Panel {
@@ -199,8 +200,10 @@ pub fn render_declarative_ui(
             } => {
                 let pos = calculate_anchor_pos(anchor, *offset_x, *offset_y, *width, *height, viewport_rect);
                 let btn_area = egui::Area::new(egui::Id::new(format!("decl_ui_btn_{}", id)))
-                    .fixed_pos(pos);
+                    .fixed_pos(pos)
+                    .constrain_to(viewport_rect);
                 btn_area.show(ctx, |ui| {
+                    ui.set_clip_rect(viewport_rect);
                     if ui.add_sized([*width, *height], egui::Button::new(RichText::new(text).size(14.0).strong())).clicked() {
                         if let Ok(mut clicks) = pending_clicks.lock() {
                             clicks.push(callback.clone());

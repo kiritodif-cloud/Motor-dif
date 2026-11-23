@@ -1,28 +1,43 @@
 # Motor-dif — Agent & LLM Quick Reference Guide
 
 ## quickstart
-- Execution lifecycle:
-  - `on_update(entity, dt)`: Called each frame during `PlayMode::Play`. `entity.x/y/z` (pos), `entity.rx/ry/rz` (rot deg), `entity.sx/sy/sz` (scale). Method: `entity:apply_force(fx,fy,fz)`, `entity:apply_impulse(ix,iy,iz)`.
+- Execution lifecycle & rules:
+  - `on_update(entity, dt)`: Called each frame during `PlayMode::Play`. `entity.x/y/z` (pos), `entity.rx/ry/rz` (Euler rot in RADIANS, not degrees! full turn = 6.283), `entity.sx/sy/sz` (scale). Method: `entity:apply_force(fx,fy,fz)`, `entity:apply_impulse(ix,iy,iz)`.
   - Init idiom: `local init=false; function on_update(e,dt) if not init then init=true; on_init(e) end ... end`.
-  - `on_collision(entity, other_id)`: Contact callback for physical bodies.
-  - `on_trigger_enter(other_id, entity)`: Overlap callback for sensor colliders (`is_sensor = true`).
   - Button callbacks: Define `function my_click() ... end` globally; referenced by name in `ui_button`.
-- Editor vs Play Mode:
-  - In Editor mode (`play_mode == Edit`), scripts and game audio DO NOT run.
-  - Scripts and adaptive audio execute only when `> Play` is triggered or when running standalone (`--play`).
-  - Switching scenes or pressing `Stop` automatically stops music and cleans timers/events.
-- Cleanup rule: When resetting game state in scripts, always call `ui_clear()`, `clear_timers()`, and `clear_events()`.
+  - File rule: Never overwrite `assets/scene.json` unless asked. Save new projects to `assets/<name>.json` and `assets/scripts/<name>.lua`, then load with `load_scene`.
+  - Visual Quality Rules:
+    - NEVER use `set_hud_text` for game HUDs. Always use `ui_panel`, `ui_bar`, `ui_label`, `ui_button` from `lua_ui`.
+    - Use Texture Forge (`forge_create_texture`), Asset Forge (`forge_create_model`), Procedural Rig (`forge_create_rigged_character`), and VFX Forge (`forge_spawn_vfx`) instead of plain untextured grey blocks.
+    - Safe lighting & bloom: `bloom_intensity: 0.25..0.45`, `bloom_threshold: 0.8`, `exposure: 1.0`. Avoid `emissive > 0.2` on large grounds/buildings to prevent washed-out white overexposure. Use gentle fog (`fog_density: 0.002..0.008`).
+  - Cleanup rule: When resetting game state in scripts, always call `ui_clear()`, `clear_timers()`, and `clear_events()`.
+- Mini Example: Movement + Declarative HUD (`assets/scripts/player.lua`):
+```lua
+local score, speed = 0, 5.0
+function on_update(entity, dt)
+    local mx, mz = 0, 0
+    if is_key_down("W") then mz = mz - 1 end
+    if is_key_down("S") then mz = mz + 1 end
+    if is_key_down("A") then mx = mx - 1 end
+    if is_key_down("D") then mx = mx + 1 end
+    entity.x = entity.x + mx * speed * dt
+    entity.z = entity.z + mz * speed * dt
+    entity.ry = entity.ry + 1.2 * dt -- rot in radians
+    ui_panel("hud_bg", "top_left", 16, 16, 160, 42, 0.1, 0.12, 0.16, 0.85)
+    ui_label("hud_txt", "top_left", 28, 28, "Score: " .. score, 14, 0.4, 0.9, 1.0)
+end
+```
 
 ## scene_json
 ```json
 {
   "camera": { "mode": "3d", "position": [0, 5, 12], "target": [0, 1, 0], "ortho_size": 10.0 },
-  "post_process": { "bloom_enabled": true, "bloom_intensity": 0.8, "bloom_threshold": 0.8, "vignette_intensity": 0.35, "exposure": 1.0 },
+  "post_process": { "bloom_enabled": true, "bloom_intensity": 0.35, "bloom_threshold": 0.8, "vignette_intensity": 0.35, "exposure": 1.0 },
   "environment": { "sky_mode": "gradient", "zenith_color": [0.07, 0.08, 0.12], "horizon_color": [0.13, 0.15, 0.21], "fog_color": [0.07, 0.08, 0.12], "fog_density": 0.005 },
   "entities": [
     {
       "id": "player", "mesh": "cube", "position": [0, 1, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1],
-      "color": [0.2, 0.7, 1.0, 1.0], "emissive": 0.5, "fresnel_color": [0.4, 0.8, 1.0], "fresnel_power": 2.5,
+      "color": [0.2, 0.7, 1.0, 1.0], "emissive": 0.15, "fresnel_color": [0.4, 0.8, 1.0], "fresnel_power": 2.5,
       "blend_mode": "opaque", "parent": null, "script": "assets/scripts/player.lua",
       "physics": { "body": "dynamic", "collider": "cuboid", "mass": 1.0, "restitution": 0.2, "is_sensor": false },
       "point_light": { "color": [0.3, 0.8, 1.0], "intensity": 2.5, "radius": 8.0 },
@@ -34,6 +49,7 @@
 }
 ```
 Meshes: `"cube"`, `"sphere"`, `"cylinder"`, `"quad"`, `"plane"`, `"torus"`, `"ring"`, `"cone"`, `"icosphere"`, or `"assets/models/*.glb"`.
+Rotation units: Euler angles in RADIANS `[rx, ry, rz]` (e.g. `[0, 1.57, 0]` for 90° yaw).
 Blend modes: `"opaque"`, `"additive"`.
 Sky modes: `"gradient"`, `"space"`, `"solid"`.
 Physics bodies: `"dynamic"`, `"fixed"`. Colliders: `"cuboid"`, `"ball"`.

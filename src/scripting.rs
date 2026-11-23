@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
@@ -112,7 +112,7 @@ pub struct LuaEngineContext {
     pub save_data_store: Arc<RwLock<HashMap<String, serde_json::Value>>>,
     pub hud_buttons: Arc<RwLock<HashMap<String, HudButtonDef>>>,
     pub pending_button_clicks: Arc<Mutex<Vec<String>>>,
-    pub hud_texts: Arc<RwLock<HashMap<String, String>>>,
+    pub hud_texts: Arc<RwLock<BTreeMap<String, String>>>,
     pub world_entities: Arc<RwLock<HashMap<String, [f32; 9]>>>,
     pub audio: Arc<Mutex<crate::audio::AudioManager>>,
     pub pending_post_process: Arc<Mutex<Option<crate::assets::PostProcessDef>>>,
@@ -310,7 +310,7 @@ impl LuaEngineContext {
             save_data_store,
             hud_buttons: Arc::new(RwLock::new(HashMap::new())),
             pending_button_clicks: Arc::new(Mutex::new(Vec::new())),
-            hud_texts: Arc::new(RwLock::new(HashMap::new())),
+            hud_texts: Arc::new(RwLock::new(BTreeMap::new())),
             world_entities: Arc::new(RwLock::new(HashMap::new())),
             audio,
             pending_post_process: Arc::new(Mutex::new(None)),
