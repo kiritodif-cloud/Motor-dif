@@ -85,8 +85,42 @@ fn default_scale() -> [f32; 3] {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostProcessDef {
+    #[serde(default = "default_true")]
+    pub bloom_enabled: bool,
+    #[serde(default = "default_bloom_intensity")]
+    pub bloom_intensity: f32,
+    #[serde(default = "default_bloom_threshold")]
+    pub bloom_threshold: f32,
+    #[serde(default = "default_vignette_intensity")]
+    pub vignette_intensity: f32,
+    #[serde(default = "default_exposure")]
+    pub exposure: f32,
+}
+
+fn default_true() -> bool { true }
+fn default_bloom_intensity() -> f32 { 0.8 }
+fn default_bloom_threshold() -> f32 { 0.8 }
+fn default_vignette_intensity() -> f32 { 0.35 }
+fn default_exposure() -> f32 { 1.0 }
+
+impl Default for PostProcessDef {
+    fn default() -> Self {
+        Self {
+            bloom_enabled: true,
+            bloom_intensity: 0.8,
+            bloom_threshold: 0.8,
+            vignette_intensity: 0.35,
+            exposure: 1.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneDef {
     pub camera: CameraDef,
+    #[serde(default)]
+    pub post_process: Option<PostProcessDef>,
     pub entities: Vec<EntityDef>,
 }
 
@@ -99,6 +133,7 @@ impl Default for SceneDef {
                 target: [0.0, 0.0, 0.0],
                 ortho_size: 10.0,
             },
+            post_process: Some(PostProcessDef::default()),
             entities: vec![
                 EntityDef {
                     id: "cube_red".to_string(),
@@ -240,6 +275,7 @@ pub fn extract_scene_from_world(
 
     SceneDef {
         camera: camera_def,
+        post_process: None,
         entities,
     }
 }

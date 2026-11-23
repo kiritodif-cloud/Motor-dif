@@ -1,217 +1,1564 @@
 {
-  "camera": {
-    "mode": "3d",
-    "position": [
-      0.0,
-      3.8,
-      8.5
-    ],
-    "target": [
-      0.0,
-      1.0,
-      0.0
-    ],
-    "ortho_size": 10.0
-  },
-  "entities": [
-    {
-      "id": "pedestal",
-      "mesh": "cube",
-      "position": [
-        0.0,
-        0.5,
-        0.0
-      ],
-      "rotation": [
-        0.0,
-        0.0,
-        0.0
-      ],
-      "scale": [
-        1.0,
-        1.0,
-        1.0
-      ],
-      "texture": null,
-      "parent": null,
-      "color": [
-        0.85,
-        0.87999994,
-        0.95,
-        1.0
-      ],
-      "emissive": 0.0,
-      "script": null,
-      "physics": null,
-      "point_light": null
-    },
-    {
-      "id": "sprite_hero",
-      "mesh": "quad",
-      "position": [
-        -2.2,
-        1.2,
-        0.5
-      ],
-      "rotation": [
-        0.0,
-        0.0,
-        0.0
-      ],
-      "scale": [
-        1.2,
-        1.2,
-        1.0
-      ],
-      "texture": "assets/textures/spritesheet_test.png",
-      "parent": null,
-      "color": [
-        1.0,
-        1.0,
-        1.0,
-        1.0
-      ],
-      "emissive": 0.2,
-      "script": null,
-      "physics": null,
-      "point_light": null
-    },
-    {
-      "id": "crystal_pillar",
-      "mesh": "cylinder",
-      "position": [
-        2.5,
-        1.0,
-        -2.0
-      ],
-      "rotation": [
-        0.0,
-        0.0,
-        0.0
-      ],
-      "scale": [
-        0.5,
-        2.0,
-        0.5
-      ],
-      "texture": null,
-      "parent": null,
-      "color": [
-        0.3,
-        0.85,
-        1.0,
-        1.0
-      ],
-      "emissive": 0.3,
-      "script": null,
-      "physics": null,
-      "point_light": null
-    },
-    {
-      "id": "floor",
-      "mesh": "plane",
-      "position": [
-        0.0,
-        0.0,
-        0.0
-      ],
-      "rotation": [
-        0.0,
-        0.0,
-        0.0
-      ],
-      "scale": [
-        15.0,
-        1.0,
-        15.0
-      ],
-      "texture": "assets/textures/checker.png",
-      "parent": null,
-      "color": [
-        1.0,
-        1.0,
-        1.0,
-        1.0
-      ],
-      "emissive": 0.0,
-      "script": null,
-      "physics": {
-        "body": "fixed",
-        "collider": "cuboid",
-        "mass": 0.0,
-        "restitution": 0.5
-      },
-      "point_light": null
-    },
-    {
-      "id": "orbit_parent",
-      "mesh": "sphere",
-      "position": [
-        0.0,
-        1.5,
-        0.0
-      ],
-      "rotation": [
-        0.0,
-        0.0,
-        0.0
-      ],
-      "scale": [
-        0.3,
-        0.3,
-        0.3
-      ],
-      "texture": null,
-      "parent": null,
-      "color": [
-        0.5,
-        0.8,
-        1.0,
-        0.8
-      ],
-      "emissive": 0.5,
-      "script": "assets/scripts/indie_demo.lua",
-      "physics": null,
-      "point_light": null
-    },
-    {
-      "id": "orbit_child_orb",
-      "mesh": "sphere",
-      "position": [
-        2.5,
-        0.0,
-        0.0
-      ],
-      "rotation": [
-        0.0,
-        0.0,
-        0.0
-      ],
-      "scale": [
-        0.45,
-        0.45,
-        0.45
-      ],
-      "texture": null,
-      "parent": "orbit_parent",
-      "color": [
-        1.0,
-        0.9,
-        0.3,
-        1.0
-      ],
-      "emissive": 1.0,
-      "script": null,
-      "physics": null,
-      "point_light": {
-        "color": [
-          1.0,
-          0.8,
-          0.3
-        ],
-        "intensity": 5.0,
-        "radius": 12.0
-      }
-    }
-  ]
+    "camera":  {
+                   "position":  [
+                                    0,
+                                    22,
+                                    26
+                                ],
+                   "ortho_size":  20,
+                   "target":  [
+                                  0,
+                                  0,
+                                  9
+                              ],
+                   "mode":  "3d"
+               },
+    "entities":  [
+                     {
+                         "id":  "cosmic_field",
+                         "emissive":  0.05,
+                         "color":  [
+                                       0.03,
+                                       0.02,
+                                       0.06,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "plane",
+                         "scale":  [
+                                       160,
+                                       1,
+                                       160
+                                   ],
+                         "position":  [
+                                          0,
+                                          -0.6,
+                                          0
+                                      ]
+                     },
+                     {
+                         "id":  "sanctuary_outer_ring",
+                         "emissive":  0.95,
+                         "color":  [
+                                       0,
+                                       1,
+                                       0.55,
+                                       0.45
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "cylinder",
+                         "scale":  [
+                                       28,
+                                       0.08,
+                                       28
+                                   ],
+                         "position":  [
+                                          0,
+                                          -0.4,
+                                          0
+                                      ]
+                     },
+                     {
+                         "scale":  [
+                                       2.8,
+                                       2.8,
+                                       2.8
+                                   ],
+                         "id":  "sanctuary_core",
+                         "color":  [
+                                       0,
+                                       0.9,
+                                       1,
+                                       1
+                                   ],
+                         "mesh":  "sphere",
+                         "emissive":  1,
+                         "point_light":  {
+                                             "radius":  24,
+                                             "color":  [
+                                                           0,
+                                                           1,
+                                                           0.6
+                                                       ],
+                                             "intensity":  3.5
+                                         },
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "position":  [
+                                          0,
+                                          0.2,
+                                          0
+                                      ]
+                     },
+                     {
+                         "mesh":  "sphere",
+                         "id":  "player_star",
+                         "color":  [
+                                       0.1,
+                                       0.7,
+                                       1,
+                                       1
+                                   ],
+                         "point_light":  {
+                                             "radius":  16,
+                                             "color":  [
+                                                           0.1,
+                                                           0.7,
+                                                           1
+                                                       ],
+                                             "intensity":  2.5
+                                         },
+                         "scale":  [
+                                       2.2,
+                                       2.2,
+                                       2.2
+                                   ],
+                         "script":  "assets/scripts/player_cosmos.lua",
+                         "emissive":  1,
+                         "position":  [
+                                          0,
+                                          0,
+                                          9
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ]
+                     },
+                     {
+                         "scale":  [
+                                       2.4,
+                                       2.4,
+                                       2.4
+                                   ],
+                         "id":  "bot_sirius",
+                         "color":  [
+                                       0.9,
+                                       0.95,
+                                       1,
+                                       1
+                                   ],
+                         "mesh":  "sphere",
+                         "script":  "assets/scripts/bot_cosmos.lua",
+                         "emissive":  0.9,
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "position":  [
+                                          -22,
+                                          0,
+                                          -18
+                                      ]
+                     },
+                     {
+                         "scale":  [
+                                       3.2,
+                                       3.2,
+                                       3.2
+                                   ],
+                         "id":  "bot_betelgeuse",
+                         "color":  [
+                                       1,
+                                       0.25,
+                                       0.1,
+                                       1
+                                   ],
+                         "mesh":  "sphere",
+                         "script":  "assets/scripts/bot_cosmos.lua",
+                         "emissive":  0.9,
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "position":  [
+                                          28,
+                                          0,
+                                          -22
+                                      ]
+                     },
+                     {
+                         "scale":  [
+                                       2,
+                                       2,
+                                       2
+                                   ],
+                         "id":  "bot_vega",
+                         "color":  [
+                                       0.2,
+                                       0.9,
+                                       0.7,
+                                       1
+                                   ],
+                         "mesh":  "sphere",
+                         "script":  "assets/scripts/bot_cosmos.lua",
+                         "emissive":  0.85,
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "position":  [
+                                          -30,
+                                          0,
+                                          24
+                                      ]
+                     },
+                     {
+                         "scale":  [
+                                       1.8,
+                                       1.8,
+                                       1.8
+                                   ],
+                         "id":  "bot_kepler",
+                         "color":  [
+                                       1,
+                                       0.8,
+                                       0.2,
+                                       1
+                                   ],
+                         "mesh":  "sphere",
+                         "script":  "assets/scripts/bot_cosmos.lua",
+                         "emissive":  0.85,
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "position":  [
+                                          24,
+                                          0,
+                                          26
+                                      ]
+                     },
+                     {
+                         "mesh":  "sphere",
+                         "id":  "boss_apophis",
+                         "color":  [
+                                       0.85,
+                                       0.05,
+                                       0.18,
+                                       1
+                                   ],
+                         "point_light":  {
+                                             "radius":  25,
+                                             "color":  [
+                                                           1,
+                                                           0.1,
+                                                           0.2
+                                                       ],
+                                             "intensity":  4
+                                         },
+                         "scale":  [
+                                       4.8,
+                                       4.8,
+                                       4.8
+                                   ],
+                         "script":  "assets/scripts/boss_leviathan.lua",
+                         "emissive":  1,
+                         "position":  [
+                                          48,
+                                          0,
+                                          0
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ]
+                     },
+                     {
+                         "scale":  [
+                                       8,
+                                       0.08,
+                                       8
+                                   ],
+                         "id":  "boss_ring",
+                         "color":  [
+                                       1,
+                                       0.45,
+                                       0,
+                                       0.8
+                                   ],
+                         "mesh":  "cylinder",
+                         "parent":  "boss_apophis",
+                         "emissive":  1,
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "position":  [
+                                          48,
+                                          0,
+                                          0
+                                      ]
+                     },
+                     {
+                         "scale":  [
+                                       3.5,
+                                       3.5,
+                                       3.5
+                                   ],
+                         "id":  "black_hole_1",
+                         "color":  [
+                                       0.01,
+                                       0,
+                                       0.03,
+                                       1
+                                   ],
+                         "mesh":  "sphere",
+                         "script":  "assets/scripts/black_hole.lua",
+                         "emissive":  0.05,
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "position":  [
+                                          -42,
+                                          0,
+                                          -32
+                                      ]
+                     },
+                     {
+                         "scale":  [
+                                       7.5,
+                                       0.05,
+                                       7.5
+                                   ],
+                         "id":  "bh1_disk",
+                         "color":  [
+                                       0.75,
+                                       0,
+                                       0.9,
+                                       0.8
+                                   ],
+                         "mesh":  "cylinder",
+                         "parent":  "black_hole_1",
+                         "emissive":  1,
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "position":  [
+                                          -42,
+                                          -0.1,
+                                          -32
+                                      ]
+                     },
+                     {
+                         "scale":  [
+                                       3.5,
+                                       3.5,
+                                       3.5
+                                   ],
+                         "id":  "black_hole_2",
+                         "color":  [
+                                       0.01,
+                                       0,
+                                       0.03,
+                                       1
+                                   ],
+                         "mesh":  "sphere",
+                         "script":  "assets/scripts/black_hole.lua",
+                         "emissive":  0.05,
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "position":  [
+                                          45,
+                                          0,
+                                          35
+                                      ]
+                     },
+                     {
+                         "scale":  [
+                                       7.5,
+                                       0.05,
+                                       7.5
+                                   ],
+                         "id":  "bh2_disk",
+                         "color":  [
+                                       0.9,
+                                       0.3,
+                                       0,
+                                       0.8
+                                   ],
+                         "mesh":  "cylinder",
+                         "parent":  "black_hole_2",
+                         "emissive":  1,
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "position":  [
+                                          45,
+                                          -0.1,
+                                          35
+                                      ]
+                     },
+                     {
+                         "id":  "wormhole_a",
+                         "emissive":  1,
+                         "color":  [
+                                       0,
+                                       1,
+                                       0.85,
+                                       0.85
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "cylinder",
+                         "scale":  [
+                                       3.6,
+                                       0.1,
+                                       3.6
+                                   ],
+                         "position":  [
+                                          -50,
+                                          0,
+                                          42
+                                      ]
+                     },
+                     {
+                         "id":  "wormhole_b",
+                         "emissive":  1,
+                         "color":  [
+                                       1,
+                                       0.1,
+                                       0.75,
+                                       0.85
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "cylinder",
+                         "scale":  [
+                                       3.6,
+                                       0.1,
+                                       3.6
+                                   ],
+                         "position":  [
+                                          50,
+                                          0,
+                                          -42
+                                      ]
+                     },
+                     {
+                         "id":  "powerup_speed",
+                         "emissive":  1,
+                         "color":  [
+                                       1,
+                                       1,
+                                       0,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       1.2,
+                                       1.2,
+                                       1.2
+                                   ],
+                         "position":  [
+                                          -14,
+                                          0,
+                                          16
+                                      ]
+                     },
+                     {
+                         "id":  "powerup_shield",
+                         "emissive":  1,
+                         "color":  [
+                                       0,
+                                       0.85,
+                                       1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       1.2,
+                                       1.2,
+                                       1.2
+                                   ],
+                         "position":  [
+                                          16,
+                                          0,
+                                          -14
+                                      ]
+                     },
+                     {
+                         "id":  "food_1",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.15,
+                                       0.65,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          29.59,
+                                          0,
+                                          36.18
+                                      ]
+                     },
+                     {
+                         "id":  "food_2",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.1,
+                                       0.95,
+                                       0.85,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -18.34,
+                                          0,
+                                          -2.64
+                                      ]
+                     },
+                     {
+                         "id":  "food_3",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.2,
+                                       1,
+                                       0.35,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -1.64,
+                                          0,
+                                          20.69
+                                      ]
+                     },
+                     {
+                         "id":  "food_4",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.45,
+                                       0.1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -49.51,
+                                          0,
+                                          -4.03
+                                      ]
+                     },
+                     {
+                         "id":  "food_5",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.7,
+                                       0.2,
+                                       1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          1.49,
+                                          0,
+                                          -20.98
+                                      ]
+                     },
+                     {
+                         "id":  "food_6",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.85,
+                                       0.1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -1.11,
+                                          0,
+                                          24.17
+                                      ]
+                     },
+                     {
+                         "id":  "food_7",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.15,
+                                       0.65,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -16.35,
+                                          0,
+                                          34.62
+                                      ]
+                     },
+                     {
+                         "id":  "food_8",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.1,
+                                       0.95,
+                                       0.85,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -2.05,
+                                          0,
+                                          31.74
+                                      ]
+                     },
+                     {
+                         "id":  "food_9",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.2,
+                                       1,
+                                       0.35,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          37.95,
+                                          0,
+                                          8.56
+                                      ]
+                     },
+                     {
+                         "id":  "food_10",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.45,
+                                       0.1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -48.07,
+                                          0,
+                                          -25.33
+                                      ]
+                     },
+                     {
+                         "id":  "food_11",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.7,
+                                       0.2,
+                                       1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          18.84,
+                                          0,
+                                          26.69
+                                      ]
+                     },
+                     {
+                         "id":  "food_12",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.85,
+                                       0.1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -4.64,
+                                          0,
+                                          -16.03
+                                      ]
+                     },
+                     {
+                         "id":  "food_13",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.15,
+                                       0.65,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -52.73,
+                                          0,
+                                          -13.53
+                                      ]
+                     },
+                     {
+                         "id":  "food_14",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.1,
+                                       0.95,
+                                       0.85,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -3.45,
+                                          0,
+                                          -13.87
+                                      ]
+                     },
+                     {
+                         "id":  "food_15",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.2,
+                                       1,
+                                       0.35,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          16.36,
+                                          0,
+                                          -10.94
+                                      ]
+                     },
+                     {
+                         "id":  "food_16",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.45,
+                                       0.1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -47.76,
+                                          0,
+                                          -4.94
+                                      ]
+                     },
+                     {
+                         "id":  "food_17",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.7,
+                                       0.2,
+                                       1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          20.96,
+                                          0,
+                                          5.59
+                                      ]
+                     },
+                     {
+                         "id":  "food_18",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.85,
+                                       0.1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -24.29,
+                                          0,
+                                          -13.99
+                                      ]
+                     },
+                     {
+                         "id":  "food_19",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.15,
+                                       0.65,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          54.68,
+                                          0,
+                                          1.36
+                                      ]
+                     },
+                     {
+                         "id":  "food_20",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.1,
+                                       0.95,
+                                       0.85,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          13.54,
+                                          0,
+                                          -37.49
+                                      ]
+                     },
+                     {
+                         "id":  "food_21",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.2,
+                                       1,
+                                       0.35,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -38.1,
+                                          0,
+                                          33.77
+                                      ]
+                     },
+                     {
+                         "id":  "food_22",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.45,
+                                       0.1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          19.48,
+                                          0,
+                                          3.25
+                                      ]
+                     },
+                     {
+                         "id":  "food_23",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.7,
+                                       0.2,
+                                       1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          2.89,
+                                          0,
+                                          -14.36
+                                      ]
+                     },
+                     {
+                         "id":  "food_24",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.85,
+                                       0.1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          33.4,
+                                          0,
+                                          29.52
+                                      ]
+                     },
+                     {
+                         "id":  "food_25",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.15,
+                                       0.65,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          3.51,
+                                          0,
+                                          -24.75
+                                      ]
+                     },
+                     {
+                         "id":  "food_26",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.1,
+                                       0.95,
+                                       0.85,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -16.16,
+                                          0,
+                                          -21.7
+                                      ]
+                     },
+                     {
+                         "id":  "food_27",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.2,
+                                       1,
+                                       0.35,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          18.71,
+                                          0,
+                                          5.37
+                                      ]
+                     },
+                     {
+                         "id":  "food_28",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.45,
+                                       0.1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -43.22,
+                                          0,
+                                          -4.34
+                                      ]
+                     },
+                     {
+                         "id":  "food_29",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.7,
+                                       0.2,
+                                       1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -12.85,
+                                          0,
+                                          7.02
+                                      ]
+                     },
+                     {
+                         "id":  "food_30",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.85,
+                                       0.1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -33.71,
+                                          0,
+                                          -35.21
+                                      ]
+                     },
+                     {
+                         "id":  "food_31",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.15,
+                                       0.65,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          23.28,
+                                          0,
+                                          1.94
+                                      ]
+                     },
+                     {
+                         "id":  "food_32",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.1,
+                                       0.95,
+                                       0.85,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -3.39,
+                                          0,
+                                          30.8
+                                      ]
+                     },
+                     {
+                         "id":  "food_33",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.2,
+                                       1,
+                                       0.35,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -3.09,
+                                          0,
+                                          -15.26
+                                      ]
+                     },
+                     {
+                         "id":  "food_34",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.45,
+                                       0.1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -15.29,
+                                          0,
+                                          3.51
+                                      ]
+                     },
+                     {
+                         "id":  "food_35",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.7,
+                                       0.2,
+                                       1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          3.74,
+                                          0,
+                                          -12.06
+                                      ]
+                     },
+                     {
+                         "id":  "food_36",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.85,
+                                       0.1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          -34.71,
+                                          0,
+                                          -2.95
+                                      ]
+                     },
+                     {
+                         "id":  "food_37",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.15,
+                                       0.65,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          37.92,
+                                          0,
+                                          2.14
+                                      ]
+                     },
+                     {
+                         "id":  "food_38",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.1,
+                                       0.95,
+                                       0.85,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          54.92,
+                                          0,
+                                          4.46
+                                      ]
+                     },
+                     {
+                         "id":  "food_39",
+                         "emissive":  0.85,
+                         "color":  [
+                                       0.2,
+                                       1,
+                                       0.35,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          11.2,
+                                          0,
+                                          4.74
+                                      ]
+                     },
+                     {
+                         "id":  "food_40",
+                         "emissive":  0.85,
+                         "color":  [
+                                       1,
+                                       0.45,
+                                       0.1,
+                                       1
+                                   ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "mesh":  "sphere",
+                         "scale":  [
+                                       0.42,
+                                       0.42,
+                                       0.42
+                                   ],
+                         "position":  [
+                                          44.94,
+                                          0,
+                                          9.91
+                                      ]
+                     }
+                 ]
 }

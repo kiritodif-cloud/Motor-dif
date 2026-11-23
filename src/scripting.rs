@@ -113,6 +113,8 @@ pub struct LuaEngineContext {
     pub hud_texts: Arc<RwLock<HashMap<String, String>>>,
     pub world_entities: Arc<RwLock<HashMap<String, [f32; 9]>>>,
     pub audio: Arc<Mutex<crate::audio::AudioManager>>,
+    pub pending_post_process: Arc<Mutex<Option<crate::assets::PostProcessDef>>>,
+    pub post_process_settings: Arc<RwLock<crate::assets::PostProcessDef>>,
 }
 
 pub fn check_key_match(keys: &HashSet<String>, clean: &str) -> bool {
@@ -169,6 +171,8 @@ impl LuaEngineContext {
             hud_texts: Arc::new(RwLock::new(HashMap::new())),
             world_entities: Arc::new(RwLock::new(HashMap::new())),
             audio,
+            pending_post_process: Arc::new(Mutex::new(None)),
+            post_process_settings: Arc::new(RwLock::new(crate::assets::PostProcessDef::default())),
         }
     }
 }
@@ -389,7 +393,11 @@ impl ScriptComponent {
         let set_hud_text = lua
             .create_function(move |_, (key, text): (String, String)| {
                 if let Ok(mut map) = hud_ref.write() {
-                    map.insert(key, text);
+                    if text.trim().is_empty() {
+                        map.remove(&key);
+                    } else {
+                        map.insert(key, text);
+                    }
                 }
                 Ok(())
             })
@@ -727,6 +735,52 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register set_sprite_frame: {}", e))?;
         lua.globals()
             .set("set_sprite_frame", set_sprite_frame)
+            .map_err(|e| e.to_string())?;
+
+        // 25. set_post_process(bloom_intensity, vignette_intensity, exposure)
+        let pp_settings_ref = ctx.post_process_settings.clone();
+        let pending_pp_ref = ctx.pending_post_process.clone();
+        let set_post_process = lua
+            .create_function(
+                move |_, (bloom_int, vig_int, exp): (f32, Option<f32>, Option<f32>)| {
+                    let mut pp = pp_settings_ref.read().map(|s| s.clone()).unwrap_or_default();
+                    pp.bloom_intensity = bloom_int;
+                    if let Some(v) = vig_int {
+                        pp.vignette_intensity = v;
+                    }
+                    if let Some(e) = exp {
+                        pp.exposure = e;
+                    }
+                    if let Ok(mut lock) = pp_settings_ref.write() {
+                        *lock = pp.clone();
+                    }
+                    if let Ok(mut pending) = pending_pp_ref.lock() {
+                        *pending = Some(pp);
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register set_post_process: {}", e))?;
+        lua.globals()
+            .set("set_post_process", set_post_process)
+            .map_err(|e| e.to_string())?;
+
+        // 26. get_post_process()
+        let pp_settings_get_ref = ctx.post_process_settings.clone();
+        let get_post_process = lua
+            .create_function(move |lua, ()| {
+                let pp = pp_settings_get_ref.read().map(|s| s.clone()).unwrap_or_default();
+                let table = lua.create_table()?;
+                table.set("bloom_enabled", pp.bloom_enabled)?;
+                table.set("bloom_intensity", pp.bloom_intensity)?;
+                table.set("bloom_threshold", pp.bloom_threshold)?;
+                table.set("vignette_intensity", pp.vignette_intensity)?;
+                table.set("exposure", pp.exposure)?;
+                Ok(table)
+            })
+            .map_err(|e| format!("Failed to register get_post_process: {}", e))?;
+        lua.globals()
+            .set("get_post_process", get_post_process)
             .map_err(|e| e.to_string())?;
 
         // Execute the script chunk to define on_update, on_collision, and globals

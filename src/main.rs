@@ -145,6 +145,8 @@ pub struct EngineState {
     pub particles: particles::ParticleSystem,
     pub tweens: TweenManager,
     pub is_standalone_play: bool,
+    pub post_process_settings: assets::PostProcessDef,
+    pub total_time: f32,
 
     // Editor State
     pub play_mode: PlayMode,
@@ -326,14 +328,21 @@ impl EngineState {
             }
         }
 
+        let mut loaded_pp = assets::PostProcessDef::default();
         match assets::load_scene_from_file(scene_path) {
             Ok(scene) => {
+                if let Some(pp) = &scene.post_process {
+                    loaded_pp = pp.clone();
+                }
                 assets::apply_scene_to_world(&scene, &mut world, &mut camera, &mut physics, Some(&lua_ctx));
                 logs.push(format!("Scene loaded from '{}' ({} entities)", initial_scene_path, world.len()));
             }
             Err(e) => {
                 logs.push(format!("Warning loading scene '{}': {}", initial_scene_path, e));
             }
+        }
+        if let Ok(mut lock) = lua_ctx.post_process_settings.write() {
+            *lock = loaded_pp.clone();
         }
 
         let hot_reload = match HotReloadManager::new("assets") {
@@ -403,6 +412,8 @@ impl EngineState {
             particles: particles::ParticleSystem::new(),
             tweens: TweenManager::new(),
             is_standalone_play,
+            post_process_settings: loaded_pp,
+            total_time: 0.0,
 
             play_mode: if is_standalone_play { PlayMode::Play } else { PlayMode::Edit },
             play_snapshot: None,
@@ -484,7 +495,8 @@ impl EngineState {
     }
 
     pub fn save_scene_to_file(&mut self, path: &str) {
-        let scene = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
+        let mut scene = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
+        scene.post_process = Some(self.post_process_settings.clone());
         self.hot_reload.suppress_scene_events(std::time::Duration::from_millis(600));
         match assets::save_scene_to_file(path, &scene) {
             Ok(()) => {
@@ -504,6 +516,12 @@ impl EngineState {
         match assets::load_scene_from_file("assets/scene.json") {
             Ok(scene) => {
                 assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
+                if let Some(pp) = &scene.post_process {
+                    self.post_process_settings = pp.clone();
+                    if let Ok(mut lock) = self.lua_ctx.post_process_settings.write() {
+                        *lock = pp.clone();
+                    }
+                }
                 self.selected_entity = None;
                 self.hot_reload.last_reload_error = None;
                 let msg = format!("Hot-Reload: Scene successfully reloaded ({} entities)", self.world.len());
@@ -1411,6 +1429,14 @@ impl EngineState {
         let now = Instant::now();
         let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
         self.last_frame_time = now;
+        self.total_time += dt;
+
+        // Drain pending post process updates from Lua
+        if let Ok(mut pending_pp) = self.lua_ctx.pending_post_process.lock() {
+            if let Some(pp) = pending_pp.take() {
+                self.post_process_settings = pp;
+            }
+        }
 
         self.frame_counter += 1;
         if self.fps_timer.elapsed().as_secs_f32() >= 0.5 {
@@ -2499,6 +2525,15 @@ impl EngineState {
                             ui.label("No entity selected.");
                             ui.label("Select an entity from the hierarchy or viewport to inspect and modify it.");
                         }
+
+                        ui.add_space(8.0);
+                        ui_theme::collapsible_card(ui, "insp_post_process", "Post-Processing (HDR)", false, |ui| {
+                            ui.checkbox(&mut self.post_process_settings.bloom_enabled, "Bloom Glow");
+                            ui.add(egui::Slider::new(&mut self.post_process_settings.bloom_intensity, 0.0..=3.0).text("Bloom Intensity"));
+                            ui.add(egui::Slider::new(&mut self.post_process_settings.bloom_threshold, 0.1..=2.5).text("Threshold"));
+                            ui.add(egui::Slider::new(&mut self.post_process_settings.vignette_intensity, 0.0..=1.0).text("Vignette"));
+                            ui.add(egui::Slider::new(&mut self.post_process_settings.exposure, 0.1..=3.0).text("Exposure"));
+                        });
                     });
 
                 // 4. BOTTOM PANEL: CONSOLE, ASSETS BROWSER, SCRIPT EDITOR
@@ -3534,12 +3569,29 @@ impl EngineState {
             &screen_descriptor,
         );
 
-        // 1. 3D Scene Render Pass
+        // Update Post-Processing Uniform Buffer
+        let pp_uniform = renderer::PostProcessUniform {
+            bloom_enabled: if self.post_process_settings.bloom_enabled { 1 } else { 0 },
+            bloom_intensity: self.post_process_settings.bloom_intensity,
+            bloom_threshold: self.post_process_settings.bloom_threshold,
+            vignette_intensity: self.post_process_settings.vignette_intensity,
+            exposure: self.post_process_settings.exposure,
+            time: self.total_time,
+            screen_width: self.gpu.config.width as f32,
+            screen_height: self.gpu.config.height as f32,
+        };
+        self.gpu.queue.write_buffer(
+            &self.gpu.post_process.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[pp_uniform]),
+        );
+
+        // 1. 3D Scene Render Pass (HDR)
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("3D Scene Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: &self.gpu.post_process.hdr_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -3634,7 +3686,30 @@ impl EngineState {
             }
         }
 
-        // 2. Egui Overlay Render Pass
+        // 2. Fullscreen HDR Post-Processing Pass (Bloom + ACES Tone Mapping + Vignette)
+        {
+            let mut pp_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Post Process Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+            pp_pass.set_pipeline(&self.gpu.post_process.pipeline);
+            pp_pass.set_bind_group(0, &self.gpu.post_process.bind_group, &[]);
+            pp_pass.draw(0..3, 0..1);
+        }
+
+        // 3. Egui Overlay Render Pass
         {
             let rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("egui Pass"),

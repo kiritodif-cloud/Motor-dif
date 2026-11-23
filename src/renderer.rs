@@ -273,6 +273,7 @@ pub struct GpuContext {
     pub meshes: HashMap<String, MeshGpu>,
     pub egui_renderer: egui_wgpu::Renderer,
     pub egui_winit_state: egui_winit::State,
+    pub post_process: PostProcessPipeline,
 }
 
 const SHADER_SOURCE: &str = r#"
@@ -466,6 +467,319 @@ fn fs_line(in: LineVertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+pub const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+pub fn create_hdr_texture(device: &wgpu::Device, width: u32, height: u32) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("HDR Render Target"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: HDR_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct PostProcessUniform {
+    pub bloom_enabled: u32,
+    pub bloom_intensity: f32,
+    pub bloom_threshold: f32,
+    pub vignette_intensity: f32,
+    pub exposure: f32,
+    pub time: f32,
+    pub screen_width: f32,
+    pub screen_height: f32,
+}
+
+impl Default for PostProcessUniform {
+    fn default() -> Self {
+        Self {
+            bloom_enabled: 1,
+            bloom_intensity: 0.8,
+            bloom_threshold: 0.8,
+            vignette_intensity: 0.35,
+            exposure: 1.0,
+            time: 0.0,
+            screen_width: 1280.0,
+            screen_height: 720.0,
+        }
+    }
+}
+
+pub struct PostProcessPipeline {
+    pub pipeline: wgpu::RenderPipeline,
+    pub bind_group_layout: wgpu::BindGroupLayout,
+    pub bind_group: wgpu::BindGroup,
+    pub uniform_buffer: wgpu::Buffer,
+    pub sampler: wgpu::Sampler,
+    pub hdr_texture: wgpu::Texture,
+    pub hdr_view: wgpu::TextureView,
+}
+
+const POST_PROCESS_SHADER_SOURCE: &str = r#"
+struct PostProcessUniform {
+    bloom_enabled: u32,
+    bloom_intensity: f32,
+    bloom_threshold: f32,
+    vignette_intensity: f32,
+    exposure: f32,
+    time: f32,
+    screen_width: f32,
+    screen_height: f32,
+};
+
+@group(0) @binding(0)
+var hdr_texture: texture_2d<f32>;
+@group(0) @binding(1)
+var hdr_sampler: sampler;
+@group(0) @binding(2)
+var<uniform> pp: PostProcessUniform;
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_post_process(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var out: VertexOutput;
+    let uv = vec2<f32>(f32((vertex_index << 1u) & 2u), f32(vertex_index & 2u));
+    out.position = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
+    out.uv = uv;
+    return out;
+}
+
+fn aces_filmic(x: vec3<f32>) -> vec3<f32> {
+    let a = 2.51;
+    let b = 0.03;
+    let c = 2.43;
+    let d = 0.59;
+    let e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+@fragment
+fn fs_post_process(in: VertexOutput) -> @location(0) vec4<f32> {
+    let base_color = textureSample(hdr_texture, hdr_sampler, in.uv).rgb;
+    var final_color = base_color * pp.exposure;
+
+    if (pp.bloom_enabled != 0u && pp.bloom_intensity > 0.0) {
+        let tex_offset = vec2<f32>(1.5 / max(pp.screen_width, 1.0), 1.5 / max(pp.screen_height, 1.0));
+        var bloom_sum = vec3<f32>(0.0);
+
+        // 9-tap kernel sampling with Gaussian weights
+        // Center
+        let c_bright = max(base_color - vec3<f32>(pp.bloom_threshold), vec3<f32>(0.0));
+        bloom_sum += c_bright * 0.25;
+
+        // Cross
+        let c_up = textureSample(hdr_texture, hdr_sampler, in.uv + vec2<f32>(0.0, tex_offset.y)).rgb;
+        let c_dn = textureSample(hdr_texture, hdr_sampler, in.uv - vec2<f32>(0.0, tex_offset.y)).rgb;
+        let c_lf = textureSample(hdr_texture, hdr_sampler, in.uv - vec2<f32>(tex_offset.x, 0.0)).rgb;
+        let c_rt = textureSample(hdr_texture, hdr_sampler, in.uv + vec2<f32>(tex_offset.x, 0.0)).rgb;
+
+        bloom_sum += max(c_up - vec3<f32>(pp.bloom_threshold), vec3<f32>(0.0)) * 0.125;
+        bloom_sum += max(c_dn - vec3<f32>(pp.bloom_threshold), vec3<f32>(0.0)) * 0.125;
+        bloom_sum += max(c_lf - vec3<f32>(pp.bloom_threshold), vec3<f32>(0.0)) * 0.125;
+        bloom_sum += max(c_rt - vec3<f32>(pp.bloom_threshold), vec3<f32>(0.0)) * 0.125;
+
+        // Diagonal taps with wider spread for soft bloom halo
+        let diag_offset = tex_offset * 2.0;
+        let c_ul = textureSample(hdr_texture, hdr_sampler, in.uv + vec2<f32>(-diag_offset.x, diag_offset.y)).rgb;
+        let c_ur = textureSample(hdr_texture, hdr_sampler, in.uv + vec2<f32>(diag_offset.x, diag_offset.y)).rgb;
+        let c_dl = textureSample(hdr_texture, hdr_sampler, in.uv + vec2<f32>(-diag_offset.x, -diag_offset.y)).rgb;
+        let c_dr = textureSample(hdr_texture, hdr_sampler, in.uv + vec2<f32>(diag_offset.x, -diag_offset.y)).rgb;
+
+        bloom_sum += max(c_ul - vec3<f32>(pp.bloom_threshold), vec3<f32>(0.0)) * 0.0625;
+        bloom_sum += max(c_ur - vec3<f32>(pp.bloom_threshold), vec3<f32>(0.0)) * 0.0625;
+        bloom_sum += max(c_dl - vec3<f32>(pp.bloom_threshold), vec3<f32>(0.0)) * 0.0625;
+        bloom_sum += max(c_dr - vec3<f32>(pp.bloom_threshold), vec3<f32>(0.0)) * 0.0625;
+
+        final_color += bloom_sum * pp.bloom_intensity;
+    }
+
+    // ACES Filmic Tone Mapping
+    final_color = aces_filmic(final_color);
+
+    // Subtle Vignette
+    if (pp.vignette_intensity > 0.0) {
+        let dist = distance(in.uv, vec2<f32>(0.5, 0.5));
+        let vig = clamp(1.0 - smoothstep(0.2, 0.8, dist) * pp.vignette_intensity, 0.0, 1.0);
+        final_color *= vig;
+    }
+
+    return vec4<f32>(final_color, 1.0);
+}
+"#;
+
+impl PostProcessPipeline {
+    pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat, width: u32, height: u32) -> Self {
+        let (hdr_texture, hdr_view) = create_hdr_texture(device, width, height);
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("HDR Post Process Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let uniform = PostProcessUniform {
+            screen_width: width as f32,
+            screen_height: height as f32,
+            ..Default::default()
+        };
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Post Process Uniform Buffer"),
+            contents: bytemuck::cast_slice(&[uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Post Process Bind Group Layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Post Process Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&hdr_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Post Process Shader"),
+            source: wgpu::ShaderSource::Wgsl(POST_PROCESS_SHADER_SOURCE.into()),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Post Process Pipeline Layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Post Process Render Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_post_process"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_post_process"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        Self {
+            pipeline,
+            bind_group_layout,
+            bind_group,
+            uniform_buffer,
+            sampler,
+            hdr_texture,
+            hdr_view,
+        }
+    }
+
+    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        let (hdr_texture, hdr_view) = create_hdr_texture(device, width, height);
+        self.hdr_texture = hdr_texture;
+        self.hdr_view = hdr_view;
+        self.bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Post Process Bind Group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.hdr_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+            ],
+        });
+    }
+}
+
 impl GpuContext {
     pub async fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
@@ -646,7 +960,7 @@ impl GpuContext {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
+                    format: HDR_FORMAT,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -703,7 +1017,7 @@ impl GpuContext {
                 module: &line_shader,
                 entry_point: Some("fs_line"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
+                    format: HDR_FORMAT,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -761,6 +1075,8 @@ impl GpuContext {
             egui_wgpu::RendererOptions::default(),
         );
 
+        let post_process = PostProcessPipeline::new(&device, config.format, config.width, config.height);
+
         Self {
             instance,
             surface,
@@ -784,6 +1100,7 @@ impl GpuContext {
             meshes,
             egui_renderer,
             egui_winit_state,
+            post_process,
         }
     }
 
@@ -865,6 +1182,7 @@ impl GpuContext {
                 new_size.height,
                 "depth_texture",
             );
+            self.post_process.resize(&self.device, new_size.width, new_size.height);
         }
     }
 
@@ -1568,5 +1886,7 @@ mod tests {
         assert_eq!(size_of::<PointLightRaw>(), 32);
         assert_eq!(size_of::<LightsUniform>(), 528);
         assert_eq!(size_of::<LightsUniform>() % 16, 0);
+        assert_eq!(size_of::<PostProcessUniform>(), 32);
+        assert_eq!(size_of::<PostProcessUniform>() % 16, 0);
     }
 }
