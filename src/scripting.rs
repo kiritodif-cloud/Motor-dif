@@ -138,6 +138,7 @@ pub struct LuaEngineContext {
     pub active_camera: Arc<RwLock<crate::camera::Camera>>,
     pub nav_grid: Arc<RwLock<crate::nav::NavGrid>>,
     pub pending_nav_bake: Arc<Mutex<Option<(f32, f32)>>>,
+    pub active_terrain: Arc<RwLock<Option<crate::level_forge::TerrainRecipe>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -303,6 +304,7 @@ impl LuaEngineContext {
             active_camera: Arc::new(RwLock::new(crate::camera::Camera::new_3d(glam::Vec3::new(0.0, 3.5, 9.0), glam::Vec3::ZERO, 16.0 / 9.0))),
             nav_grid: Arc::new(RwLock::new(crate::nav::NavGrid::new(1.0, 20.0))),
             pending_nav_bake: Arc::new(Mutex::new(None)),
+            active_terrain: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -1931,6 +1933,20 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register nav_is_blocked: {}", e))?;
         lua.globals().set("nav_is_blocked", nav_is_blocked).map_err(|e| e.to_string())?;
 
+        // 60. get_terrain_height(x, z) -> f32
+        let terrain_ref = ctx.active_terrain.clone();
+        let get_terrain_height = lua
+            .create_function(move |_, (x, z): (f32, f32)| {
+                if let Ok(guard) = terrain_ref.read() {
+                    if let Some(recipe) = guard.as_ref() {
+                        return Ok(crate::level_forge::sample_terrain_height(recipe, x, z));
+                    }
+                }
+                Ok(0.0)
+            })
+            .map_err(|e| format!("Failed to register get_terrain_height: {}", e))?;
+        lua.globals().set("get_terrain_height", get_terrain_height).map_err(|e| e.to_string())?;
+
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
             .exec()
@@ -2673,6 +2689,39 @@ mod tests {
         let baked_path = std::path::Path::new("assets/music/temp_test_menu.wav");
         assert!(baked_path.exists());
         let _ = std::fs::remove_file(baked_path);
+        let _ = std::fs::remove_file(test_script_path);
+    }
+
+    #[test]
+    fn test_terrain_height_lua_binding() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio.clone());
+
+        // Set active terrain
+        let mut recipe = crate::level_forge::TerrainRecipe::default();
+        recipe.max_height = 8.0;
+        recipe.noise_scale = 0.05;
+        *ctx.active_terrain.write().unwrap() = Some(recipe.clone());
+
+        let test_script_path = "assets/scripts/temp_terrain_test.lua";
+        let script_code = r#"
+            h = get_terrain_height(0.0, 0.0)
+        "#;
+        std::fs::write(test_script_path, script_code).unwrap();
+
+        let mut comp = ScriptComponent::new(test_script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Init failed: {:?}", res.err());
+
+        if let Some(lua_arc) = &comp.lua {
+            let lua = lua_arc.lock().unwrap();
+            let h: f32 = lua.globals().get("h").unwrap();
+            let expected = crate::level_forge::sample_terrain_height(&recipe, 0.0, 0.0);
+            assert!((h - expected).abs() < 1e-4, "Height mismatch: {} vs {}", h, expected);
+        }
+
         let _ = std::fs::remove_file(test_script_path);
     }
 }

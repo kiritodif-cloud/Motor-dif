@@ -199,6 +199,12 @@ pub struct EngineState {
     pub music_forge_recipe: crate::music_forge::MusicRecipe,
     pub music_forge_intensity: f32,
     pub music_forge_bake_name: String,
+    pub show_level_forge_window: bool,
+    pub level_forge_tab: usize,
+    pub level_forge_terrain: crate::level_forge::TerrainRecipe,
+    pub level_forge_terrain_out_name: String,
+    pub level_forge_dungeon: crate::level_forge::DungeonRecipe,
+    pub level_forge_scatter: crate::level_forge::ScatterRecipe,
     pub show_profiler: bool,
     pub frametime_history: std::collections::VecDeque<f32>,
     pub view_mode: renderer::ViewMode,
@@ -492,6 +498,12 @@ impl EngineState {
             music_forge_recipe: crate::music_forge::preset_space_ambient(),
             music_forge_intensity: 0.65,
             music_forge_bake_name: "cosmos_theme.wav".to_string(),
+            show_level_forge_window: false,
+            level_forge_tab: 0,
+            level_forge_terrain: crate::level_forge::TerrainRecipe::default(),
+            level_forge_terrain_out_name: "terrain_demo".to_string(),
+            level_forge_dungeon: crate::level_forge::DungeonRecipe::default(),
+            level_forge_scatter: crate::level_forge::ScatterRecipe::default(),
             show_profiler: false,
             frametime_history: std::collections::VecDeque::with_capacity(100),
             view_mode: renderer::ViewMode::Lit,
@@ -739,6 +751,320 @@ impl EngineState {
         visit_dirs(Path::new("assets"), &mut list);
         list.sort();
         self.assets_cache = list;
+    }
+
+    pub fn generate_and_insert_terrain(
+        &mut self,
+        recipe: &crate::level_forge::TerrainRecipe,
+        output_name: &str,
+        insert_in_scene: bool,
+    ) -> Result<crate::modeler::ForgeMesh, String> {
+        let clean_name = if output_name.trim().is_empty() {
+            "terrain_demo"
+        } else {
+            output_name.trim()
+        };
+        let out_path = if clean_name.ends_with(".glb") {
+            format!("assets/models/{}", clean_name)
+        } else {
+            format!("assets/models/{}.glb", clean_name)
+        };
+
+        recipe.bake_to_glb(&out_path)?;
+        let mesh = recipe.build_mesh();
+
+        // Update active terrain in lua_ctx for runtime queries
+        if let Ok(mut guard) = self.lua_ctx.active_terrain.write() {
+            *guard = Some(recipe.clone());
+        }
+
+        if insert_in_scene {
+            self.push_history();
+            self.gpu.ensure_mesh(&out_path);
+            self.entity_counter += 1;
+            let id = format!("terrain_{}", self.entity_counter);
+            let meta = EntityMeta {
+                id: id.clone(),
+                name: format!("Terrain ({})", recipe.name),
+                parent: None,
+            };
+            let transform = Transform::new(Vec3::ZERO, Vec3::ZERO, Vec3::ONE);
+            let mesh_render = MeshRender {
+                mesh_type: out_path.clone(),
+                color: [1.0, 1.0, 1.0, 1.0],
+                emissive: 0.0,
+                wireframe: Some(false),
+                texture: None,
+                blend_mode: Some("opaque".to_string()),
+                fresnel_color: None,
+                fresnel_power: None,
+                uv_scroll: None,
+            };
+
+            let tri_indices: Vec<[u32; 3]> = mesh
+                .indices
+                .chunks_exact(3)
+                .map(|c| [c[0], c[1], c[2]])
+                .collect();
+
+            let vert_vec3: Vec<Vec3> = mesh
+                .positions
+                .iter()
+                .map(|p| Vec3::new(p[0], p[1], p[2]))
+                .collect();
+
+            let spawned = if let Some(handle) = self.physics.add_trimesh_body(
+                &transform,
+                vert_vec3,
+                tri_indices,
+                false,
+            ) {
+                self.world.spawn((meta, transform, mesh_render, RigidBodyComponent { handle }))
+            } else {
+                self.world.spawn((meta, transform, mesh_render))
+            };
+
+            self.selected_entity = Some(spawned);
+            self.logs.push(format!(
+                "Level Forge: Generated and spawned terrain '{}' ({} verts, {} tris)",
+                out_path,
+                mesh.positions.len(),
+                mesh.indices.len() / 3
+            ));
+            self.add_toast(
+                format!("Terrain generated: {}", clean_name),
+                egui::Color32::from_rgb(34, 197, 94),
+            );
+        }
+
+        Ok(mesh)
+    }
+
+    pub fn generate_and_insert_dungeon(
+        &mut self,
+        recipe: &crate::level_forge::DungeonRecipe,
+        insert_in_scene: bool,
+    ) -> crate::level_forge::DungeonResult {
+        let result = crate::level_forge::generate_dungeon(recipe);
+
+        if insert_in_scene {
+            self.push_history();
+            let cell = recipe.cell_size;
+            let gw = recipe.grid_width.max(12);
+            let gh = recipe.grid_height.max(12);
+            let ox = -((gw as f32) * cell) * 0.5;
+            let oz = -((gh as f32) * cell) * 0.5;
+
+            // 1. Spawn Room Floors
+            for (idx, room) in result.rooms.iter().enumerate() {
+                self.entity_counter += 1;
+                let id = format!("dungeon_room_{}_{}", idx + 1, self.entity_counter);
+                let meta = EntityMeta {
+                    id: id.clone(),
+                    name: format!("Room Floor {}", idx + 1),
+                    parent: None,
+                };
+                let pos_x = ox + (room.center_x as f32 + 0.5) * cell;
+                let pos_z = oz + (room.center_y as f32 + 0.5) * cell;
+                let rw = room.width as f32 * cell;
+                let rh = room.height as f32 * cell;
+                let pos = Vec3::new(pos_x, -0.05, pos_z);
+                let scale = Vec3::new(rw, 0.1, rh);
+                let transform = Transform::new(pos, Vec3::ZERO, scale);
+                let mesh = MeshRender {
+                    mesh_type: "cube".to_string(),
+                    color: [0.22, 0.25, 0.28, 1.0],
+                    emissive: 0.0,
+                    wireframe: Some(false),
+                    texture: None,
+                    blend_mode: Some("opaque".to_string()),
+                    fresnel_color: None,
+                    fresnel_power: None,
+                    uv_scroll: None,
+                };
+                let phys_def = crate::assets::PhysicsDef {
+                    body: "fixed".to_string(),
+                    collider: "cuboid".to_string(),
+                    mass: 0.0,
+                    restitution: 0.0,
+                    is_sensor: Some(false),
+                };
+                let handle = self.physics.add_body(&transform, &phys_def);
+                self.world.spawn((meta, transform, mesh, RigidBodyComponent { handle }));
+            }
+
+            // 2. Spawn Walls around dungeon
+            for (w_idx, (gx, gy)) in result.wall_cells.iter().enumerate() {
+                self.entity_counter += 1;
+                let id = format!("dungeon_wall_{}_{}", w_idx + 1, self.entity_counter);
+                let meta = EntityMeta {
+                    id: id.clone(),
+                    name: format!("Wall {}", w_idx + 1),
+                    parent: None,
+                };
+                let wx = ox + (*gx as f32 + 0.5) * cell;
+                let wz = oz + (*gy as f32 + 0.5) * cell;
+                let pos = Vec3::new(wx, recipe.wall_height * 0.5, wz);
+                let scale = Vec3::new(cell, recipe.wall_height, cell);
+                let transform = Transform::new(pos, Vec3::ZERO, scale);
+                let mesh = MeshRender {
+                    mesh_type: "cube".to_string(),
+                    color: [0.35, 0.38, 0.42, 1.0],
+                    emissive: 0.0,
+                    wireframe: Some(false),
+                    texture: None,
+                    blend_mode: Some("opaque".to_string()),
+                    fresnel_color: None,
+                    fresnel_power: None,
+                    uv_scroll: None,
+                };
+                let phys_def = crate::assets::PhysicsDef {
+                    body: "fixed".to_string(),
+                    collider: "cuboid".to_string(),
+                    mass: 0.0,
+                    restitution: 0.0,
+                    is_sensor: Some(false),
+                };
+                let handle = self.physics.add_body(&transform, &phys_def);
+                self.world.spawn((meta, transform, mesh, RigidBodyComponent { handle }));
+            }
+
+            // 3. Spawn Point marker
+            self.entity_counter += 1;
+            let sp_meta = EntityMeta {
+                id: format!("dungeon_spawn_{}", self.entity_counter),
+                name: "Dungeon Spawn Point".to_string(),
+                parent: None,
+            };
+            let sp_trans = Transform::new(Vec3::from(result.spawn_point), Vec3::ZERO, Vec3::splat(0.6));
+            let sp_mesh = MeshRender {
+                mesh_type: "sphere".to_string(),
+                color: [0.2, 0.8, 0.3, 1.0],
+                emissive: 0.8,
+                wireframe: Some(false),
+                texture: None,
+                blend_mode: Some("opaque".to_string()),
+                fresnel_color: None,
+                fresnel_power: None,
+                uv_scroll: None,
+            };
+            self.world.spawn((sp_meta, sp_trans, sp_mesh));
+
+            // 4. Boss Point marker
+            self.entity_counter += 1;
+            let bp_meta = EntityMeta {
+                id: format!("dungeon_boss_{}", self.entity_counter),
+                name: "Dungeon Boss Point".to_string(),
+                parent: None,
+            };
+            let bp_trans = Transform::new(Vec3::from(result.boss_point), Vec3::ZERO, Vec3::splat(0.9));
+            let bp_mesh = MeshRender {
+                mesh_type: "sphere".to_string(),
+                color: [0.9, 0.15, 0.15, 1.0],
+                emissive: 1.0,
+                wireframe: Some(false),
+                texture: None,
+                blend_mode: Some("opaque".to_string()),
+                fresnel_color: None,
+                fresnel_power: None,
+                uv_scroll: None,
+            };
+            self.world.spawn((bp_meta, bp_trans, bp_mesh));
+
+            // 5. Loot Point markers
+            for (l_idx, loot_pos) in result.loot_points.iter().enumerate() {
+                self.entity_counter += 1;
+                let lp_meta = EntityMeta {
+                    id: format!("dungeon_loot_{}_{}", l_idx + 1, self.entity_counter),
+                    name: format!("Loot Chest {}", l_idx + 1),
+                    parent: None,
+                };
+                let lp_trans = Transform::new(Vec3::from(*loot_pos), Vec3::ZERO, Vec3::splat(0.5));
+                let lp_mesh = MeshRender {
+                    mesh_type: "cube".to_string(),
+                    color: [0.95, 0.75, 0.15, 1.0],
+                    emissive: 0.6,
+                    wireframe: Some(false),
+                    texture: None,
+                    blend_mode: Some("opaque".to_string()),
+                    fresnel_color: None,
+                    fresnel_power: None,
+                    uv_scroll: None,
+                };
+                self.world.spawn((lp_meta, lp_trans, lp_mesh));
+            }
+
+            self.logs.push(format!(
+                "Level Forge: Generated dungeon ({} rooms, {} wall cells, {} loot spots)",
+                result.rooms.len(),
+                result.wall_cells.len(),
+                result.loot_points.len()
+            ));
+            self.add_toast(
+                format!("Dungeon generated: {} rooms", result.rooms.len()),
+                egui::Color32::from_rgb(56, 189, 248),
+            );
+        }
+
+        result
+    }
+
+    pub fn generate_and_insert_scatter(
+        &mut self,
+        recipe: &crate::level_forge::ScatterRecipe,
+        terrain_recipe: Option<&crate::level_forge::TerrainRecipe>,
+    ) -> Vec<crate::level_forge::ScatterInstance> {
+        let instances = crate::level_forge::generate_scatter_instances(recipe, terrain_recipe);
+
+        if !instances.is_empty() {
+            self.push_history();
+            if recipe.prefab_or_mesh.ends_with(".glb") {
+                self.gpu.ensure_mesh(&recipe.prefab_or_mesh);
+            }
+
+            for inst in &instances {
+                self.entity_counter += 1;
+                let id = format!("scatter_{}_{}", recipe.prefab_or_mesh.replace('/', "_").replace('.', "_"), self.entity_counter);
+                let meta = EntityMeta {
+                    id: id.clone(),
+                    name: format!("Prop ({})", recipe.prefab_or_mesh),
+                    parent: None,
+                };
+                let transform = Transform::new(
+                    Vec3::from(inst.position),
+                    Vec3::new(
+                        inst.rotation_deg[0].to_radians(),
+                        inst.rotation_deg[1].to_radians(),
+                        inst.rotation_deg[2].to_radians(),
+                    ),
+                    Vec3::from(inst.scale),
+                );
+                let mesh = MeshRender {
+                    mesh_type: inst.mesh.clone(),
+                    color: inst.color,
+                    emissive: 0.0,
+                    wireframe: Some(false),
+                    texture: None,
+                    blend_mode: Some("opaque".to_string()),
+                    fresnel_color: None,
+                    fresnel_power: None,
+                    uv_scroll: None,
+                };
+                self.world.spawn((meta, transform, mesh));
+            }
+
+            self.logs.push(format!(
+                "Level Forge: Scattered {} props of type '{}'",
+                instances.len(),
+                recipe.prefab_or_mesh
+            ));
+            self.add_toast(
+                format!("Scattered {} props", instances.len()),
+                egui::Color32::from_rgb(34, 197, 94),
+            );
+        }
+
+        instances
     }
 
     pub fn handle_event(&mut self, event_loop: &ActiveEventLoop, event: &WindowEvent) {
@@ -1842,6 +2168,54 @@ impl EngineState {
                     let _ = respond_to.send(Ok(serde_json::json!({
                         "success": true,
                         "intensity": cl
+                    })));
+                }
+                McpCommand::ForgeGenerateTerrain { recipe, output_name, insert_in_scene, respond_to } => {
+                    match self.generate_and_insert_terrain(&recipe, &output_name, insert_in_scene) {
+                        Ok(mesh) => {
+                            let clean_name = if output_name.trim().is_empty() { "terrain_demo" } else { output_name.trim() };
+                            let out_path = if clean_name.ends_with(".glb") {
+                                format!("assets/models/{}", clean_name)
+                            } else {
+                                format!("assets/models/{}.glb", clean_name)
+                            };
+                            let _ = respond_to.send(Ok(serde_json::json!({
+                                "success": true,
+                                "path": out_path,
+                                "vertices": mesh.positions.len(),
+                                "triangles": mesh.indices.len() / 3,
+                                "inserted": insert_in_scene
+                            })));
+                        }
+                        Err(e) => {
+                            let _ = respond_to.send(Err(format!("Error generating terrain: {}", e)));
+                        }
+                    }
+                }
+                McpCommand::ForgeGenerateDungeon { recipe, insert_in_scene, respond_to } => {
+                    let result = self.generate_and_insert_dungeon(&recipe, insert_in_scene);
+                    let _ = respond_to.send(Ok(serde_json::json!({
+                        "success": true,
+                        "rooms": result.rooms.len(),
+                        "floor_cells": result.floor_cells.len(),
+                        "wall_cells": result.wall_cells.len(),
+                        "spawn_point": result.spawn_point,
+                        "boss_point": result.boss_point,
+                        "loot_points": result.loot_points,
+                        "inserted": insert_in_scene
+                    })));
+                }
+                McpCommand::ForgeScatterProps { recipe, terrain_recipe, respond_to } => {
+                    let active_terrain_opt = self.lua_ctx.active_terrain.read().ok().and_then(|g| g.clone());
+                    let resolved_terrain = terrain_recipe.as_ref().or(active_terrain_opt.as_ref());
+
+                    let instances = self.generate_and_insert_scatter(&recipe, resolved_terrain);
+                    let positions: Vec<[f32; 3]> = instances.iter().map(|i| i.position).collect();
+                    let _ = respond_to.send(Ok(serde_json::json!({
+                        "success": true,
+                        "prop_mesh": recipe.prefab_or_mesh,
+                        "count": instances.len(),
+                        "positions": positions
                     })));
                 }
             }
@@ -3014,6 +3388,10 @@ impl EngineState {
                             ui.separator();
                             if ui.button("[M] Music Forge...").clicked() {
                                 self.show_music_forge_window = true;
+                                ui.close();
+                            }
+                            if ui.button("[L] Level Forge...").clicked() {
+                                self.show_level_forge_window = true;
                                 ui.close();
                             }
                         });
@@ -5137,6 +5515,7 @@ impl EngineState {
                                     ("Reset Camera View", "reset_cam"),
                                     ("Export Game (Standalone)", "export_game"),
                                     ("Music Forge (Procedural Music)", "music_forge"),
+                                    ("Level Forge (Worlds & Dungeons)", "level_forge"),
                                 ];
 
                                 for (name, action_id) in quick_actions {
@@ -5220,6 +5599,9 @@ impl EngineState {
                             }
                             "music_forge" => {
                                 self.show_music_forge_window = true;
+                            }
+                            "level_forge" => {
+                                self.show_level_forge_window = true;
                             }
                             _ => {}
                         }
@@ -5412,6 +5794,230 @@ impl EngineState {
                                 self.add_toast(&err, egui::Color32::from_rgb(239, 68, 68));
                             }
                         }
+                    }
+                }
+
+                // Level Forge Window
+                if self.show_level_forge_window {
+                    let mut close_level_forge = false;
+                    let mut trigger_gen_terrain = false;
+                    let mut trigger_gen_dungeon = false;
+                    let mut trigger_gen_scatter = false;
+
+                    egui::Window::new("[L] Level Forge — Generador de Mundos")
+                        .default_size(egui::vec2(460.0, 480.0))
+                        .resizable(true)
+                        .collapsible(true)
+                        .show(ui.ctx(), |ui| {
+                            ui.heading("[L] Level Forge — Generador de Mundos");
+                            ui.label("Generación procedural de terrenos 3D, mazmorras y distribución de props.");
+                            ui.add_space(6.0);
+
+                            // Tabs selector: Terrain, Dungeon, Scatter
+                            ui.horizontal(|ui| {
+                                if ui.selectable_label(self.level_forge_tab == 0, "Terrain").clicked() {
+                                    self.level_forge_tab = 0;
+                                }
+                                if ui.selectable_label(self.level_forge_tab == 1, "Dungeon").clicked() {
+                                    self.level_forge_tab = 1;
+                                }
+                                if ui.selectable_label(self.level_forge_tab == 2, "Scatter").clicked() {
+                                    self.level_forge_tab = 2;
+                                }
+                            });
+                            ui.separator();
+                            ui.add_space(4.0);
+
+                            match self.level_forge_tab {
+                                0 => {
+                                    // Pestaña Terrain
+                                    ui.label(egui::RichText::new("Generador de Terreno 3D por Heightmap").strong());
+                                    ui.add_space(4.0);
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Nombre receta:");
+                                        ui.text_edit_singleline(&mut self.level_forge_terrain.name);
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Dimensiones (Ancho x Prof):");
+                                        ui.add(egui::Slider::new(&mut self.level_forge_terrain.width, 10.0..=200.0).text("Ancho"));
+                                        ui.add(egui::Slider::new(&mut self.level_forge_terrain.depth, 10.0..=200.0).text("Prof"));
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Resolución (vértices/lado):");
+                                        ui.add(egui::Slider::new(&mut self.level_forge_terrain.resolution, 16..=128));
+                                    });
+                                    if self.level_forge_terrain.resolution > 96 {
+                                        ui.colored_label(egui::Color32::from_rgb(250, 204, 21), "Aviso: resolución > 96 puede reducir rendimiento en GPUs integradas.");
+                                    }
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Altura máx:");
+                                        ui.add(egui::Slider::new(&mut self.level_forge_terrain.max_height, 1.0..=50.0).step_by(0.5));
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Escala ruido:");
+                                        ui.add(egui::Slider::new(&mut self.level_forge_terrain.noise_scale, 0.01..=0.2).step_by(0.005));
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Octavas FBM:");
+                                        ui.add(egui::Slider::new(&mut self.level_forge_terrain.octaves, 1..=8));
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Semilla (Seed):");
+                                        ui.add(egui::DragValue::new(&mut self.level_forge_terrain.seed));
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.checkbox(&mut self.level_forge_terrain.island_falloff, "Caída tipo isla (Island Falloff)");
+                                        ui.checkbox(&mut self.level_forge_terrain.flat_shading, "Flat Shading (Low-Poly)");
+                                    });
+
+                                    // Palette selection
+                                    let palettes = ["alpine", "desert", "alien", "volcanic"];
+                                    egui::ComboBox::from_label("Paleta de Color")
+                                        .selected_text(&self.level_forge_terrain.palette)
+                                        .show_ui(ui, |ui| {
+                                            for &p in &palettes {
+                                                ui.selectable_value(&mut self.level_forge_terrain.palette, p.to_string(), p);
+                                            }
+                                        });
+
+                                    ui.add_space(6.0);
+                                    ui.separator();
+                                    ui.add_space(4.0);
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Nombre archivo .glb:");
+                                        ui.text_edit_singleline(&mut self.level_forge_terrain_out_name);
+                                    });
+
+                                    ui.add_space(6.0);
+                                    if ui.button(egui::RichText::new("[Generar y Hornear Terreno]").strong().color(egui::Color32::from_rgb(34, 197, 94))).clicked() {
+                                        trigger_gen_terrain = true;
+                                    }
+                                }
+                                1 => {
+                                    // Pestaña Dungeon
+                                    ui.label(egui::RichText::new("Generador de Mazmorras Procedurales").strong());
+                                    ui.label("Crea salas no superpuestas conectadas por pasillos con spawn y boss.");
+                                    ui.add_space(4.0);
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Cantidad de salas:");
+                                        ui.add(egui::Slider::new(&mut self.level_forge_dungeon.room_count, 2..=20));
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Grid (Ancho x Alto):");
+                                        ui.add(egui::Slider::new(&mut self.level_forge_dungeon.grid_width, 12..=64).text("W"));
+                                        ui.add(egui::Slider::new(&mut self.level_forge_dungeon.grid_height, 12..=64).text("H"));
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Tamaño de celda:");
+                                        ui.add(egui::Slider::new(&mut self.level_forge_dungeon.cell_size, 1.5..=6.0).step_by(0.5));
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Altura de muros:");
+                                        ui.add(egui::Slider::new(&mut self.level_forge_dungeon.wall_height, 1.5..=6.0).step_by(0.5));
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Semilla (Seed):");
+                                        ui.add(egui::DragValue::new(&mut self.level_forge_dungeon.seed));
+                                    });
+
+                                    ui.add_space(8.0);
+                                    if ui.button(egui::RichText::new("[Generar Mazmorra en Escena]").strong().color(egui::Color32::from_rgb(56, 189, 248))).clicked() {
+                                        trigger_gen_dungeon = true;
+                                    }
+                                }
+                                2 => {
+                                    // Pestaña Scatter
+                                    ui.label(egui::RichText::new("Dispersión de Props por Poisson-Disc").strong());
+                                    ui.label("Distribuye props de forma natural sobre el terreno activo.");
+                                    ui.add_space(4.0);
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Mesh o Prefab:");
+                                        ui.text_edit_singleline(&mut self.level_forge_scatter.prefab_or_mesh);
+                                    });
+                                    ui.label(egui::RichText::new("(ej: cube, sphere, cylinder o assets/models/...).").small().color(ui_theme::COLOR_TEXT_MUTED));
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Cantidad deseada:");
+                                        ui.add(egui::Slider::new(&mut self.level_forge_scatter.count, 5..=500));
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Radio de área:");
+                                        ui.add(egui::Slider::new(&mut self.level_forge_scatter.area_radius, 5.0..=100.0).step_by(1.0));
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Distancia mín (spacing):");
+                                        ui.add(egui::Slider::new(&mut self.level_forge_scatter.min_spacing, 0.5..=10.0).step_by(0.25));
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Pendiente máx (grados):");
+                                        ui.add(egui::Slider::new(&mut self.level_forge_scatter.max_slope_deg, 5.0..=85.0).step_by(1.0));
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Escala mín/máx:");
+                                        ui.add(egui::Slider::new(&mut self.level_forge_scatter.scale_min, 0.1..=5.0).step_by(0.1).text("Mín"));
+                                        ui.add(egui::Slider::new(&mut self.level_forge_scatter.scale_max, 0.1..=5.0).step_by(0.1).text("Máx"));
+                                    });
+
+                                    ui.checkbox(&mut self.level_forge_scatter.random_yaw, "Rotación aleatoria en Y (Yaw)");
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Semilla (Seed):");
+                                        ui.add(egui::DragValue::new(&mut self.level_forge_scatter.seed));
+                                    });
+
+                                    ui.add_space(8.0);
+                                    if ui.button(egui::RichText::new("[Dispersar Props]").strong().color(egui::Color32::from_rgb(250, 204, 21))).clicked() {
+                                        trigger_gen_scatter = true;
+                                    }
+                                }
+                                _ => {}
+                            }
+
+                            ui.add_space(10.0);
+                            ui.separator();
+                            if ui.button("Cerrar").clicked() {
+                                close_level_forge = true;
+                            }
+                        });
+
+                    if close_level_forge {
+                        self.show_level_forge_window = false;
+                    }
+
+                    if trigger_gen_terrain {
+                        let ter_recipe = self.level_forge_terrain.clone();
+                        let ter_name = self.level_forge_terrain_out_name.clone();
+                        let _ = self.generate_and_insert_terrain(&ter_recipe, &ter_name, true);
+                    }
+
+                    if trigger_gen_dungeon {
+                        let d_recipe = self.level_forge_dungeon.clone();
+                        self.generate_and_insert_dungeon(&d_recipe, true);
+                    }
+
+                    if trigger_gen_scatter {
+                        let s_recipe = self.level_forge_scatter.clone();
+                        let active_ter = self.lua_ctx.active_terrain.read().ok().and_then(|g| g.clone());
+                        self.generate_and_insert_scatter(&s_recipe, active_ter.as_ref());
                     }
                 }
             });

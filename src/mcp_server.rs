@@ -142,6 +142,22 @@ pub enum McpCommand {
         intensity: f32,
         respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
     },
+    ForgeGenerateTerrain {
+        recipe: crate::level_forge::TerrainRecipe,
+        output_name: String,
+        insert_in_scene: bool,
+        respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
+    ForgeGenerateDungeon {
+        recipe: crate::level_forge::DungeonRecipe,
+        insert_in_scene: bool,
+        respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
+    ForgeScatterProps {
+        recipe: crate::level_forge::ScatterRecipe,
+        terrain_recipe: Option<crate::level_forge::TerrainRecipe>,
+        respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -559,6 +575,43 @@ pub async fn handle_jsonrpc(
                                     "intensity": { "type": "number", "description": "Nivel de intensidad de 0.0 a 1.0" }
                                 },
                                 "required": ["intensity"]
+                            }
+                        },
+                        {
+                            "name": "forge_generate_terrain",
+                            "description": "Genera terreno procedural 3D con altura por FBM, colores por altura/pendiente y hornea a GLB, opcionalmente instanciandolo en escena con collider trimesh estatico",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "recipe": { "type": "object", "description": "TerrainRecipe con width, depth, resolution, max_height, noise_scale, octaves, seed, island_falloff, flat_shading, palette" },
+                                    "output_name": { "type": "string", "description": "Nombre de archivo GLB destino (ej. 'terrain_demo')" },
+                                    "insert_in_scene": { "type": "boolean", "description": "Si true, instancia el terreno en la escena actual con collider trimesh estatico" }
+                                },
+                                "required": ["recipe", "output_name"]
+                            }
+                        },
+                        {
+                            "name": "forge_generate_dungeon",
+                            "description": "Genera mazmorra procedural con salas y pasillos ortogonales conectados, puntos de spawn, boss y loot, e inserta suelo y muros con colliders estaticos",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "recipe": { "type": "object", "description": "DungeonRecipe con room_count, min_room_size, max_room_size, dungeon_size, wall_height, seed" },
+                                    "insert_in_scene": { "type": "boolean", "description": "Si true, instancia suelo y muros de la mazmorra en la escena actual" }
+                                },
+                                "required": ["recipe"]
+                            }
+                        },
+                        {
+                            "name": "forge_scatter_props",
+                            "description": "Calcula distribucion procedural de props en terreno por Poisson-disc sampling respetando pendientes y limites de altura, e inserta las entidades en escena",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "recipe": { "type": "object", "description": "ScatterRecipe con prop_mesh, count, min_spacing, min_height, max_height, max_slope_deg, scale_min, scale_max, random_yaw, seed" },
+                                    "terrain_recipe": { "type": "object", "description": "TerrainRecipe opcional para muestreo de alturas y pendientes (si se omite usa el terreno activo)" }
+                                },
+                                "required": ["recipe"]
                             }
                         }
                     ]
@@ -1079,6 +1132,87 @@ pub async fn handle_jsonrpc(
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al ajustar intensidad de musica")),
                     }
                 }
+                "forge_generate_terrain" => {
+                    let recipe = match args.get("recipe") {
+                        Some(v) => match serde_json::from_value::<crate::level_forge::TerrainRecipe>(v.clone()) {
+                            Ok(r) => r,
+                            Err(e) => return Some(JsonRpcResponse::error(id, -32602, format!("Error en recipe: {}", e))),
+                        },
+                        None => crate::level_forge::TerrainRecipe::default(),
+                    };
+                    let output_name = match args.get("output_name").and_then(|v| v.as_str()) {
+                        Some(s) => s.to_string(),
+                        None => "terrain_demo".to_string(),
+                    };
+                    let insert_in_scene = args.get("insert_in_scene").and_then(|v| v.as_bool()).unwrap_or(true);
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::ForgeGenerateTerrain {
+                        recipe,
+                        output_name,
+                        insert_in_scene,
+                        respond_to: tx,
+                    }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(val)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }], "data": val }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al generar terreno en Level Forge")),
+                    }
+                }
+                "forge_generate_dungeon" => {
+                    let recipe = match args.get("recipe") {
+                        Some(v) => match serde_json::from_value::<crate::level_forge::DungeonRecipe>(v.clone()) {
+                            Ok(r) => r,
+                            Err(e) => return Some(JsonRpcResponse::error(id, -32602, format!("Error en recipe: {}", e))),
+                        },
+                        None => crate::level_forge::DungeonRecipe::default(),
+                    };
+                    let insert_in_scene = args.get("insert_in_scene").and_then(|v| v.as_bool()).unwrap_or(true);
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::ForgeGenerateDungeon {
+                        recipe,
+                        insert_in_scene,
+                        respond_to: tx,
+                    }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(val)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }], "data": val }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al generar mazmorra en Level Forge")),
+                    }
+                }
+                "forge_scatter_props" => {
+                    let recipe = match args.get("recipe") {
+                        Some(v) => match serde_json::from_value::<crate::level_forge::ScatterRecipe>(v.clone()) {
+                            Ok(r) => r,
+                            Err(e) => return Some(JsonRpcResponse::error(id, -32602, format!("Error en recipe: {}", e))),
+                        },
+                        None => crate::level_forge::ScatterRecipe::default(),
+                    };
+                    let terrain_recipe = if let Some(tv) = args.get("terrain_recipe") {
+                        match serde_json::from_value::<crate::level_forge::TerrainRecipe>(tv.clone()) {
+                            Ok(tr) => Some(tr),
+                            Err(e) => return Some(JsonRpcResponse::error(id, -32602, format!("Error en terrain_recipe: {}", e))),
+                        }
+                    } else {
+                        None
+                    };
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::ForgeScatterProps {
+                        recipe,
+                        terrain_recipe,
+                        respond_to: tx,
+                    }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(val)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }], "data": val }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al dispersar props en Level Forge")),
+                    }
+                }
                 _ => Some(JsonRpcResponse::error(id, -32601, format!("Herramienta desconocida: {}", tool_name))),
             }
         }
@@ -1310,5 +1444,8 @@ mod tests {
         assert!(resp_str.contains("forge_capture_turnaround"));
         assert!(resp_str.contains("forge_create_music"));
         assert!(resp_str.contains("set_music_intensity"));
+        assert!(resp_str.contains("forge_generate_terrain"));
+        assert!(resp_str.contains("forge_generate_dungeon"));
+        assert!(resp_str.contains("forge_scatter_props"));
     }
 }
