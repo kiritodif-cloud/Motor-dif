@@ -595,6 +595,78 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register stop_music: {}", e))?;
         lua.globals().set("stop_music", stop_music).map_err(|e| e.to_string())?;
 
+        // 10e. play_music_preset(preset_name)
+        let audio_preset = ctx.audio.clone();
+        let play_music_preset = lua
+            .create_function(move |_, preset_name: String| {
+                if let Some(recipe) = crate::music_forge::get_music_preset(&preset_name) {
+                    let source = crate::music_forge::AdaptiveMusicSource::new(&recipe, 0.5);
+                    if let Ok(mut audio) = audio_preset.lock() {
+                        let _ = audio.play_adaptive_music(source);
+                    }
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .map_err(|e| format!("Failed to register play_music_preset: {}", e))?;
+        lua.globals().set("play_music_preset", play_music_preset).map_err(|e| e.to_string())?;
+
+        // 10f. play_music_recipe(json_or_path)
+        let audio_recipe = ctx.audio.clone();
+        let play_music_recipe = lua
+            .create_function(move |_, input: String| {
+                let p = std::path::Path::new(&input);
+                let json_str = if p.exists() {
+                    std::fs::read_to_string(p).map_err(|e| mlua::Error::RuntimeError(format!("Failed to read recipe: {}", e)))?
+                } else {
+                    input
+                };
+                let recipe: crate::music_forge::MusicRecipe = serde_json::from_str(&json_str)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("Failed to parse MusicRecipe JSON: {}", e)))?;
+                let source = crate::music_forge::AdaptiveMusicSource::new(&recipe, 0.5);
+                if let Ok(mut audio) = audio_recipe.lock() {
+                    let _ = audio.play_adaptive_music(source);
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register play_music_recipe: {}", e))?;
+        lua.globals().set("play_music_recipe", play_music_recipe).map_err(|e| e.to_string())?;
+
+        // 10g. set_music_intensity(intensity)
+        let audio_int = ctx.audio.clone();
+        let set_music_intensity = lua
+            .create_function(move |_, intensity: f32| {
+                if let Ok(audio) = audio_int.lock() {
+                    audio.set_music_intensity(intensity);
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register set_music_intensity: {}", e))?;
+        lua.globals().set("set_music_intensity", set_music_intensity).map_err(|e| e.to_string())?;
+
+        // 10h. bake_music(preset_or_json, output_wav_path)
+        let bake_music = lua
+            .create_function(move |_, (input, output_path): (String, String)| {
+                let recipe = if let Some(p) = crate::music_forge::get_music_preset(&input) {
+                    p
+                } else {
+                    let p = std::path::Path::new(&input);
+                    let json_str = if p.exists() {
+                        std::fs::read_to_string(p).map_err(|e| mlua::Error::RuntimeError(format!("Failed to read recipe: {}", e)))?
+                    } else {
+                        input
+                    };
+                    serde_json::from_str(&json_str)
+                        .map_err(|e| mlua::Error::RuntimeError(format!("Failed to parse MusicRecipe JSON: {}", e)))?
+                };
+                crate::music_forge::bake_music_to_wav(&recipe, &output_path, Some(1.0))
+                    .map_err(mlua::Error::RuntimeError)?;
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register bake_music: {}", e))?;
+        lua.globals().set("bake_music", bake_music).map_err(|e| e.to_string())?;
+
         // 10b. play_sound_3d(path, x, y, z, max_dist, [volume], [bus])
         let audio_3d = ctx.audio.clone();
         let cam_3d = ctx.active_camera.clone();
@@ -2567,6 +2639,40 @@ mod tests {
 
         assert_eq!(audio.lock().unwrap().get_bus_volume("sfx"), 0.6);
 
+        let _ = std::fs::remove_file(test_script_path);
+    }
+
+    #[test]
+    fn test_music_forge_lua_bindings() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio.clone());
+
+        let test_script_path = "assets/scripts/temp_music_test.lua";
+        let script_code = r#"
+            p_res = play_music_preset("space_ambient")
+            set_music_intensity(0.85)
+            b_res = bake_music("menu_chill", "assets/music/temp_test_menu.wav")
+            stop_music()
+        "#;
+        std::fs::write(test_script_path, script_code).unwrap();
+
+        let mut comp = ScriptComponent::new(test_script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Init failed: {:?}", res.err());
+
+        if let Some(lua_arc) = &comp.lua {
+            let lua = lua_arc.lock().unwrap();
+            let p_res: bool = lua.globals().get("p_res").unwrap();
+            let b_res: bool = lua.globals().get("b_res").unwrap();
+            assert!(p_res, "Expected play_music_preset to succeed");
+            assert!(b_res, "Expected bake_music to succeed");
+        }
+
+        let baked_path = std::path::Path::new("assets/music/temp_test_menu.wav");
+        assert!(baked_path.exists());
+        let _ = std::fs::remove_file(baked_path);
         let _ = std::fs::remove_file(test_script_path);
     }
 }
