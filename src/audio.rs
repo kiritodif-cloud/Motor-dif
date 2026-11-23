@@ -9,6 +9,7 @@ pub struct AudioManager {
     music_sink: Option<Sink>,
     pub available: bool,
     pub bus_volumes: HashMap<String, f32>,
+    pub current_music_intensity: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
 }
 
 impl AudioManager {
@@ -27,6 +28,7 @@ impl AudioManager {
                         music_sink: None,
                         available: true,
                         bus_volumes,
+                        current_music_intensity: None,
                     },
                 )
             }
@@ -42,6 +44,7 @@ impl AudioManager {
                         music_sink: None,
                         available: false,
                         bus_volumes,
+                        current_music_intensity: None,
                     },
                 )
             }
@@ -198,10 +201,46 @@ impl AudioManager {
         Ok(())
     }
 
+    pub fn play_adaptive_music(
+        &mut self,
+        source: crate::music_forge::AdaptiveMusicSource,
+    ) -> Result<std::sync::Arc<std::sync::atomic::AtomicU32>, String> {
+        let intensity_handle = source.intensity_handle();
+        self.current_music_intensity = Some(intensity_handle.clone());
+
+        if !self.available {
+            return Ok(intensity_handle);
+        }
+
+        let handle = match &self.stream_handle {
+            Some(h) => h,
+            None => return Ok(intensity_handle),
+        };
+
+        if let Some(existing) = self.music_sink.take() {
+            existing.stop();
+        }
+
+        let effective_vol = self.compute_effective_volume(1.0, "music");
+        let sink = Sink::try_new(handle).map_err(|e| format!("Failed to create music sink: {}", e))?;
+        sink.set_volume(effective_vol);
+        sink.append(source);
+
+        self.music_sink = Some(sink);
+        Ok(intensity_handle)
+    }
+
+    pub fn set_music_intensity(&self, intensity: f32) {
+        if let Some(handle) = &self.current_music_intensity {
+            handle.store(intensity.clamp(0.0, 1.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     pub fn stop_music(&mut self) {
         if let Some(sink) = self.music_sink.take() {
             sink.stop();
         }
+        self.current_music_intensity = None;
     }
 
     pub fn play_tone(

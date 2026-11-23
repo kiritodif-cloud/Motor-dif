@@ -10,6 +10,7 @@ pub mod hot_reload;
 pub mod input_map;
 pub mod mcp_server;
 pub mod modeler;
+pub mod music_forge;
 pub mod nav;
 pub mod particles;
 pub mod physics;
