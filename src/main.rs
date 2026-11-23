@@ -1682,6 +1682,7 @@ impl EngineState {
                     }
                 }
                 McpCommand::ForgeCreateModel { recipe, respond_to } => {
+                    self.workspace = EditorWorkspace::Modeler;
                     let mesh = recipe.build_mesh();
                     self.forge_recipe = recipe;
                     let v_count = mesh.positions.len();
@@ -5715,6 +5716,20 @@ fn main() {
                 if i + 1 < args.len() && !args[i + 1].starts_with("--") {
                     target_scene = args[i + 1].clone();
                     i += 1;
+                }
+            } else if args[i] == "--export" {
+                let name = if i + 1 < args.len() { &args[i + 1] } else { "MyGame" };
+                let scene = if i + 2 < args.len() { &args[i + 2] } else { "assets/scene.json" };
+                let out = if i + 3 < args.len() { Some(args[i + 3].as_str()) } else { Some("dist") };
+                match exporter::export_game(name, scene, out) {
+                    Ok(p) => {
+                        println!("Standalone game exported successfully to: {:?}", p);
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("Export error: {}", e);
+                        std::process::exit(1);
+                    }
                 }
             } else if args[i] == "--scene" {
                 if i + 1 < args.len() {
