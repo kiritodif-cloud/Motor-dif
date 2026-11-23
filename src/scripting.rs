@@ -116,6 +116,50 @@ pub struct LuaEngineContext {
     pub pending_post_process: Arc<Mutex<Option<crate::assets::PostProcessDef>>>,
     pub post_process_settings: Arc<RwLock<crate::assets::PostProcessDef>>,
     pub pending_materials: Arc<Mutex<Vec<MaterialUpdate>>>,
+    pub pending_trails: Arc<Mutex<Vec<TrailCommand>>>,
+    pub debug_lines: Arc<Mutex<Vec<DebugLine3D>>>,
+    pub debug_rings: Arc<Mutex<Vec<DebugRing3D>>>,
+    pub world_labels: Arc<RwLock<HashMap<String, WorldLabel>>>,
+    pub floating_texts: Arc<Mutex<Vec<FloatingText>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrailCommand {
+    pub entity_id: String,
+    pub color: [f32; 4],
+    pub lifetime: f32,
+    pub width: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct DebugLine3D {
+    pub start: [f32; 3],
+    pub end: [f32; 3],
+    pub color: [f32; 4],
+}
+
+#[derive(Debug, Clone)]
+pub struct DebugRing3D {
+    pub center: [f32; 3],
+    pub radius: f32,
+    pub color: [f32; 4],
+}
+
+#[derive(Debug, Clone)]
+pub struct WorldLabel {
+    pub entity_id: String,
+    pub text: String,
+    pub offset_y: f32,
+    pub color: [f32; 3],
+}
+
+#[derive(Debug, Clone)]
+pub struct FloatingText {
+    pub position: [f32; 3],
+    pub text: String,
+    pub color: [f32; 3],
+    pub lifetime: f32,
+    pub elapsed: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -187,6 +231,11 @@ impl LuaEngineContext {
             pending_post_process: Arc::new(Mutex::new(None)),
             post_process_settings: Arc::new(RwLock::new(crate::assets::PostProcessDef::default())),
             pending_materials: Arc::new(Mutex::new(Vec::new())),
+            pending_trails: Arc::new(Mutex::new(Vec::new())),
+            debug_lines: Arc::new(Mutex::new(Vec::new())),
+            debug_rings: Arc::new(Mutex::new(Vec::new())),
+            world_labels: Arc::new(RwLock::new(HashMap::new())),
+            floating_texts: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -859,6 +908,151 @@ impl ScriptComponent {
         lua.globals()
             .set("set_material", set_material)
             .map_err(|e| e.to_string())?;
+
+        // 28. set_trail(id, r, g, b, [lifetime], [width])
+        let trails_ref = ctx.pending_trails.clone();
+        let set_trail = lua
+            .create_function(
+                move |_,
+                      (id, r, g, b, lifetime, width): (
+                    String,
+                    f32,
+                    f32,
+                    f32,
+                    Option<f32>,
+                    Option<f32>,
+                )| {
+                    if let Ok(mut list) = trails_ref.lock() {
+                        list.push(TrailCommand {
+                            entity_id: id,
+                            color: [r, g, b, 1.0],
+                            lifetime: lifetime.unwrap_or(0.8),
+                            width: width.unwrap_or(0.25),
+                        });
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register set_trail: {}", e))?;
+        lua.globals().set("set_trail", set_trail).map_err(|e| e.to_string())?;
+
+        // 29. draw_line_3d(x1, y1, z1, x2, y2, z2, r, g, b, [a])
+        let debug_lines_ref = ctx.debug_lines.clone();
+        let draw_line_3d = lua
+            .create_function(
+                move |_,
+                      (x1, y1, z1, x2, y2, z2, r, g, b, a): (
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    Option<f32>,
+                )| {
+                    if let Ok(mut list) = debug_lines_ref.lock() {
+                        list.push(DebugLine3D {
+                            start: [x1, y1, z1],
+                            end: [x2, y2, z2],
+                            color: [r, g, b, a.unwrap_or(1.0)],
+                        });
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register draw_line_3d: {}", e))?;
+        lua.globals().set("draw_line_3d", draw_line_3d).map_err(|e| e.to_string())?;
+
+        // 30. draw_ring_3d(x, y, z, radius, r, g, b, [a])
+        let debug_rings_ref = ctx.debug_rings.clone();
+        let draw_ring_3d = lua
+            .create_function(
+                move |_,
+                      (x, y, z, radius, r, g, b, a): (
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    Option<f32>,
+                )| {
+                    if let Ok(mut list) = debug_rings_ref.lock() {
+                        list.push(DebugRing3D {
+                            center: [x, y, z],
+                            radius,
+                            color: [r, g, b, a.unwrap_or(1.0)],
+                        });
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register draw_ring_3d: {}", e))?;
+        lua.globals().set("draw_ring_3d", draw_ring_3d).map_err(|e| e.to_string())?;
+
+        // 31. set_world_label(id, text, offset_y, [r], [g], [b])
+        let labels_ref = ctx.world_labels.clone();
+        let set_world_label = lua
+            .create_function(
+                move |_,
+                      (id, text, offset_y, r, g, b): (
+                    String,
+                    String,
+                    f32,
+                    Option<f32>,
+                    Option<f32>,
+                    Option<f32>,
+                )| {
+                    if let Ok(mut labels) = labels_ref.write() {
+                        labels.insert(
+                            id.clone(),
+                            WorldLabel {
+                                entity_id: id,
+                                text,
+                                offset_y,
+                                color: [r.unwrap_or(1.0), g.unwrap_or(1.0), b.unwrap_or(1.0)],
+                            },
+                        );
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register set_world_label: {}", e))?;
+        lua.globals().set("set_world_label", set_world_label).map_err(|e| e.to_string())?;
+
+        // 32. spawn_floating_text(x, y, z, text, [r], [g], [b], [lifetime])
+        let float_texts_ref = ctx.floating_texts.clone();
+        let spawn_floating_text = lua
+            .create_function(
+                move |_,
+                      (x, y, z, text, r, g, b, lifetime): (
+                    f32,
+                    f32,
+                    f32,
+                    String,
+                    Option<f32>,
+                    Option<f32>,
+                    Option<f32>,
+                    Option<f32>,
+                )| {
+                    if let Ok(mut list) = float_texts_ref.lock() {
+                        list.push(FloatingText {
+                            position: [x, y, z],
+                            text,
+                            color: [r.unwrap_or(1.0), g.unwrap_or(0.8), b.unwrap_or(0.2)],
+                            lifetime: lifetime.unwrap_or(1.5),
+                            elapsed: 0.0,
+                        });
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register spawn_floating_text: {}", e))?;
+        lua.globals().set("spawn_floating_text", spawn_floating_text).map_err(|e| e.to_string())?;
 
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)

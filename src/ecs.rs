@@ -177,6 +177,58 @@ impl SpriteAnimation {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct TrailPoint {
+    pub position: Vec3,
+    pub time: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrailComponent {
+    pub points: std::collections::VecDeque<TrailPoint>,
+    pub max_points: usize,
+    pub lifetime: f32,
+    pub width: f32,
+    pub color: [f32; 4],
+}
+
+impl TrailComponent {
+    pub fn new(color: [f32; 4], lifetime: f32, width: f32) -> Self {
+        Self {
+            points: std::collections::VecDeque::new(),
+            max_points: 64,
+            lifetime,
+            width,
+            color,
+        }
+    }
+
+    pub fn push_point(&mut self, pos: Vec3, current_time: f32) {
+        if let Some(last) = self.points.back() {
+            if (last.position - pos).length_squared() < 0.001 {
+                return;
+            }
+        }
+        self.points.push_back(TrailPoint {
+            position: pos,
+            time: current_time,
+        });
+        while self.points.len() > self.max_points {
+            self.points.pop_front();
+        }
+    }
+
+    pub fn prune(&mut self, current_time: f32) {
+        while let Some(front) = self.points.front() {
+            if current_time - front.time > self.lifetime {
+                self.points.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,5 +245,18 @@ mod tests {
         let (offset5, scale5) = anim_f5.uv_offset_and_scale();
         assert_eq!(scale5, [0.25, 0.5]);
         assert_eq!(offset5, [0.25, 0.5]);
+    }
+
+    #[test]
+    fn test_trail_component_push_and_prune() {
+        let mut trail = TrailComponent::new([1.0, 0.5, 0.0, 1.0], 1.0, 0.3);
+        trail.push_point(Vec3::new(0.0, 0.0, 0.0), 0.0);
+        trail.push_point(Vec3::new(1.0, 0.0, 0.0), 0.2);
+        trail.push_point(Vec3::new(2.0, 0.0, 0.0), 0.5);
+        assert_eq!(trail.points.len(), 3);
+
+        trail.prune(1.1);
+        assert_eq!(trail.points.len(), 2);
+        assert_eq!(trail.points.front().unwrap().position, Vec3::new(1.0, 0.0, 0.0));
     }
 }

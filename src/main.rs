@@ -23,6 +23,7 @@ use ecs::{EntityMeta, MeshRender, Transform};
 use glam::{EulerRot, Quat, Vec3};
 use hot_reload::{HotReloadEvent, HotReloadManager};
 use mcp_server::{EngineLogsResponse, McpCommand, WorldInspection};
+use wgpu::util::DeviceExt;
 use physics::{PhysicsEngine, RigidBodyComponent};
 use renderer::{create_instance_buffer, GpuContext, InstanceRaw, LightsUniform, PointLightRaw};
 use scripting::ScriptComponent;
@@ -1946,6 +1947,172 @@ impl EngineState {
         lights_uniform.num_lights = light_count;
         self.gpu.update_lights(&lights_uniform);
 
+        // Drain pending trails from Lua
+        let pending_trails = if let Ok(mut t) = self.lua_ctx.pending_trails.lock() {
+            std::mem::take(&mut *t)
+        } else {
+            Vec::new()
+        };
+        for cmd in pending_trails {
+            let target_e = {
+                let mut found = None;
+                for er in self.world.iter() {
+                    if let Some(meta) = er.get::<&EntityMeta>() {
+                        if meta.id == cmd.entity_id {
+                            found = Some(er.entity());
+                            break;
+                        }
+                    }
+                }
+                found
+            };
+            if let Some(e) = target_e {
+                let _ = self.world.insert_one(e, ecs::TrailComponent::new(cmd.color, cmd.lifetime, cmd.width));
+            }
+        }
+
+        // Update trail points
+        let mut trail_updates = Vec::new();
+        for er in self.world.iter() {
+            if er.get::<&ecs::TrailComponent>().is_some() {
+                let entity = er.entity();
+                let world_pos = if let Some((_, pos)) = world_transforms.get(&entity) {
+                    *pos
+                } else if let Some(t) = er.get::<&Transform>() {
+                    t.position
+                } else {
+                    Vec3::ZERO
+                };
+                trail_updates.push((entity, world_pos));
+            }
+        }
+        for (entity, world_pos) in trail_updates {
+            if let Ok(mut trail) = self.world.get::<&mut ecs::TrailComponent>(entity) {
+                trail.push_point(world_pos, self.total_time);
+                trail.prune(self.total_time);
+            }
+        }
+
+        // Build dynamic trail ribbon mesh
+        let mut trail_vertices: Vec<renderer::Vertex> = Vec::new();
+        let mut trail_indices: Vec<u16> = Vec::new();
+        for trail in self.world.query_mut::<&ecs::TrailComponent>() {
+            if trail.points.len() < 2 {
+                continue;
+            }
+            let pts: Vec<_> = trail.points.iter().cloned().collect();
+            for i in 0..pts.len() - 1 {
+                let p_a = &pts[i];
+                let p_b = &pts[i + 1];
+                let dir = (p_b.position - p_a.position).normalize_or_zero();
+                let cam_dir = (self.camera.eye - p_a.position).normalize_or_zero();
+                let mut side = dir.cross(cam_dir).normalize_or_zero();
+                if side.length_squared() < 0.01 {
+                    side = dir.cross(Vec3::Y).normalize_or_zero();
+                }
+
+                let t_a = ((trail.lifetime - (self.total_time - p_a.time)) / trail.lifetime).clamp(0.0, 1.0);
+                let t_b = ((trail.lifetime - (self.total_time - p_b.time)) / trail.lifetime).clamp(0.0, 1.0);
+
+                let w_a = side * (trail.width * 0.5 * t_a);
+                let w_b = side * (trail.width * 0.5 * t_b);
+
+                let col_a = [trail.color[0], trail.color[1], trail.color[2], trail.color[3] * t_a];
+                let col_b = [trail.color[0], trail.color[1], trail.color[2], trail.color[3] * t_b];
+
+                let base_idx = trail_vertices.len() as u16;
+                trail_vertices.push(renderer::Vertex {
+                    position: (p_a.position - w_a).to_array(),
+                    normal: [0.0, 1.0, 0.0],
+                    uv: [0.0, 0.0],
+                    color: col_a,
+                });
+                trail_vertices.push(renderer::Vertex {
+                    position: (p_a.position + w_a).to_array(),
+                    normal: [0.0, 1.0, 0.0],
+                    uv: [1.0, 0.0],
+                    color: col_a,
+                });
+                trail_vertices.push(renderer::Vertex {
+                    position: (p_b.position - w_b).to_array(),
+                    normal: [0.0, 1.0, 0.0],
+                    uv: [0.0, 1.0],
+                    color: col_b,
+                });
+                trail_vertices.push(renderer::Vertex {
+                    position: (p_b.position + w_b).to_array(),
+                    normal: [0.0, 1.0, 0.0],
+                    uv: [1.0, 1.0],
+                    color: col_b,
+                });
+
+                trail_indices.push(base_idx);
+                trail_indices.push(base_idx + 2);
+                trail_indices.push(base_idx + 1);
+
+                trail_indices.push(base_idx + 1);
+                trail_indices.push(base_idx + 2);
+                trail_indices.push(base_idx + 3);
+            }
+        }
+
+        // Build dynamic debug lines (from draw_line_3d and draw_ring_3d)
+        let mut debug_line_vertices: Vec<renderer::Vertex> = Vec::new();
+        let debug_lines_list = if let Ok(mut l) = self.lua_ctx.debug_lines.lock() {
+            std::mem::take(&mut *l)
+        } else {
+            Vec::new()
+        };
+        for line in debug_lines_list {
+            debug_line_vertices.push(renderer::Vertex {
+                position: line.start,
+                normal: [0.0, 1.0, 0.0],
+                uv: [0.0, 0.0],
+                color: line.color,
+            });
+            debug_line_vertices.push(renderer::Vertex {
+                position: line.end,
+                normal: [0.0, 1.0, 0.0],
+                uv: [1.0, 1.0],
+                color: line.color,
+            });
+        }
+
+        let debug_rings_list = if let Ok(mut r) = self.lua_ctx.debug_rings.lock() {
+            std::mem::take(&mut *r)
+        } else {
+            Vec::new()
+        };
+        for ring in debug_rings_list {
+            let segs = 32;
+            for i in 0..segs {
+                let theta1 = 2.0 * std::f32::consts::PI * (i as f32 / segs as f32);
+                let theta2 = 2.0 * std::f32::consts::PI * ((i + 1) as f32 / segs as f32);
+                let p1 = [
+                    ring.center[0] + ring.radius * theta1.cos(),
+                    ring.center[1],
+                    ring.center[2] + ring.radius * theta1.sin(),
+                ];
+                let p2 = [
+                    ring.center[0] + ring.radius * theta2.cos(),
+                    ring.center[1],
+                    ring.center[2] + ring.radius * theta2.sin(),
+                ];
+                debug_line_vertices.push(renderer::Vertex {
+                    position: p1,
+                    normal: [0.0, 1.0, 0.0],
+                    uv: [0.0, 0.0],
+                    color: ring.color,
+                });
+                debug_line_vertices.push(renderer::Vertex {
+                    position: p2,
+                    normal: [0.0, 1.0, 0.0],
+                    uv: [1.0, 1.0],
+                    color: ring.color,
+                });
+            }
+        }
+
         // Collect instances by mesh type, texture, and blend mode
         let mut instances_by_batch: HashMap<(String, Option<String>, String), Vec<InstanceRaw>> = HashMap::new();
         for entity_ref in self.world.iter() {
@@ -2077,6 +2244,75 @@ impl EngineState {
                                     });
                                 }
                             }
+
+                            let painter = ui.painter();
+                            let screen_size = [self.gpu.config.width as f32, self.gpu.config.height as f32];
+                            let viewport_rect = ui.max_rect();
+
+                            if let Ok(labels) = self.lua_ctx.world_labels.read() {
+                                for label in labels.values() {
+                                    let mut found_pos = None;
+                                    for er in self.world.iter() {
+                                        if let Some(meta) = er.get::<&EntityMeta>() {
+                                            if meta.id == label.entity_id {
+                                                if let Some((_, pos)) = world_transforms.get(&er.entity()) {
+                                                    found_pos = Some(*pos);
+                                                } else if let Some(t) = er.get::<&Transform>() {
+                                                    found_pos = Some(t.position);
+                                                }
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if let Some(pos) = found_pos {
+                                        let target = pos + glam::Vec3::new(0.0, label.offset_y, 0.0);
+                                        if let Some([sx, sy]) = self.camera.world_to_screen(target, screen_size) {
+                                            let p2 = egui::pos2(sx, sy);
+                                            if viewport_rect.contains(p2) {
+                                                let col = egui::Color32::from_rgb(
+                                                    (label.color[0] * 255.0) as u8,
+                                                    (label.color[1] * 255.0) as u8,
+                                                    (label.color[2] * 255.0) as u8,
+                                                );
+                                                painter.text(
+                                                    p2,
+                                                    egui::Align2::CENTER_CENTER,
+                                                    &label.text,
+                                                    egui::FontId::proportional(13.0),
+                                                    col,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if let Ok(mut texts) = self.lua_ctx.floating_texts.lock() {
+                                texts.retain_mut(|ft| {
+                                    ft.elapsed += dt;
+                                    ft.position[1] += dt * 0.8;
+                                    let alpha = (1.0 - ft.elapsed / ft.lifetime).clamp(0.0, 1.0);
+                                    if let Some([sx, sy]) = self.camera.world_to_screen(glam::Vec3::from(ft.position), screen_size) {
+                                        let p2 = egui::pos2(sx, sy);
+                                        if viewport_rect.contains(p2) {
+                                            let col = egui::Color32::from_rgba_unmultiplied(
+                                                (ft.color[0] * 255.0) as u8,
+                                                (ft.color[1] * 255.0) as u8,
+                                                (ft.color[2] * 255.0) as u8,
+                                                (alpha * 255.0) as u8,
+                                            );
+                                            painter.text(
+                                                p2,
+                                                egui::Align2::CENTER_CENTER,
+                                                &ft.text,
+                                                egui::FontId::proportional(15.0),
+                                                col,
+                                            );
+                                        }
+                                    }
+                                    ft.elapsed < ft.lifetime
+                                });
+                            }
                         });
                     return;
                 }
@@ -2204,6 +2440,18 @@ impl EngineState {
                             }
                             if ui.button("+ Quad").clicked() {
                                 trigger_spawn_mesh = Some(("quad", [0.9, 0.8, 0.2, 1.0]));
+                            }
+                            if ui.button("+ Torus").clicked() {
+                                trigger_spawn_mesh = Some(("torus", [0.9, 0.4, 0.9, 1.0]));
+                            }
+                            if ui.button("+ Ring").clicked() {
+                                trigger_spawn_mesh = Some(("ring", [0.2, 0.9, 0.8, 1.0]));
+                            }
+                            if ui.button("+ Cone").clicked() {
+                                trigger_spawn_mesh = Some(("cone", [0.9, 0.6, 0.2, 1.0]));
+                            }
+                            if ui.button("+ Icosphere").clicked() {
+                                trigger_spawn_mesh = Some(("icosphere", [0.4, 0.8, 0.9, 1.0]));
                             }
                         });
 
@@ -2473,6 +2721,10 @@ impl EngineState {
                                                         ui.selectable_value(&mut mesh.mesh_type, "cylinder".to_string(), "Cylinder");
                                                         ui.selectable_value(&mut mesh.mesh_type, "quad".to_string(), "Quad");
                                                         ui.selectable_value(&mut mesh.mesh_type, "plane".to_string(), "Plane");
+                                                        ui.selectable_value(&mut mesh.mesh_type, "torus".to_string(), "Torus");
+                                                        ui.selectable_value(&mut mesh.mesh_type, "ring".to_string(), "Ring");
+                                                        ui.selectable_value(&mut mesh.mesh_type, "cone".to_string(), "Cone");
+                                                        ui.selectable_value(&mut mesh.mesh_type, "icosphere".to_string(), "Icosphere");
                                                     });
                                             });
                                             ui.horizontal(|ui| {
@@ -3321,6 +3573,72 @@ impl EngineState {
                             }
                         }
 
+                        // 5b. World Labels & Floating Texts (from Lua)
+                        if let Ok(labels) = self.lua_ctx.world_labels.read() {
+                            for label in labels.values() {
+                                let mut found_pos = None;
+                                for er in self.world.iter() {
+                                    if let Some(meta) = er.get::<&EntityMeta>() {
+                                        if meta.id == label.entity_id {
+                                            if let Some((_, pos)) = world_transforms.get(&er.entity()) {
+                                                found_pos = Some(*pos);
+                                            } else if let Some(t) = er.get::<&Transform>() {
+                                                found_pos = Some(t.position);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                                if let Some(pos) = found_pos {
+                                    let target = pos + glam::Vec3::new(0.0, label.offset_y, 0.0);
+                                    if let Some([sx, sy]) = self.camera.world_to_screen(target, screen_size) {
+                                        let p2 = egui::pos2(sx, sy);
+                                        if viewport_rect.contains(p2) {
+                                            let col = egui::Color32::from_rgb(
+                                                (label.color[0] * 255.0) as u8,
+                                                (label.color[1] * 255.0) as u8,
+                                                (label.color[2] * 255.0) as u8,
+                                            );
+                                            painter.text(
+                                                p2,
+                                                egui::Align2::CENTER_CENTER,
+                                                &label.text,
+                                                egui::FontId::proportional(13.0),
+                                                col,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if let Ok(mut texts) = self.lua_ctx.floating_texts.lock() {
+                            texts.retain_mut(|ft| {
+                                ft.elapsed += dt;
+                                ft.position[1] += dt * 0.8;
+                                let alpha = (1.0 - ft.elapsed / ft.lifetime).clamp(0.0, 1.0);
+                                if let Some([sx, sy]) = self.camera.world_to_screen(glam::Vec3::from(ft.position), screen_size) {
+                                    let p2 = egui::pos2(sx, sy);
+                                    if viewport_rect.contains(p2) {
+                                        let col = egui::Color32::from_rgba_unmultiplied(
+                                            (ft.color[0] * 255.0) as u8,
+                                            (ft.color[1] * 255.0) as u8,
+                                            (ft.color[2] * 255.0) as u8,
+                                            (alpha * 255.0) as u8,
+                                        );
+                                        painter.text(
+                                            p2,
+                                            egui::Align2::CENTER_CENTER,
+                                            &ft.text,
+                                            egui::FontId::proportional(15.0),
+                                            col,
+                                        );
+                                    }
+                                }
+                                ft.elapsed < ft.lifetime
+                            });
+                        }
+
                         // 6. Viewport Floating Overlay: Top-Left Capsule (Camera Mode & Colliders Toggle)
                         let top_left_area = egui::Area::new(ui.make_persistent_id("viewport_top_left_capsule"))
                             .fixed_pos(egui::pos2(viewport_rect.min.x + 12.0, viewport_rect.min.y + 12.0));
@@ -3497,6 +3815,10 @@ impl EngineState {
                                     ("Add Cylinder Primitive", "cylinder"),
                                     ("Add Quad Primitive", "quad"),
                                     ("Add Plane Primitive", "plane"),
+                                    ("Add Torus Primitive", "torus"),
+                                    ("Add Ring Primitive", "ring"),
+                                    ("Add Cone Primitive", "cone"),
+                                    ("Add Icosphere Primitive", "icosphere"),
                                     ("Play Simulation", "play"),
                                     ("Pause Simulation", "pause"),
                                     ("Stop Simulation", "stop"),
@@ -3549,6 +3871,10 @@ impl EngineState {
                             "cylinder" => trigger_spawn_mesh = Some(("cylinder", [0.4, 0.8, 0.4, 1.0])),
                             "quad" => trigger_spawn_mesh = Some(("quad", [0.9, 0.8, 0.2, 1.0])),
                             "plane" => trigger_spawn_mesh = Some(("plane", [0.6, 0.6, 0.6, 1.0])),
+                            "torus" => trigger_spawn_mesh = Some(("torus", [0.9, 0.4, 0.9, 1.0])),
+                            "ring" => trigger_spawn_mesh = Some(("ring", [0.2, 0.9, 0.8, 1.0])),
+                            "cone" => trigger_spawn_mesh = Some(("cone", [0.9, 0.6, 0.2, 1.0])),
+                            "icosphere" => trigger_spawn_mesh = Some(("icosphere", [0.4, 0.8, 0.9, 1.0])),
                             "play" => {
                                 if self.play_mode == PlayMode::Edit {
                                     self.play_snapshot = Some(assets::extract_scene_from_world(&self.world, &self.camera, &self.physics));
@@ -3826,6 +4152,50 @@ impl EngineState {
                         0..particle_instances.len() as u32,
                     );
                 }
+            }
+
+            // Render Dynamic Trails with Additive Blending
+            if !trail_indices.is_empty() {
+                let tv_buf = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Dynamic Trail Vertex Buffer"),
+                    contents: bytemuck::cast_slice(&trail_vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let ti_buf = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Dynamic Trail Index Buffer"),
+                    contents: bytemuck::cast_slice(&trail_indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+                let id_instance = InstanceRaw {
+                    model: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    extra: [1.0, 0.0, 0.0, 0.0],
+                    fresnel: [0.0, 0.0, 0.0, 0.0],
+                    uv_offset: [0.0, 0.0],
+                    uv_scale: [1.0, 1.0],
+                };
+                let inst_buf = create_instance_buffer(&self.gpu.device, &[id_instance]);
+                render_pass.set_pipeline(&self.gpu.additive_render_pipeline);
+                render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
+                render_pass.set_bind_group(1, &self.gpu.default_white_texture.bind_group, &[]);
+                render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, tv_buf.slice(..));
+                render_pass.set_vertex_buffer(1, inst_buf.slice(..));
+                render_pass.set_index_buffer(ti_buf.slice(..), wgpu::IndexFormat::Uint16);
+                render_pass.draw_indexed(0..trail_indices.len() as u32, 0, 0..1);
+            }
+
+            // Render Dynamic Debug Lines & Rings
+            if !debug_line_vertices.is_empty() {
+                let line_vbuf = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Debug Lines Vertex Buffer"),
+                    contents: bytemuck::cast_slice(&debug_line_vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                render_pass.set_pipeline(&self.gpu.line_pipeline);
+                render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, line_vbuf.slice(..));
+                render_pass.draw(0..debug_line_vertices.len() as u32, 0..1);
             }
 
             // Render 3D Grid on Y=0 (editor mode only)

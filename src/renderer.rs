@@ -1129,6 +1129,10 @@ impl GpuContext {
         meshes.insert("sphere".to_string(), create_sphere_mesh(&device, 16, 24));
         meshes.insert("cylinder".to_string(), create_cylinder_mesh(&device, 24));
         meshes.insert("plane".to_string(), create_plane_mesh(&device));
+        meshes.insert("torus".to_string(), create_torus_mesh(&device, 0.8, 0.25, 20, 32));
+        meshes.insert("ring".to_string(), create_ring_mesh(&device, 0.5, 1.0, 32));
+        meshes.insert("cone".to_string(), create_cone_mesh(&device, 0.8, 1.6, 24));
+        meshes.insert("icosphere".to_string(), create_icosphere_mesh(&device, 1.0, 2));
 
         // egui integration
         let egui_ctx = egui::Context::default();
@@ -1227,6 +1231,18 @@ impl GpuContext {
             }
             "plane" => {
                 self.meshes.insert("plane".to_string(), create_plane_mesh(&self.device));
+            }
+            "torus" => {
+                self.meshes.insert("torus".to_string(), create_torus_mesh(&self.device, 0.8, 0.25, 20, 32));
+            }
+            "ring" => {
+                self.meshes.insert("ring".to_string(), create_ring_mesh(&self.device, 0.5, 1.0, 32));
+            }
+            "cone" => {
+                self.meshes.insert("cone".to_string(), create_cone_mesh(&self.device, 0.8, 1.6, 24));
+            }
+            "icosphere" => {
+                self.meshes.insert("icosphere".to_string(), create_icosphere_mesh(&self.device, 1.0, 2));
             }
             _ => {
                 match load_gltf_mesh(&self.device, mesh_id) {
@@ -1641,6 +1657,337 @@ pub fn create_plane_mesh(device: &wgpu::Device) -> MeshGpu {
 
     let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Plane Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
+    MeshGpu {
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint16,
+    }
+}
+
+pub fn create_torus_mesh(device: &wgpu::Device, major_radius: f32, minor_radius: f32, radial_segments: usize, tubular_segments: usize) -> MeshGpu {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let white = [1.0, 1.0, 1.0, 1.0];
+
+    for j in 0..=radial_segments {
+        let v = j as f32 / radial_segments as f32;
+        let theta = v * 2.0 * std::f32::consts::PI;
+        let cos_theta = theta.cos();
+        let sin_theta = theta.sin();
+
+        for i in 0..=tubular_segments {
+            let u = i as f32 / tubular_segments as f32;
+            let phi = u * 2.0 * std::f32::consts::PI;
+            let cos_phi = phi.cos();
+            let sin_phi = phi.sin();
+
+            let x = (major_radius + minor_radius * cos_phi) * cos_theta;
+            let y = minor_radius * sin_phi;
+            let z = (major_radius + minor_radius * cos_phi) * sin_theta;
+
+            let nx = cos_phi * cos_theta;
+            let ny = sin_phi;
+            let nz = cos_phi * sin_theta;
+
+            vertices.push(Vertex {
+                position: [x, y, z],
+                normal: [nx, ny, nz],
+                uv: [u, v],
+                color: white,
+            });
+        }
+    }
+
+    for j in 0..radial_segments {
+        for i in 0..tubular_segments {
+            let first = (j * (tubular_segments + 1) + i) as u16;
+            let second = ((j + 1) * (tubular_segments + 1) + i) as u16;
+
+            indices.push(first);
+            indices.push(second);
+            indices.push(first + 1);
+
+            indices.push(second);
+            indices.push(second + 1);
+            indices.push(first + 1);
+        }
+    }
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Torus Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Torus Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
+    MeshGpu {
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint16,
+    }
+}
+
+pub fn create_ring_mesh(device: &wgpu::Device, inner_radius: f32, outer_radius: f32, segments: usize) -> MeshGpu {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let white = [1.0, 1.0, 1.0, 1.0];
+
+    for i in 0..=segments {
+        let u = i as f32 / segments as f32;
+        let theta = u * 2.0 * std::f32::consts::PI;
+        let cos_t = theta.cos();
+        let sin_t = theta.sin();
+
+        vertices.push(Vertex {
+            position: [inner_radius * cos_t, 0.0, inner_radius * sin_t],
+            normal: [0.0, 1.0, 0.0],
+            uv: [u, 0.0],
+            color: white,
+        });
+
+        vertices.push(Vertex {
+            position: [outer_radius * cos_t, 0.0, outer_radius * sin_t],
+            normal: [0.0, 1.0, 0.0],
+            uv: [u, 1.0],
+            color: white,
+        });
+    }
+
+    for i in 0..segments {
+        let in0 = (i * 2) as u16;
+        let out0 = in0 + 1;
+        let in1 = ((i + 1) * 2) as u16;
+        let out1 = in1 + 1;
+
+        indices.push(in0);
+        indices.push(out0);
+        indices.push(in1);
+
+        indices.push(out0);
+        indices.push(out1);
+        indices.push(in1);
+    }
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Ring Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Ring Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
+    MeshGpu {
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint16,
+    }
+}
+
+pub fn create_cone_mesh(device: &wgpu::Device, radius: f32, height: f32, segments: usize) -> MeshGpu {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let white = [1.0, 1.0, 1.0, 1.0];
+    let half_h = height * 0.5;
+
+    let tip_pos = [0.0, half_h, 0.0];
+    let slope = (radius / height).atan();
+    let cos_slope = slope.cos();
+    let sin_slope = slope.sin();
+
+    for i in 0..=segments {
+        let u = i as f32 / segments as f32;
+        let theta = u * 2.0 * std::f32::consts::PI;
+        let cos_t = theta.cos();
+        let sin_t = theta.sin();
+
+        let norm = [cos_t * cos_slope, sin_slope, sin_t * cos_slope];
+
+        vertices.push(Vertex {
+            position: tip_pos,
+            normal: norm,
+            uv: [u, 0.0],
+            color: white,
+        });
+
+        vertices.push(Vertex {
+            position: [radius * cos_t, -half_h, radius * sin_t],
+            normal: norm,
+            uv: [u, 1.0],
+            color: white,
+        });
+    }
+
+    for i in 0..segments {
+        let t0 = (i * 2) as u16;
+        let b0 = t0 + 1;
+        let b1 = ((i + 1) * 2 + 1) as u16;
+
+        indices.push(t0);
+        indices.push(b0);
+        indices.push(b1);
+    }
+
+    let base_center_idx = vertices.len() as u16;
+    vertices.push(Vertex {
+        position: [0.0, -half_h, 0.0],
+        normal: [0.0, -1.0, 0.0],
+        uv: [0.5, 0.5],
+        color: white,
+    });
+    let base_start_idx = vertices.len() as u16;
+    for i in 0..=segments {
+        let theta = 2.0 * std::f32::consts::PI * (i as f32 / segments as f32);
+        let u = (theta.cos() + 1.0) * 0.5;
+        let v = (theta.sin() + 1.0) * 0.5;
+        vertices.push(Vertex {
+            position: [radius * theta.cos(), -half_h, radius * theta.sin()],
+            normal: [0.0, -1.0, 0.0],
+            uv: [u, v],
+            color: white,
+        });
+    }
+    for i in 0..segments {
+        indices.push(base_center_idx);
+        indices.push(base_start_idx + i as u16 + 1);
+        indices.push(base_start_idx + i as u16);
+    }
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Cone Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Cone Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
+    MeshGpu {
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint16,
+    }
+}
+
+pub fn create_icosphere_mesh(device: &wgpu::Device, radius: f32, subdivisions: usize) -> MeshGpu {
+    let t = (1.0 + 5.0f32.sqrt()) / 2.0;
+    let white = [1.0, 1.0, 1.0, 1.0];
+
+    let mut positions = vec![
+        [-1.0,  t,  0.0],
+        [ 1.0,  t,  0.0],
+        [-1.0, -t,  0.0],
+        [ 1.0, -t,  0.0],
+        [ 0.0, -1.0,  t],
+        [ 0.0,  1.0,  t],
+        [ 0.0, -1.0, -t],
+        [ 0.0,  1.0, -t],
+        [  t,  0.0, -1.0],
+        [  t,  0.0,  1.0],
+        [ -t,  0.0, -1.0],
+        [ -t,  0.0,  1.0],
+    ];
+
+    for p in &mut positions {
+        let len = (p[0]*p[0] + p[1]*p[1] + p[2]*p[2]).sqrt();
+        p[0] /= len;
+        p[1] /= len;
+        p[2] /= len;
+    }
+
+    let mut faces = vec![
+        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+    ];
+
+    let mut midpoint_cache: std::collections::HashMap<(u16, u16), u16> = std::collections::HashMap::new();
+
+    let mut get_midpoint = |p1: u16, p2: u16, positions: &mut Vec<[f32; 3]>| -> u16 {
+        let key = if p1 < p2 { (p1, p2) } else { (p2, p1) };
+        if let Some(&idx) = midpoint_cache.get(&key) {
+            return idx;
+        }
+        let pos1 = positions[p1 as usize];
+        let pos2 = positions[p2 as usize];
+        let mid = [
+            (pos1[0] + pos2[0]) * 0.5,
+            (pos1[1] + pos2[1]) * 0.5,
+            (pos1[2] + pos2[2]) * 0.5,
+        ];
+        let len = (mid[0]*mid[0] + mid[1]*mid[1] + mid[2]*mid[2]).sqrt();
+        let normalized = [mid[0] / len, mid[1] / len, mid[2] / len];
+        let new_idx = positions.len() as u16;
+        positions.push(normalized);
+        midpoint_cache.insert(key, new_idx);
+        new_idx
+    };
+
+    for _ in 0..subdivisions.min(4) {
+        let mut new_faces = Vec::new();
+        for tri in &faces {
+            let a = tri[0] as u16;
+            let b = tri[1] as u16;
+            let c = tri[2] as u16;
+
+            let ab = get_midpoint(a, b, &mut positions);
+            let bc = get_midpoint(b, c, &mut positions);
+            let ca = get_midpoint(c, a, &mut positions);
+
+            new_faces.push([a as usize, ab as usize, ca as usize]);
+            new_faces.push([b as usize, bc as usize, ab as usize]);
+            new_faces.push([c as usize, ca as usize, bc as usize]);
+            new_faces.push([ab as usize, bc as usize, ca as usize]);
+        }
+        faces = new_faces;
+    }
+
+    let mut vertices = Vec::with_capacity(positions.len());
+    for p in &positions {
+        let nx = p[0];
+        let ny = p[1];
+        let nz = p[2];
+        let u = 0.5 + nz.atan2(nx) / (2.0 * std::f32::consts::PI);
+        let v = 0.5 - ny.asin() / std::f32::consts::PI;
+        vertices.push(Vertex {
+            position: [nx * radius, ny * radius, nz * radius],
+            normal: [nx, ny, nz],
+            uv: [u, v],
+            color: white,
+        });
+    }
+
+    let mut indices = Vec::with_capacity(faces.len() * 3);
+    for f in faces {
+        indices.push(f[0] as u16);
+        indices.push(f[1] as u16);
+        indices.push(f[2] as u16);
+    }
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Icosphere Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Icosphere Index Buffer"),
         contents: bytemuck::cast_slice(&indices),
         usage: wgpu::BufferUsages::INDEX,
     });
