@@ -23,6 +23,7 @@ pub mod templates;
 pub mod texture_forge;
 pub mod tweens;
 pub mod ui_theme;
+pub mod vfx_forge;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
