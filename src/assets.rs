@@ -127,10 +127,43 @@ impl Default for PostProcessDef {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvironmentDef {
+    #[serde(default = "default_sky_mode")]
+    pub sky_mode: String,
+    #[serde(default = "default_zenith")]
+    pub zenith_color: [f32; 3],
+    #[serde(default = "default_horizon")]
+    pub horizon_color: [f32; 3],
+    #[serde(default = "default_fog_color")]
+    pub fog_color: [f32; 3],
+    #[serde(default)]
+    pub fog_density: f32,
+}
+
+fn default_sky_mode() -> String { "space".to_string() }
+fn default_zenith() -> [f32; 3] { [0.03, 0.05, 0.12] }
+fn default_horizon() -> [f32; 3] { [0.08, 0.10, 0.18] }
+fn default_fog_color() -> [f32; 3] { [0.08, 0.10, 0.16] }
+
+impl Default for EnvironmentDef {
+    fn default() -> Self {
+        Self {
+            sky_mode: default_sky_mode(),
+            zenith_color: default_zenith(),
+            horizon_color: default_horizon(),
+            fog_color: default_fog_color(),
+            fog_density: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneDef {
     pub camera: CameraDef,
     #[serde(default)]
     pub post_process: Option<PostProcessDef>,
+    #[serde(default)]
+    pub environment: Option<EnvironmentDef>,
     pub entities: Vec<EntityDef>,
 }
 
@@ -144,6 +177,7 @@ impl Default for SceneDef {
                 ortho_size: 10.0,
             },
             post_process: Some(PostProcessDef::default()),
+            environment: Some(EnvironmentDef::default()),
             entities: vec![
                 EntityDef {
                     id: "cube_red".to_string(),
@@ -306,6 +340,7 @@ pub fn extract_scene_from_world(
     SceneDef {
         camera: camera_def,
         post_process: None,
+        environment: None,
         entities,
     }
 }
@@ -555,5 +590,20 @@ mod tests {
         assert_eq!(decoded.blend_mode, Some("additive".to_string()));
         assert_eq!(decoded.wireframe, Some(true));
         assert_eq!(decoded.fresnel_power, Some(3.0));
+    }
+
+    #[test]
+    fn test_environment_def_serialization() {
+        let env = EnvironmentDef {
+            sky_mode: "space".to_string(),
+            zenith_color: [0.05, 0.05, 0.15],
+            horizon_color: [0.01, 0.01, 0.03],
+            fog_color: [0.02, 0.02, 0.04],
+            fog_density: 0.015,
+        };
+        let json = serde_json::to_string(&env).unwrap();
+        let decoded: EnvironmentDef = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.sky_mode, "space");
+        assert_eq!(decoded.fog_density, 0.015);
     }
 }

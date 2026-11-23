@@ -121,6 +121,8 @@ pub struct LuaEngineContext {
     pub debug_rings: Arc<Mutex<Vec<DebugRing3D>>>,
     pub world_labels: Arc<RwLock<HashMap<String, WorldLabel>>>,
     pub floating_texts: Arc<Mutex<Vec<FloatingText>>>,
+    pub pending_environment: Arc<Mutex<Option<crate::assets::EnvironmentDef>>>,
+    pub environment_settings: Arc<RwLock<crate::assets::EnvironmentDef>>,
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +238,8 @@ impl LuaEngineContext {
             debug_rings: Arc::new(Mutex::new(Vec::new())),
             world_labels: Arc::new(RwLock::new(HashMap::new())),
             floating_texts: Arc::new(Mutex::new(Vec::new())),
+            pending_environment: Arc::new(Mutex::new(None)),
+            environment_settings: Arc::new(RwLock::new(crate::assets::EnvironmentDef::default())),
         }
     }
 }
@@ -1053,6 +1057,67 @@ impl ScriptComponent {
             )
             .map_err(|e| format!("Failed to register spawn_floating_text: {}", e))?;
         lua.globals().set("spawn_floating_text", spawn_floating_text).map_err(|e| e.to_string())?;
+
+        // 33. set_environment(sky_mode, fog_r, fog_g, fog_b, fog_density, [zenith_table], [horizon_table])
+        let env_ref = ctx.pending_environment.clone();
+        let env_settings_ref = ctx.environment_settings.clone();
+        let set_environment = lua
+            .create_function(
+                move |_,
+                      (sky_mode, fog_r, fog_g, fog_b, fog_density, zenith_table, horizon_table): (
+                    String,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    Option<mlua::Table>,
+                    Option<mlua::Table>,
+                )| {
+                    let mut current = env_settings_ref.read().map(|e| e.clone()).unwrap_or_default();
+                    current.sky_mode = sky_mode;
+                    current.fog_color = [fog_r, fog_g, fog_b];
+                    current.fog_density = fog_density;
+                    if let Some(zt) = zenith_table {
+                        let r: f32 = zt.get(1).unwrap_or(current.zenith_color[0]);
+                        let g: f32 = zt.get(2).unwrap_or(current.zenith_color[1]);
+                        let b: f32 = zt.get(3).unwrap_or(current.zenith_color[2]);
+                        current.zenith_color = [r, g, b];
+                    }
+                    if let Some(ht) = horizon_table {
+                        let r: f32 = ht.get(1).unwrap_or(current.horizon_color[0]);
+                        let g: f32 = ht.get(2).unwrap_or(current.horizon_color[1]);
+                        let b: f32 = ht.get(3).unwrap_or(current.horizon_color[2]);
+                        current.horizon_color = [r, g, b];
+                    }
+                    if let Ok(mut pending) = env_ref.lock() {
+                        *pending = Some(current.clone());
+                    }
+                    if let Ok(mut s) = env_settings_ref.write() {
+                        *s = current;
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register set_environment: {}", e))?;
+        lua.globals().set("set_environment", set_environment).map_err(|e| e.to_string())?;
+
+        // 34. get_environment()
+        let env_get_ref = ctx.environment_settings.clone();
+        let get_environment = lua
+            .create_function(move |lua, ()| {
+                let env = env_get_ref.read().map(|e| e.clone()).unwrap_or_default();
+                let tbl = lua.create_table()?;
+                tbl.set("sky_mode", env.sky_mode)?;
+                tbl.set("fog_density", env.fog_density)?;
+                let fc = lua.create_table()?;
+                fc.set(1, env.fog_color[0])?;
+                fc.set(2, env.fog_color[1])?;
+                fc.set(3, env.fog_color[2])?;
+                tbl.set("fog_color", fc)?;
+                Ok(tbl)
+            })
+            .map_err(|e| format!("Failed to register get_environment: {}", e))?;
+        lua.globals().set("get_environment", get_environment).map_err(|e| e.to_string())?;
 
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)

@@ -293,14 +293,22 @@ pub fn ray_intersects_sphere(origin: Vec3, dir: Vec3, center: Vec3, radius: f32)
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct CameraUniform {
     pub view_proj: [[f32; 4]; 4],
+    pub inv_view_proj: [[f32; 4]; 4],
     pub camera_pos: [f32; 4],
+    pub fog_color: [f32; 4],
+    pub zenith_color: [f32; 4],
+    pub horizon_color: [f32; 4],
 }
 
 impl CameraUniform {
     pub fn new() -> Self {
         Self {
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            inv_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
             camera_pos: [0.0; 4],
+            fog_color: [0.08, 0.10, 0.16, 0.0],
+            zenith_color: [0.03, 0.05, 0.12, 2.0],
+            horizon_color: [0.08, 0.10, 0.18, 0.0],
         }
     }
 
@@ -309,9 +317,32 @@ impl CameraUniform {
     }
 
     pub fn update_with_time(&mut self, camera: &Camera, time: f32) {
-        self.view_proj = camera.build_view_projection_matrix().to_cols_array_2d();
+        let vp = camera.build_view_projection_matrix();
+        self.view_proj = vp.to_cols_array_2d();
+        self.inv_view_proj = vp.inverse().to_cols_array_2d();
         let eff_eye = camera.eye + camera.shake_offset;
         self.camera_pos = [eff_eye.x, eff_eye.y, eff_eye.z, time];
+    }
+
+    pub fn update_with_environment(
+        &mut self,
+        camera: &Camera,
+        time: f32,
+        sky_mode: &str,
+        zenith: [f32; 3],
+        horizon: [f32; 3],
+        fog_color: [f32; 3],
+        fog_density: f32,
+    ) {
+        self.update_with_time(camera, time);
+        let mode_val = match sky_mode.to_lowercase().as_str() {
+            "solid" => 0.0,
+            "gradient" => 1.0,
+            _ => 2.0, // "space"
+        };
+        self.fog_color = [fog_color[0], fog_color[1], fog_color[2], fog_density];
+        self.zenith_color = [zenith[0], zenith[1], zenith[2], mode_val];
+        self.horizon_color = [horizon[0], horizon[1], horizon[2], 0.0];
     }
 }
 

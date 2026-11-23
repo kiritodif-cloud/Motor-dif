@@ -263,6 +263,7 @@ pub struct GpuContext {
     pub render_pipeline: wgpu::RenderPipeline,
     pub additive_render_pipeline: wgpu::RenderPipeline,
     pub line_pipeline: wgpu::RenderPipeline,
+    pub skybox_pipeline: wgpu::RenderPipeline,
     pub grid_mesh: MeshGpu,
     pub wireframe_cube_mesh: MeshGpu,
     pub camera_buffer: wgpu::Buffer,
@@ -282,7 +283,11 @@ pub struct GpuContext {
 const SHADER_SOURCE: &str = r#"
 struct CameraUniform {
     view_proj: mat4x4<f32>,
+    inv_view_proj: mat4x4<f32>,
     camera_pos: vec4<f32>,
+    fog_color: vec4<f32>,
+    zenith_color: vec4<f32>,
+    horizon_color: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -439,11 +444,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // 6. Combined Lighting
     let lit_color = base_color.rgb * (ambient + diffuse + point_diffuse) + specular + point_specular + emissive + fresnel_contrib;
 
-    // 6. Horizon Gradient & Soft Distance Fog
-    let fog_color = vec3<f32>(0.08, 0.09, 0.12);
+    // 7. FogExp2 Exponential Fog
     let dist = length(camera.camera_pos.xyz - in.world_pos);
-    let fog_factor = clamp((dist - 15.0) / 60.0, 0.0, 0.85);
-    let final_color = mix(lit_color, fog_color, fog_factor);
+    let fog_density = camera.fog_color.a;
+    var final_color = lit_color;
+    if (fog_density > 0.0001) {
+        let fog_factor = clamp(1.0 - exp(-dist * fog_density), 0.0, 1.0);
+        final_color = mix(lit_color, camera.fog_color.rgb, fog_factor);
+    }
 
     return vec4<f32>(final_color, base_color.a);
 }
@@ -452,7 +460,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 const LINE_SHADER_SOURCE: &str = r#"
 struct CameraUniform {
     view_proj: mat4x4<f32>,
+    inv_view_proj: mat4x4<f32>,
     camera_pos: vec4<f32>,
+    fog_color: vec4<f32>,
+    zenith_color: vec4<f32>,
+    horizon_color: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -636,6 +648,82 @@ fn fs_post_process(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     return vec4<f32>(final_color, 1.0);
+}
+"#;
+
+const SKYBOX_SHADER_SOURCE: &str = r#"
+struct CameraUniform {
+    view_proj: mat4x4<f32>,
+    inv_view_proj: mat4x4<f32>,
+    camera_pos: vec4<f32>,
+    fog_color: vec4<f32>,
+    zenith_color: vec4<f32>,
+    horizon_color: vec4<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> camera: CameraUniform;
+
+struct SkyVertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_sky(@builtin(vertex_index) in_vertex_index: u32) -> SkyVertexOutput {
+    var out: SkyVertexOutput;
+    let x = f32(i32(in_vertex_index & 1u) * 4 - 1);
+    let y = f32(i32(in_vertex_index & 2u) * 2 - 1);
+    out.clip_position = vec4<f32>(x, y, 0.999999, 1.0);
+    out.uv = vec2<f32>((x + 1.0) * 0.5, (1.0 - y) * 0.5);
+    return out;
+}
+
+fn hash31(p: vec3<f32>) -> f32 {
+    let p3 = fract(p * 0.1031);
+    let d = dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * d);
+}
+
+@fragment
+fn fs_sky(in: SkyVertexOutput) -> @location(0) vec4<f32> {
+    let ndc = vec4<f32>(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0, 1.0, 1.0);
+    let unprojected = camera.inv_view_proj * ndc;
+    let ray_dir = normalize(unprojected.xyz / unprojected.w);
+
+    let sky_mode = i32(camera.zenith_color.w + 0.5);
+    let time = camera.camera_pos.w;
+
+    if (sky_mode == 0) {
+        // Solid color
+        return vec4<f32>(camera.horizon_color.rgb, 1.0);
+    } else if (sky_mode == 1) {
+        // Smooth zenith / horizon gradient
+        let h = clamp(ray_dir.y * 0.5 + 0.5, 0.0, 1.0);
+        let grad = mix(camera.horizon_color.rgb, camera.zenith_color.rgb, pow(h, 0.7));
+        return vec4<f32>(grad, 1.0);
+    } else {
+        // Space with 3D starfield & faint nebula
+        let h = clamp(ray_dir.y * 0.5 + 0.5, 0.0, 1.0);
+        let nebula_freq = ray_dir * 3.0;
+        let nebula = sin(nebula_freq.x + time * 0.05) * cos(nebula_freq.y) * sin(nebula_freq.z);
+        let cosmic_base = mix(camera.horizon_color.rgb, camera.zenith_color.rgb, h);
+        var color = cosmic_base + vec3<f32>(0.02, 0.04, 0.08) * max(nebula, 0.0);
+
+        let star_cell = floor(ray_dir * 180.0);
+        let star_rand = hash31(star_cell);
+        if (star_rand > 0.982) {
+            let star_pos = (star_cell + 0.5) / 180.0;
+            let dist_to_center = length(ray_dir - normalize(star_pos)) * 180.0;
+            let star_size = (star_rand - 0.982) / 0.018;
+            let twinkle = 0.6 + 0.4 * sin(time * 3.5 + star_rand * 62.8);
+            let intensity = exp(-dist_to_center * dist_to_center * 16.0) * star_size * twinkle;
+            let star_tint = mix(vec3<f32>(0.8, 0.9, 1.0), vec3<f32>(1.0, 0.9, 0.7), fract(star_rand * 17.0));
+            color += star_tint * intensity * 2.5;
+        }
+
+        return vec4<f32>(color, 1.0);
+    }
 }
 "#;
 
@@ -1120,6 +1208,58 @@ impl GpuContext {
             cache: None,
         });
 
+        // Skybox Procedural Render Pipeline
+        let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Skybox Shader Module"),
+            source: wgpu::ShaderSource::Wgsl(SKYBOX_SHADER_SOURCE.into()),
+        });
+
+        let skybox_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Skybox Pipeline Layout"),
+            bind_group_layouts: &[Some(&camera_bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        let skybox_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Skybox Render Pipeline"),
+            layout: Some(&skybox_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &sky_shader,
+                entry_point: Some("vs_sky"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &sky_shader,
+                entry_point: Some("fs_sky"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DepthTexture::DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let grid_mesh = create_grid_mesh(&device);
         let wireframe_cube_mesh = create_wireframe_cube_mesh(&device);
 
@@ -1164,6 +1304,7 @@ impl GpuContext {
             render_pipeline,
             additive_render_pipeline,
             line_pipeline,
+            skybox_pipeline,
             grid_mesh,
             wireframe_cube_mesh,
             camera_buffer,
@@ -1282,6 +1423,25 @@ impl GpuContext {
     pub fn update_camera_with_time(&mut self, camera: &Camera, time: f32) {
         let mut uniform = CameraUniform::new();
         uniform.update_with_time(camera, time);
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[uniform]),
+        );
+    }
+
+    pub fn update_camera_with_environment(
+        &mut self,
+        camera: &Camera,
+        time: f32,
+        sky_mode: &str,
+        zenith: [f32; 3],
+        horizon: [f32; 3],
+        fog_color: [f32; 3],
+        fog_density: f32,
+    ) {
+        let mut uniform = CameraUniform::new();
+        uniform.update_with_environment(camera, time, sky_mode, zenith, horizon, fog_color, fog_density);
         self.queue.write_buffer(
             &self.camera_buffer,
             0,

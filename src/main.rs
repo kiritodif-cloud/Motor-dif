@@ -147,6 +147,7 @@ pub struct EngineState {
     pub tweens: TweenManager,
     pub is_standalone_play: bool,
     pub post_process_settings: assets::PostProcessDef,
+    pub environment_settings: assets::EnvironmentDef,
     pub total_time: f32,
 
     // Editor State
@@ -330,10 +331,14 @@ impl EngineState {
         }
 
         let mut loaded_pp = assets::PostProcessDef::default();
+        let mut loaded_env = assets::EnvironmentDef::default();
         match assets::load_scene_from_file(scene_path) {
             Ok(scene) => {
                 if let Some(pp) = &scene.post_process {
                     loaded_pp = pp.clone();
+                }
+                if let Some(env) = &scene.environment {
+                    loaded_env = env.clone();
                 }
                 assets::apply_scene_to_world(&scene, &mut world, &mut camera, &mut physics, Some(&lua_ctx));
                 logs.push(format!("Scene loaded from '{}' ({} entities)", initial_scene_path, world.len()));
@@ -344,6 +349,9 @@ impl EngineState {
         }
         if let Ok(mut lock) = lua_ctx.post_process_settings.write() {
             *lock = loaded_pp.clone();
+        }
+        if let Ok(mut lock) = lua_ctx.environment_settings.write() {
+            *lock = loaded_env.clone();
         }
 
         let hot_reload = match HotReloadManager::new("assets") {
@@ -414,6 +422,7 @@ impl EngineState {
             tweens: TweenManager::new(),
             is_standalone_play,
             post_process_settings: loaded_pp,
+            environment_settings: loaded_env,
             total_time: 0.0,
 
             play_mode: if is_standalone_play { PlayMode::Play } else { PlayMode::Edit },
@@ -498,6 +507,7 @@ impl EngineState {
     pub fn save_scene_to_file(&mut self, path: &str) {
         let mut scene = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
         scene.post_process = Some(self.post_process_settings.clone());
+        scene.environment = Some(self.environment_settings.clone());
         self.hot_reload.suppress_scene_events(std::time::Duration::from_millis(600));
         match assets::save_scene_to_file(path, &scene) {
             Ok(()) => {
@@ -521,6 +531,12 @@ impl EngineState {
                     self.post_process_settings = pp.clone();
                     if let Ok(mut lock) = self.lua_ctx.post_process_settings.write() {
                         *lock = pp.clone();
+                    }
+                }
+                if let Some(env) = &scene.environment {
+                    self.environment_settings = env.clone();
+                    if let Ok(mut lock) = self.lua_ctx.environment_settings.write() {
+                        *lock = env.clone();
                     }
                 }
                 self.selected_entity = None;
@@ -1461,6 +1477,13 @@ impl EngineState {
             }
         }
 
+        // Drain pending environment updates from Lua
+        if let Ok(mut pending_env) = self.lua_ctx.pending_environment.lock() {
+            if let Some(env) = pending_env.take() {
+                self.environment_settings = env;
+            }
+        }
+
         self.frame_counter += 1;
         if self.fps_timer.elapsed().as_secs_f32() >= 0.5 {
             self.fps = self.frame_counter as f32 / self.fps_timer.elapsed().as_secs_f32();
@@ -1916,8 +1939,16 @@ impl EngineState {
         // Update camera shake
         self.camera.update_shake(dt);
 
-        // Update camera in GPU with simulation time
-        self.gpu.update_camera_with_time(&self.camera, self.total_time);
+        // Update camera in GPU with simulation time and environment settings
+        self.gpu.update_camera_with_environment(
+            &self.camera,
+            self.total_time,
+            &self.environment_settings.sky_mode,
+            self.environment_settings.zenith_color,
+            self.environment_settings.horizon_color,
+            self.environment_settings.fog_color,
+            self.environment_settings.fog_density,
+        );
 
         // Collect active point lights into GPU uniform
         let mut lights_uniform = LightsUniform::default();
@@ -2906,6 +2937,33 @@ impl EngineState {
                             ui.add(egui::Slider::new(&mut self.post_process_settings.bloom_threshold, 0.1..=2.5).text("Threshold"));
                             ui.add(egui::Slider::new(&mut self.post_process_settings.vignette_intensity, 0.0..=1.0).text("Vignette"));
                             ui.add(egui::Slider::new(&mut self.post_process_settings.exposure, 0.1..=3.0).text("Exposure"));
+                        });
+
+                        ui.add_space(8.0);
+                        ui_theme::collapsible_card(ui, "insp_environment", "Atmosphere & Skybox", false, |ui| {
+                            egui::ComboBox::from_label("Sky Mode")
+                                .selected_text(&self.environment_settings.sky_mode)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.environment_settings.sky_mode, "space".to_string(), "Space (Stars & Nebula)");
+                                    ui.selectable_value(&mut self.environment_settings.sky_mode, "gradient".to_string(), "Gradient");
+                                    ui.selectable_value(&mut self.environment_settings.sky_mode, "solid".to_string(), "Solid Color");
+                                });
+                            ui.horizontal(|ui| {
+                                ui.label("Zenith:");
+                                ui.color_edit_button_rgb(&mut self.environment_settings.zenith_color);
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Horizon:");
+                                ui.color_edit_button_rgb(&mut self.environment_settings.horizon_color);
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Fog Color:");
+                                ui.color_edit_button_rgb(&mut self.environment_settings.fog_color);
+                            });
+                            ui.add(egui::Slider::new(&mut self.environment_settings.fog_density, 0.0..=0.1).text("Fog Density"));
+                            if let Ok(mut lock) = self.lua_ctx.environment_settings.write() {
+                                *lock = self.environment_settings.clone();
+                            }
                         });
                     });
 
@@ -4068,6 +4126,11 @@ impl EngineState {
                 timestamp_writes: None,
                 multiview_mask: None,
             });
+
+            // 0. Render Procedural Skybox
+            render_pass.set_pipeline(&self.gpu.skybox_pipeline);
+            render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
+            render_pass.draw(0..3, 0..1);
 
             // 1a. Render Opaque & Alpha Batches
             render_pass.set_pipeline(&self.gpu.render_pipeline);
