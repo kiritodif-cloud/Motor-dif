@@ -172,6 +172,7 @@ pub struct EngineState {
 
     // Editor State
     pub workspace: EditorWorkspace,
+    pub scene_path: String,
     pub forge_recipe: crate::modeler::ModelRecipe,
     pub forge_selected_part: Option<usize>,
     pub play_mode: PlayMode,
@@ -245,6 +246,25 @@ pub fn dist_to_segment_2d(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     let rx = p[0] - proj_x;
     let ry = p[1] - proj_y;
     (rx * rx + ry * ry).sqrt()
+}
+
+pub fn is_scene_path(path: &str) -> bool {
+    if !path.ends_with(".json") {
+        return false;
+    }
+    let normalized = path.replace('\\', "/").to_lowercase();
+    if normalized.contains("/prefabs/") || normalized.contains("/models/") || normalized.contains("/textures/") {
+        return false;
+    }
+    let filename = Path::new(path)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if filename == "input_map.json" || filename == "save_data.json" || filename == "game.json" {
+        return false;
+    }
+    true
 }
 
 pub fn compute_world_transforms(
@@ -472,6 +492,7 @@ impl EngineState {
             total_time: 0.0,
 
             workspace: EditorWorkspace::Scene,
+            scene_path: initial_scene_path.clone(),
             forge_recipe: crate::modeler::preset_spaceship(),
             forge_selected_part: None,
 
@@ -587,7 +608,8 @@ impl EngineState {
                 let msg = format!("Scene successfully saved to '{}'", path);
                 self.logs.push(msg.clone());
                 self.hot_reload.last_reload_status = Some(msg);
-                self.add_toast("Scene saved to assets/scene.json", egui::Color32::from_rgb(56, 189, 248));
+                let toast_msg = format!("Scene saved to {}", path);
+                self.add_toast(&toast_msg, egui::Color32::from_rgb(56, 189, 248));
             }
             Err(e) => {
                 self.logs.push(format!("Error saving scene: {}", e));
@@ -597,7 +619,8 @@ impl EngineState {
     }
 
     pub fn reload_scene(&mut self) {
-        match assets::load_scene_from_file("assets/scene.json") {
+        let path = self.scene_path.clone();
+        match assets::load_scene_from_file(&path) {
             Ok(scene) => {
                 assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
                 if let Some(pp) = &scene.post_process {
@@ -614,7 +637,7 @@ impl EngineState {
                 }
                 self.selected_entity = None;
                 self.hot_reload.last_reload_error = None;
-                let msg = format!("Hot-Reload: Scene successfully reloaded ({} entities)", self.world.len());
+                let msg = format!("Hot-Reload: Scene successfully reloaded from '{}' ({} entities)", path, self.world.len());
                 self.logs.push(msg.clone());
                 self.hot_reload.last_reload_status = Some(msg);
                 self.add_toast("Scene reloaded", egui::Color32::from_rgb(56, 189, 248));
@@ -625,6 +648,61 @@ impl EngineState {
                 self.add_toast(format!("Hot-reload error: {}", err), egui::Color32::from_rgb(239, 68, 68));
             }
         }
+    }
+
+    pub fn open_scene(&mut self, path: &str) -> Result<(), String> {
+        // 1. If currently playing/simulating, stop cleanly
+        if self.play_mode != PlayMode::Edit {
+            if let Some(snapshot) = self.play_snapshot.take() {
+                let _ = snapshot;
+            }
+            self.particles.clear();
+            self.lua_ctx.clear_timers_and_events();
+            self.play_mode = PlayMode::Edit;
+            self.logs.push("Simulation stopped to open new scene.".to_string());
+        }
+
+        self.push_history();
+
+        // 2. Load scene from file
+        let scene = assets::load_scene_from_file(path)
+            .map_err(|e| format!("Failed to load scene '{}': {}", path, e))?;
+
+        // 3. Clear existing world and subsystems
+        self.world.clear();
+        self.physics.clear();
+        self.particles.clear();
+        self.selected_entity = None;
+
+        // 4. Populate world
+        assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
+
+        // 5. Apply post-process and environment settings
+        if let Some(pp) = &scene.post_process {
+            self.post_process_settings = pp.clone();
+            if let Ok(mut lock) = self.lua_ctx.post_process_settings.write() {
+                *lock = pp.clone();
+            }
+        }
+        if let Some(env) = &scene.environment {
+            self.environment_settings = env.clone();
+            if let Ok(mut lock) = self.lua_ctx.environment_settings.write() {
+                *lock = env.clone();
+            }
+        }
+
+        // 6. Update active paths
+        self.scene_path = path.to_string();
+        self.export_entry_scene = path.to_string();
+        self.hot_reload.last_reload_error = None;
+
+        // 7. Toast & Logs
+        let file_name = Path::new(path).file_name().and_then(|f| f.to_str()).unwrap_or(path);
+        let toast_msg = format!("Opened: {}", file_name);
+        self.add_toast(&toast_msg, egui::Color32::from_rgb(56, 189, 248));
+        self.logs.push(format!("Scene opened from '{}' ({} entities)", path, self.world.len()));
+
+        Ok(())
     }
 
     pub fn spawn_primitive(&mut self, mesh_type: &str, color: [f32; 4]) {
@@ -1220,7 +1298,7 @@ impl EngineState {
                     }
 
                     if do_s {
-                        self.save_scene_to_file("assets/scene.json");
+                        self.save_scene_to_file(&self.scene_path.clone());
                     } else if do_z {
                         self.undo();
                     } else if do_y {
@@ -1931,7 +2009,7 @@ impl EngineState {
                     let _ = respond_to.send(Ok(result_str));
                 }
                 McpCommand::SaveScene { path, respond_to } => {
-                    let target_path = path.unwrap_or_else(|| "assets/scene.json".to_string());
+                    let target_path = path.unwrap_or_else(|| self.scene_path.clone());
                     self.save_scene_to_file(&target_path);
                     let msg = format!("Scene saved to '{}'", target_path);
                     let _ = respond_to.send(Ok(msg));
@@ -3566,6 +3644,7 @@ impl EngineState {
         let mut trigger_save_scene = false;
         let mut trigger_new_scene = false;
         let mut trigger_template: Option<&'static str> = None;
+        let mut trigger_open_scene: Option<String> = None;
         let mut trigger_reload_scene = false;
         let mut trigger_spawn_mesh = None;
         let mut trigger_duplicate = false;
@@ -3723,6 +3802,43 @@ impl EngineState {
                                     ui.close();
                                 }
                             });
+                            ui.menu_button("[O] Open Scene", |ui| {
+                                let mut scene_files: Vec<String> = self.assets_cache.iter()
+                                    .filter(|p| is_scene_path(p))
+                                    .cloned()
+                                    .collect();
+                                if scene_files.is_empty() {
+                                    if let Ok(entries) = std::fs::read_dir("assets") {
+                                        for entry in entries.flatten() {
+                                            let p = entry.path().to_string_lossy().replace('\\', "/");
+                                            if is_scene_path(&p) {
+                                                scene_files.push(p);
+                                            }
+                                        }
+                                        scene_files.sort();
+                                    }
+                                }
+                                if scene_files.is_empty() {
+                                    ui.label("(No scenes found in assets/)");
+                                } else {
+                                    for scene_file in scene_files {
+                                        let label_name = Path::new(&scene_file)
+                                            .file_name()
+                                            .and_then(|f| f.to_str())
+                                            .unwrap_or(&scene_file);
+                                        let is_current = scene_file == self.scene_path;
+                                        let display_text = if is_current {
+                                            format!("* {}", label_name)
+                                        } else {
+                                            label_name.to_string()
+                                        };
+                                        if ui.selectable_label(is_current, display_text).clicked() {
+                                            trigger_open_scene = Some(scene_file.clone());
+                                            ui.close();
+                                        }
+                                    }
+                                }
+                            });
                             if ui.button("[^] Save Scene (Ctrl+S)").clicked() {
                                 trigger_save_scene = true;
                                 ui.close();
@@ -3840,7 +3956,18 @@ impl EngineState {
                                 ui.label(egui::RichText::new("Hot-Reload: Active").size(11.5).strong());
                             });
 
-                            // 3. Selected Entity
+                            // 3. Active Scene Indicator
+                            ui.horizontal(|ui| {
+                                ui.colored_label(egui::Color32::from_rgb(168, 85, 247), "[S]");
+                                let scene_name = Path::new(&self.scene_path)
+                                    .file_name()
+                                    .and_then(|f| f.to_str())
+                                    .unwrap_or(&self.scene_path);
+                                ui.label(egui::RichText::new("Scene:").color(ui_theme::COLOR_TEXT_MUTED).size(11.5));
+                                ui.label(egui::RichText::new(scene_name).strong().color(egui::Color32::from_rgb(216, 180, 254)).size(11.5));
+                            });
+
+                            // 4. Selected Entity
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("Selected:").color(ui_theme::COLOR_TEXT_MUTED).size(11.5));
                                 let selected_str = if let Some(e) = self.selected_entity {
@@ -4998,18 +5125,18 @@ impl EngineState {
                                                     }
                                                 }
                                             } else if path.ends_with(".json") {
-                                                ui.label(format!("[json] {}", path));
-                                                if ui.button("Load Scene").clicked() {
-                                                    match assets::load_scene_from_file(path) {
-                                                        Ok(scene) => {
-                                                            assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
-                                                            self.selected_entity = None;
-                                                            self.logs.push(format!("Loaded scene from '{}'", path));
-                                                        }
-                                                        Err(e) => {
-                                                            self.logs.push(format!("Failed to load scene '{}': {}", path, e));
-                                                        }
+                                                if is_scene_path(path) {
+                                                    let is_current = path == &self.scene_path;
+                                                    let display_tag = if is_current { "[*scene]" } else { "[scene]" };
+                                                    let label_text = format!("{} {}", display_tag, path);
+                                                    if ui.selectable_label(is_current, label_text).clicked() {
+                                                        trigger_open_scene = Some(path.clone());
                                                     }
+                                                    if ui.button("[Load]").clicked() {
+                                                        trigger_open_scene = Some(path.clone());
+                                                    }
+                                                } else {
+                                                    ui.label(format!("[json]  {}", path));
                                                 }
                                             } else if path.ends_with(".lua") {
                                                 ui.label(format!("[lua]  {}", path));
@@ -6666,6 +6793,8 @@ impl EngineState {
             self.world.clear();
             self.physics.clear();
             self.selected_entity = None;
+            self.scene_path = "assets/scene.json".to_string();
+            self.export_entry_scene = "assets/scene.json".to_string();
             self.logs.push("Created new empty scene".to_string());
             self.add_toast("New empty scene created", egui::Color32::from_rgb(250, 204, 21));
         }
@@ -6682,6 +6811,8 @@ impl EngineState {
                     if let Some(env) = &scene.environment {
                         self.environment_settings = env.clone();
                     }
+                    self.scene_path = "assets/scene.json".to_string();
+                    self.export_entry_scene = "assets/scene.json".to_string();
                     let msg = format!("Loaded template '{}'", template_name);
                     self.logs.push(msg.clone());
                     self.add_toast(&msg, egui::Color32::from_rgb(56, 189, 248));
@@ -6692,8 +6823,15 @@ impl EngineState {
             }
         }
 
+        if let Some(path) = trigger_open_scene {
+            if let Err(e) = self.open_scene(&path) {
+                self.logs.push(e.clone());
+                self.add_toast(&e, egui::Color32::from_rgb(239, 68, 68));
+            }
+        }
+
         if trigger_save_scene {
-            self.save_scene_to_file("assets/scene.json");
+            self.save_scene_to_file(&self.scene_path.clone());
         }
 
         if trigger_reload_scene {
@@ -7259,5 +7397,41 @@ mod tests {
         let cycle_transforms = compute_world_transforms(&world_cycle);
         assert!(cycle_transforms.contains_key(&e_a));
         assert!(cycle_transforms.contains_key(&e_b));
+    }
+
+    #[test]
+    fn test_is_scene_path_filtering() {
+        assert!(is_scene_path("assets/scene.json"));
+        assert!(is_scene_path("assets/showcase_v20_vfx.json"));
+        assert!(is_scene_path("assets/arena_survival.json"));
+        assert!(is_scene_path("assets/cosmos_scene.json"));
+
+        // Non-scenes must be rejected
+        assert!(!is_scene_path("assets/input_map.json"));
+        assert!(!is_scene_path("assets/save_data.json"));
+        assert!(!is_scene_path("assets/game.json"));
+        assert!(!is_scene_path("assets/prefabs/player.json"));
+        assert!(!is_scene_path("assets/scripts/player.lua"));
+        assert!(!is_scene_path("assets/textures/checker.png"));
+        assert!(!is_scene_path("assets/sfx/bounce.wav"));
+    }
+
+    #[test]
+    fn test_scene_discovery_in_assets() {
+        if Path::new("assets").exists() {
+            let mut scenes = Vec::new();
+            if let Ok(entries) = std::fs::read_dir("assets") {
+                for entry in entries.flatten() {
+                    let p = entry.path().to_string_lossy().replace('\\', "/");
+                    if is_scene_path(&p) {
+                        scenes.push(p);
+                    }
+                }
+            }
+            assert!(scenes.iter().any(|s| s.ends_with("scene.json")));
+            assert!(scenes.iter().any(|s| s.ends_with("showcase_v20_vfx.json")));
+            assert!(!scenes.iter().any(|s| s.ends_with("input_map.json")));
+            assert!(!scenes.iter().any(|s| s.ends_with("save_data.json")));
+        }
     }
 }

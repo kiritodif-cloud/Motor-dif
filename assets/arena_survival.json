@@ -1,0 +1,173 @@
+{
+  "camera": {
+    "mode": "3d",
+    "position": [0.0, 20.0, 16.0],
+    "target": [0.0, 0.0, 0.0],
+    "ortho_size": 20.0
+  },
+  "post_process": {
+    "bloom_enabled": true,
+    "bloom_intensity": 1.5,
+    "bloom_threshold": 0.8,
+    "vignette_intensity": 0.3,
+    "exposure": 1.2
+  },
+  "environment": {
+    "sky_mode": "gradient",
+    "zenith_color": [0.05, 0.08, 0.18],
+    "horizon_color": [0.02, 0.03, 0.06],
+    "fog_color": [0.03, 0.04, 0.1],
+    "fog_density": 0.005
+  },
+  "entities": [
+    {
+      "id": "arena_floor",
+      "mesh": "plane",
+      "position": [0.0, 0.0, 0.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [20.0, 1.0, 20.0],
+      "texture": "assets/textures/arena_grid.png",
+      "color": [0.15, 0.45, 0.85, 1.0],
+      "emissive": 0.1,
+      "wireframe": false,
+      "blend_mode": "opaque",
+      "physics": {
+        "body": "fixed",
+        "collider": "cuboid",
+        "mass": 0.0,
+        "restitution": 0.2
+      }
+    },
+    {
+      "id": "wall_north",
+      "mesh": "cube",
+      "position": [0.0, 1.0, -10.5],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [22.0, 2.0, 1.0],
+      "color": [0.2, 0.28, 0.45, 1.0],
+      "emissive": 0.25,
+      "physics": {
+        "body": "fixed",
+        "collider": "cuboid",
+        "mass": 0.0,
+        "restitution": 0.2
+      }
+    },
+    {
+      "id": "wall_south",
+      "mesh": "cube",
+      "position": [0.0, 1.0, 10.5],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [22.0, 2.0, 1.0],
+      "color": [0.2, 0.28, 0.45, 1.0],
+      "emissive": 0.25,
+      "physics": {
+        "body": "fixed",
+        "collider": "cuboid",
+        "mass": 0.0,
+        "restitution": 0.2
+      }
+    },
+    {
+      "id": "wall_west",
+      "mesh": "cube",
+      "position": [-10.5, 1.0, 0.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [1.0, 2.0, 22.0],
+      "color": [0.2, 0.28, 0.45, 1.0],
+      "emissive": 0.25,
+      "physics": {
+        "body": "fixed",
+        "collider": "cuboid",
+        "mass": 0.0,
+        "restitution": 0.2
+      }
+    },
+    {
+      "id": "wall_east",
+      "mesh": "cube",
+      "position": [10.5, 1.0, 0.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [1.0, 2.0, 22.0],
+      "color": [0.2, 0.28, 0.45, 1.0],
+      "emissive": 0.25,
+      "physics": {
+        "body": "fixed",
+        "collider": "cuboid",
+        "mass": 0.0,
+        "restitution": 0.2
+      }
+    },
+    {
+      "id": "pillar_nw",
+      "mesh": "cube",
+      "position": [-10.0, 1.5, -10.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [1.2, 3.0, 1.2],
+      "color": [0.1, 0.9, 1.0, 1.0],
+      "emissive": 0.8,
+      "point_light": {
+        "color": [0.1, 0.9, 1.0],
+        "intensity": 4.0,
+        "radius": 8.0
+      }
+    },
+    {
+      "id": "pillar_ne",
+      "mesh": "cube",
+      "position": [10.0, 1.5, -10.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [1.2, 3.0, 1.2],
+      "color": [0.1, 0.9, 1.0, 1.0],
+      "emissive": 0.8,
+      "point_light": {
+        "color": [0.1, 0.9, 1.0],
+        "intensity": 4.0,
+        "radius": 8.0
+      }
+    },
+    {
+      "id": "pillar_sw",
+      "mesh": "cube",
+      "position": [-10.0, 1.5, 10.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [1.2, 3.0, 1.2],
+      "color": [0.1, 0.9, 1.0, 1.0],
+      "emissive": 0.8,
+      "point_light": {
+        "color": [0.1, 0.9, 1.0],
+        "intensity": 4.0,
+        "radius": 8.0
+      }
+    },
+    {
+      "id": "pillar_se",
+      "mesh": "cube",
+      "position": [10.0, 1.5, 10.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [1.2, 3.0, 1.2],
+      "color": [0.1, 0.9, 1.0, 1.0],
+      "emissive": 0.8,
+      "point_light": {
+        "color": [0.1, 0.9, 1.0],
+        "intensity": 4.0,
+        "radius": 8.0
+      }
+    },
+    {
+      "id": "player",
+      "mesh": "assets/models/spaceship.glb",
+      "position": [0.0, 0.5, 0.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [1.0, 1.0, 1.0],
+      "color": [0.25, 0.85, 1.0, 1.0],
+      "emissive": 0.6,
+      "script": "assets/scripts/arena_survival.lua",
+      "point_light": {
+        "color": [0.2, 0.85, 1.0],
+        "intensity": 5.0,
+        "radius": 14.0
+      }
+    }
+  ]
+}

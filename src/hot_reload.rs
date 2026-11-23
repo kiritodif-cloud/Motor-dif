@@ -68,7 +68,7 @@ impl HotReloadManager {
                         .unwrap_or_default()
                         .to_lowercase();
 
-                    if file_name == "scene.json" || (file_name.starts_with("scene") && file_name.ends_with(".json")) {
+                    if file_name.ends_with(".json") && file_name != "input_map.json" && file_name != "save_data.json" && file_name != "game.json" {
                         scene_changed = true;
                     } else if file_name.ends_with(".lua") {
                         events.push(HotReloadEvent::ScriptChanged(path));
