@@ -1021,6 +1021,96 @@ impl EngineState {
                         lua_errors: lua_err,
                     });
                 }
+                McpCommand::GetConsoleLogs { filter, limit, respond_to } => {
+                    let f = filter.as_deref().unwrap_or("all").to_lowercase();
+                    let lim = limit.unwrap_or(50);
+                    let filtered: Vec<String> = self.logs.iter().filter(|l| {
+                        match f.as_str() {
+                            "error" => l.to_lowercase().contains("error") || l.to_lowercase().contains("fail"),
+                            "lua" => l.to_lowercase().contains("lua") || l.to_lowercase().contains("script"),
+                            "mcp" => l.to_lowercase().contains("mcp"),
+                            _ => true,
+                        }
+                    }).cloned().collect();
+                    let len = filtered.len();
+                    let start = len.saturating_sub(lim);
+                    let result = filtered[start..].to_vec();
+                    let _ = respond_to.send(result);
+                }
+                McpCommand::GetSceneTree { respond_to } => {
+                    let selected_id = self.selected_entity.and_then(|e| {
+                        self.world.get::<&EntityMeta>(e).ok().map(|m| m.id.clone())
+                    });
+
+                    let mut nodes: HashMap<String, mcp_server::SceneTreeNode> = HashMap::new();
+                    for entity_ref in self.world.iter() {
+                        if let (Some(meta), Some(mesh)) = (entity_ref.get::<&EntityMeta>(), entity_ref.get::<&MeshRender>()) {
+                            let mut comps = vec!["EntityMeta".to_string(), "Transform".to_string(), "MeshRender".to_string()];
+                            if entity_ref.get::<&ScriptComponent>().is_some() { comps.push("ScriptComponent".to_string()); }
+                            if entity_ref.get::<&RigidBodyComponent>().is_some() { comps.push("RigidBody".to_string()); }
+                            if entity_ref.get::<&crate::ecs::PointLight>().is_some() { comps.push("PointLight".to_string()); }
+                            if entity_ref.get::<&crate::animation::AnimationPlayer>().is_some() { comps.push("AnimationPlayer".to_string()); }
+                            if entity_ref.get::<&crate::ecs::TrailComponent>().is_some() { comps.push("Trail".to_string()); }
+
+                            nodes.insert(meta.id.clone(), mcp_server::SceneTreeNode {
+                                id: meta.id.clone(),
+                                mesh: mesh.mesh_type.clone(),
+                                parent: meta.parent.clone(),
+                                components: comps,
+                                children: Vec::new(),
+                            });
+                        }
+                    }
+
+                    let total_entities = nodes.len();
+                    let mut parent_to_children: HashMap<String, Vec<String>> = HashMap::new();
+                    for node in nodes.values() {
+                        if let Some(p) = &node.parent {
+                            parent_to_children.entry(p.clone()).or_default().push(node.id.clone());
+                        }
+                    }
+
+                    fn build_node(id: &str, nodes: &HashMap<String, mcp_server::SceneTreeNode>, parent_to_children: &HashMap<String, Vec<String>>) -> Option<mcp_server::SceneTreeNode> {
+                        let mut node = nodes.get(id)?.clone();
+                        if let Some(child_ids) = parent_to_children.get(id) {
+                            for cid in child_ids {
+                                if let Some(child_node) = build_node(cid, nodes, parent_to_children) {
+                                    node.children.push(child_node);
+                                }
+                            }
+                        }
+                        Some(node)
+                    }
+
+                    let mut roots = Vec::new();
+                    for node in nodes.values() {
+                        if node.parent.is_none() || !nodes.contains_key(node.parent.as_ref().unwrap()) {
+                            if let Some(root_tree) = build_node(&node.id, &nodes, &parent_to_children) {
+                                roots.push(root_tree);
+                            }
+                        }
+                    }
+
+                    let _ = respond_to.send(mcp_server::SceneTreeResponse {
+                        selected_entity: selected_id,
+                        root_nodes: roots,
+                        total_entities,
+                    });
+                }
+                McpCommand::GetPerformanceStats { respond_to } => {
+                    let bodies_count = self.physics.dynamic_bodies_count() + self.physics.fixed_bodies_count();
+                    let particles_count = self.particles.active_count();
+                    let frame_time_ms = if self.fps > 0.0 { 1000.0 / self.fps } else { 0.0 };
+
+                    let _ = respond_to.send(mcp_server::PerformanceStatsResponse {
+                        fps: self.fps,
+                        frame_time_ms,
+                        entities: self.world.len() as usize,
+                        draw_calls: self.last_draw_calls,
+                        active_particles: particles_count,
+                        physics_bodies: bodies_count,
+                    });
+                }
                 McpCommand::CaptureViewport { respond_to } => {
                     self.pending_viewport_capture = Some(respond_to);
                 }

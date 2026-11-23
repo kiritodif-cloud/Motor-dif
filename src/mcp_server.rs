@@ -21,6 +21,32 @@ pub struct EngineLogsResponse {
     pub lua_errors: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SceneTreeNode {
+    pub id: String,
+    pub mesh: String,
+    pub parent: Option<String>,
+    pub components: Vec<String>,
+    pub children: Vec<SceneTreeNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SceneTreeResponse {
+    pub selected_entity: Option<String>,
+    pub root_nodes: Vec<SceneTreeNode>,
+    pub total_entities: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerformanceStatsResponse {
+    pub fps: f32,
+    pub frame_time_ms: f32,
+    pub entities: usize,
+    pub draw_calls: usize,
+    pub active_particles: usize,
+    pub physics_bodies: usize,
+}
+
 pub enum McpCommand {
     InspectWorld {
         respond_to: oneshot::Sender<WorldInspection>,
@@ -31,6 +57,17 @@ pub enum McpCommand {
     },
     GetEngineLogs {
         respond_to: oneshot::Sender<EngineLogsResponse>,
+    },
+    GetConsoleLogs {
+        filter: Option<String>,
+        limit: Option<usize>,
+        respond_to: oneshot::Sender<Vec<String>>,
+    },
+    GetSceneTree {
+        respond_to: oneshot::Sender<SceneTreeResponse>,
+    },
+    GetPerformanceStats {
+        respond_to: oneshot::Sender<PerformanceStatsResponse>,
     },
     CaptureViewport {
         respond_to: oneshot::Sender<Result<String, String>>,
@@ -225,9 +262,37 @@ pub async fn handle_jsonrpc(
                                 "type": "object",
                                 "properties": {
                                     "game_name": { "type": "string", "description": "Nombre del juego y del ejecutable generado" },
-                                    "entry_scene": { "type": "string", "description": "Ruta de la escena inicial (ej. 'assets/scene.json')" }
+                                    "entry_scene": { "type": "string", "description": "Ruta de la escena inicial (ej. 'assets/scene.json')" },
+                                    "output_dir": { "type": "string", "description": "Directorio de destino (opcional, por defecto 'dist/<game_name>')" }
                                 },
                                 "required": ["game_name", "entry_scene"]
+                            }
+                        },
+                        {
+                            "name": "get_console_logs",
+                            "description": "Retorna los ultimos logs filtrados de la consola del motor",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "filter": { "type": "string", "enum": ["all", "error", "lua", "mcp"], "description": "Filtro de logs ('all', 'error', 'lua', 'mcp')" },
+                                    "limit": { "type": "integer", "description": "Numero maximo de logs a retornar (por defecto 50)" }
+                                }
+                            }
+                        },
+                        {
+                            "name": "get_scene_tree",
+                            "description": "Retorna la jerarquia completa de la escena en formato arbol JSON y entidad seleccionada",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {}
+                            }
+                        },
+                        {
+                            "name": "get_performance_stats",
+                            "description": "Retorna metricas en tiempo real: fps, frame_time_ms, entities, draw_calls, active_particles, physics_bodies",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {}
                             }
                         },
                         {
@@ -444,8 +509,9 @@ pub async fn handle_jsonrpc(
                 "export_game" => {
                     let game_name = args.get("game_name").and_then(|v| v.as_str()).unwrap_or("MotorGame");
                     let entry_scene = args.get("entry_scene").and_then(|v| v.as_str()).unwrap_or("assets/scene.json");
+                    let output_dir = args.get("output_dir").and_then(|v| v.as_str());
 
-                    match crate::exporter::export_game(game_name, entry_scene, None) {
+                    match crate::exporter::export_game(game_name, entry_scene, output_dir) {
                         Ok(out_path) => {
                             Some(JsonRpcResponse::success(
                                 id,
@@ -454,11 +520,80 @@ pub async fn handle_jsonrpc(
                                         "type": "text",
                                         "text": format!("Juego exportado exitosamente en '{}'", out_path.display())
                                     }],
-                                    "dist_path": out_path.to_string_lossy()
+                                    "dist_path": out_path.to_string_lossy(),
+                                    "status": "success"
                                 }),
                             ))
                         }
                         Err(e) => Some(JsonRpcResponse::error(id, -32000, format!("Error al exportar: {}", e))),
+                    }
+                }
+                "get_console_logs" => {
+                    let filter = args.get("filter").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let limit = args.get("limit").and_then(|v| v.as_u64()).map(|u| u as usize);
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::GetConsoleLogs { filter, limit, respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(logs) => {
+                            let text = serde_json::to_string_pretty(&logs).unwrap_or_default();
+                            Some(JsonRpcResponse::success(
+                                id,
+                                json!({
+                                    "content": [{
+                                        "type": "text",
+                                        "text": text
+                                    }],
+                                    "logs": logs
+                                }),
+                            ))
+                        }
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Fallo al obtener logs")),
+                    }
+                }
+                "get_scene_tree" => {
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::GetSceneTree { respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(tree) => {
+                            let text = serde_json::to_string_pretty(&tree).unwrap_or_default();
+                            Some(JsonRpcResponse::success(
+                                id,
+                                json!({
+                                    "content": [{
+                                        "type": "text",
+                                        "text": text
+                                    }],
+                                    "scene_tree": tree
+                                }),
+                            ))
+                        }
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Fallo al obtener arbol de escena")),
+                    }
+                }
+                "get_performance_stats" => {
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::GetPerformanceStats { respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(stats) => {
+                            let text = serde_json::to_string_pretty(&stats).unwrap_or_default();
+                            Some(JsonRpcResponse::success(
+                                id,
+                                json!({
+                                    "content": [{
+                                        "type": "text",
+                                        "text": text
+                                    }],
+                                    "performance_stats": stats
+                                }),
+                            ))
+                        }
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Fallo al obtener estadisticas de rendimiento")),
                     }
                 }
                 "delete_entity" => {
@@ -757,5 +892,51 @@ pub fn start_mcp_server(cmd_tx: mpsc::Sender<McpCommand>, port: u16) -> McpServe
     McpServerHandle {
         bound_addr,
         _rt: rt,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mcp_v3_structs_serialization() {
+        let stats = PerformanceStatsResponse {
+            fps: 60.5,
+            frame_time_ms: 16.52,
+            entities: 42,
+            draw_calls: 3,
+            active_particles: 150,
+            physics_bodies: 12,
+        };
+        let json_str = serde_json::to_string(&stats).unwrap();
+        assert!(json_str.contains("\"fps\":60.5"));
+        assert!(json_str.contains("\"draw_calls\":3"));
+
+        let child = SceneTreeNode {
+            id: "child_sword".to_string(),
+            mesh: "cube".to_string(),
+            parent: Some("player".to_string()),
+            components: vec!["Transform".to_string(), "MeshRender".to_string()],
+            children: Vec::new(),
+        };
+
+        let root = SceneTreeNode {
+            id: "player".to_string(),
+            mesh: "sphere".to_string(),
+            parent: None,
+            components: vec!["Transform".to_string(), "MeshRender".to_string(), "ScriptComponent".to_string()],
+            children: vec![child],
+        };
+
+        let tree = SceneTreeResponse {
+            selected_entity: Some("player".to_string()),
+            root_nodes: vec![root],
+            total_entities: 2,
+        };
+
+        let tree_json = serde_json::to_string_pretty(&tree).unwrap();
+        assert!(tree_json.contains("\"selected_entity\": \"player\""));
+        assert!(tree_json.contains("\"child_sword\""));
     }
 }
