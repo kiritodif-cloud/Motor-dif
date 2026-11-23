@@ -541,6 +541,14 @@ mod tests {
     }
 
     #[test]
+    fn test_load_showcase_v10() {
+        let scene = load_scene_from_file("assets/showcase_v10.json");
+        assert!(scene.is_ok(), "Failed to load showcase_v10: {:?}", scene.err());
+        let s = scene.unwrap();
+        assert_eq!(s.entities.len(), 7);
+    }
+
+    #[test]
     fn test_entity_def_parent() {
         let def = EntityDef {
             id: "child".to_string(),
