@@ -701,4 +701,18 @@ mod tests {
         let scout = scene.entities.iter().find(|e| e.id == "terrain_scout").unwrap();
         assert_eq!(scout.script, Some("assets/scripts/terrain_scout.lua".to_string()));
     }
+
+    #[test]
+    fn test_load_showcase_v19_rig() {
+        let p = Path::new("assets/showcase_v19_rig.json");
+        if p.exists() {
+            let scene = load_scene_from_file(p).expect("Failed to parse showcase_v19_rig.json");
+            assert!(scene.entities.len() >= 25);
+            let mech_root = scene.entities.iter().find(|e| e.id == "mech_root").unwrap();
+            assert!(mech_root.procedural_rig.is_some());
+            assert_eq!(mech_root.script, Some("assets/scripts/rig_showcase.lua".to_string()));
+            let beacon = scene.entities.iter().find(|e| e.id == "rig_beacon").unwrap();
+            assert!(beacon.point_light.is_some());
+        }
+    }
 }

@@ -1345,4 +1345,160 @@ mod tests {
         }
         update_procedural_rigs(&mut world, 0.016);
     }
+
+    #[test]
+    fn test_generate_showcase_v19_rig_scene() {
+        use crate::assets::{CameraDef, EnvironmentDef, PostProcessDef, PointLightDef, SceneDef};
+
+        let mut entities = Vec::new();
+
+        // 1. Central Arena Platform
+        entities.push(EntityDef {
+            id: "arena_base".to_string(),
+            mesh: "cylinder".to_string(),
+            position: [0.0, -0.1, 0.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [18.0, 0.2, 18.0],
+            texture: None,
+            parent: None,
+            color: [0.12, 0.15, 0.22, 1.0],
+            emissive: 0.0,
+            fresnel_color: Some([0.2, 0.4, 0.6]),
+            fresnel_power: Some(3.0),
+            blend_mode: Some("opaque".to_string()),
+            wireframe: Some(false),
+            uv_scroll: None,
+            script: None,
+            physics: None,
+            point_light: None,
+            animation_player: None,
+            procedural_rig: None,
+        });
+
+        entities.push(EntityDef {
+            id: "arena_inner".to_string(),
+            mesh: "cylinder".to_string(),
+            position: [0.0, 0.02, 0.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [11.0, 0.1, 11.0],
+            texture: None,
+            parent: None,
+            color: [0.16, 0.20, 0.30, 1.0],
+            emissive: 0.0,
+            fresnel_color: Some([0.3, 0.5, 0.7]),
+            fresnel_power: Some(2.5),
+            blend_mode: Some("opaque".to_string()),
+            wireframe: Some(false),
+            uv_scroll: None,
+            script: None,
+            physics: None,
+            point_light: None,
+            animation_player: None,
+            procedural_rig: None,
+        });
+
+        // 2. Central Tracking Beacon
+        entities.push(EntityDef {
+            id: "rig_beacon".to_string(),
+            mesh: "icosphere".to_string(),
+            position: [0.0, 3.0, 0.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [1.2, 1.2, 1.2],
+            texture: None,
+            parent: None,
+            color: [0.2, 0.9, 1.0, 1.0],
+            emissive: 4.0,
+            fresnel_color: Some([0.5, 0.95, 1.0]),
+            fresnel_power: Some(2.0),
+            blend_mode: Some("opaque".to_string()),
+            wireframe: Some(false),
+            uv_scroll: None,
+            script: None,
+            physics: None,
+            point_light: Some(PointLightDef {
+                color: [0.2, 0.85, 1.0],
+                intensity: 5.5,
+                radius: 24.0,
+            }),
+            animation_player: None,
+            procedural_rig: None,
+        });
+
+        entities.push(EntityDef {
+            id: "rig_beacon_ring1".to_string(),
+            mesh: "ring".to_string(),
+            position: [0.0, 3.0, 0.0],
+            rotation: [45.0, 0.0, 0.0],
+            scale: [2.2, 2.2, 2.2],
+            texture: None,
+            parent: Some("rig_beacon".to_string()),
+            color: [0.95, 0.3, 1.0, 1.0],
+            emissive: 3.0,
+            fresnel_color: Some([1.0, 0.4, 0.9]),
+            fresnel_power: Some(2.0),
+            blend_mode: Some("additive".to_string()),
+            wireframe: Some(false),
+            uv_scroll: None,
+            script: None,
+            physics: None,
+            point_light: None,
+            animation_player: None,
+            procedural_rig: None,
+        });
+
+        // 3. Modular Character 1: Mech Biped (with showcase Lua script)
+        let mut mech_defs = build_modular_character("mech_biped", "mech", [-6.0, 0.0, 6.0]);
+        for def in &mut mech_defs {
+            if def.id == "mech_root" {
+                def.script = Some("assets/scripts/rig_showcase.lua".to_string());
+            }
+        }
+        entities.extend(mech_defs);
+
+        // 4. Modular Character 2: Spider Drone
+        let spider_defs = build_modular_character("spider_drone", "spider", [5.5, 0.0, -4.5]);
+        entities.extend(spider_defs);
+
+        // 5. Modular Character 3: Defense Turret
+        let turret_defs = build_modular_character("defense_turret", "turret", [-6.5, 0.0, -5.5]);
+        entities.extend(turret_defs);
+
+        // 6. Modular Character 4: Sci-Fi Trooper
+        let trooper_defs = build_modular_character("sci_fi_trooper", "trooper", [5.5, 0.0, 5.0]);
+        entities.extend(trooper_defs);
+
+        // Scene Assembly
+        let scene = SceneDef {
+            camera: CameraDef {
+                mode: "3d".to_string(),
+                position: [0.0, 7.5, 17.5],
+                target: [0.0, 2.0, 0.0],
+                ortho_size: 10.0,
+            },
+            post_process: Some(PostProcessDef {
+                bloom_enabled: true,
+                bloom_intensity: 0.40,
+                bloom_threshold: 0.75,
+                vignette_intensity: 0.32,
+                exposure: 1.05,
+            }),
+            environment: Some(EnvironmentDef {
+                sky_mode: "gradient".to_string(),
+                zenith_color: [0.06, 0.08, 0.14],
+                horizon_color: [0.12, 0.16, 0.24],
+                fog_color: [0.06, 0.08, 0.14],
+                fog_density: 0.005,
+            }),
+            entities,
+        };
+
+        let json = serde_json::to_string_pretty(&scene).unwrap();
+        std::fs::write("assets/showcase_v19_rig.json", json).unwrap();
+
+        // Verify loaded cleanly
+        let loaded = crate::assets::load_scene_from_file("assets/showcase_v19_rig.json");
+        assert!(loaded.is_ok(), "Failed to load showcase_v19_rig.json: {:?}", loaded.err());
+        let s = loaded.unwrap();
+        assert!(s.entities.len() >= 25, "Expected at least 25 modular parts, got {}", s.entities.len());
+    }
 }
