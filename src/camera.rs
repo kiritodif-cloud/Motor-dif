@@ -306,9 +306,9 @@ impl CameraUniform {
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
             inv_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
             camera_pos: [0.0; 4],
-            fog_color: [0.08, 0.10, 0.16, 0.0],
-            zenith_color: [0.03, 0.05, 0.12, 2.0],
-            horizon_color: [0.08, 0.10, 0.18, 0.0],
+            fog_color: [0.071, 0.082, 0.118, 0.0],
+            zenith_color: [0.071, 0.082, 0.118, 1.0],
+            horizon_color: [0.133, 0.153, 0.212, 0.0],
         }
     }
 

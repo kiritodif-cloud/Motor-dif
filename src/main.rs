@@ -3769,6 +3769,32 @@ impl EngineState {
                                         }
                                         ui.separator();
                                         ui.checkbox(&mut self.debug_colliders, "Colliders");
+                                        ui.separator();
+                                        let sky_label = match self.environment_settings.sky_mode.as_str() {
+                                            "space" => "Sky: Space",
+                                            "solid" => "Sky: Solid",
+                                            _ => "Sky: Gradient",
+                                        };
+                                        egui::ComboBox::from_id_salt("viewport_sky_mode")
+                                            .selected_text(sky_label)
+                                            .width(95.0)
+                                            .show_ui(ui, |ui| {
+                                                if ui.selectable_value(&mut self.environment_settings.sky_mode, "gradient".to_string(), "Gradient").changed() {
+                                                    if let Ok(mut lock) = self.lua_ctx.environment_settings.write() {
+                                                        *lock = self.environment_settings.clone();
+                                                    }
+                                                }
+                                                if ui.selectable_value(&mut self.environment_settings.sky_mode, "space".to_string(), "Space").changed() {
+                                                    if let Ok(mut lock) = self.lua_ctx.environment_settings.write() {
+                                                        *lock = self.environment_settings.clone();
+                                                    }
+                                                }
+                                                if ui.selectable_value(&mut self.environment_settings.sky_mode, "solid".to_string(), "Solid").changed() {
+                                                    if let Ok(mut lock) = self.lua_ctx.environment_settings.write() {
+                                                        *lock = self.environment_settings.clone();
+                                                    }
+                                                }
+                                            });
                                     });
                                 });
                         });

@@ -142,10 +142,10 @@ pub struct EnvironmentDef {
     pub fog_density: f32,
 }
 
-fn default_sky_mode() -> String { "space".to_string() }
-fn default_zenith() -> [f32; 3] { [0.03, 0.05, 0.12] }
-fn default_horizon() -> [f32; 3] { [0.08, 0.10, 0.18] }
-fn default_fog_color() -> [f32; 3] { [0.08, 0.10, 0.16] }
+fn default_sky_mode() -> String { "gradient".to_string() }
+fn default_zenith() -> [f32; 3] { [0.071, 0.082, 0.118] }
+fn default_horizon() -> [f32; 3] { [0.133, 0.153, 0.212] }
+fn default_fog_color() -> [f32; 3] { [0.071, 0.082, 0.118] }
 
 impl Default for EnvironmentDef {
     fn default() -> Self {
@@ -625,5 +625,10 @@ mod tests {
         let decoded: EnvironmentDef = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.sky_mode, "space");
         assert_eq!(decoded.fog_density, 0.015);
+
+        let def_env = EnvironmentDef::default();
+        assert_eq!(def_env.sky_mode, "gradient");
+        assert_eq!(def_env.zenith_color, [0.071, 0.082, 0.118]);
+        assert_eq!(def_env.horizon_color, [0.133, 0.153, 0.212]);
     }
 }

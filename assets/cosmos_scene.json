@@ -13,6 +13,13 @@
     ],
     "ortho_size": 25.0
   },
+  "environment": {
+    "sky_mode": "space",
+    "zenith_color": [0.04, 0.06, 0.16],
+    "horizon_color": [0.015, 0.02, 0.05],
+    "fog_color": [0.03, 0.04, 0.10],
+    "fog_density": 0.008
+  },
   "entities": [
     {
       "id": "arena_floor",
