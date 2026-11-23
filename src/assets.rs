@@ -90,6 +90,8 @@ pub struct EntityDef {
     pub physics: Option<PhysicsDef>,
     #[serde(default)]
     pub point_light: Option<PointLightDef>,
+    #[serde(default)]
+    pub animation_player: Option<crate::animation::AnimationPlayer>,
 }
 
 fn default_scale() -> [f32; 3] {
@@ -199,6 +201,7 @@ impl Default for SceneDef {
                     script: None,
                     physics: None,
                     point_light: None,
+                    animation_player: None,
                 },
                 EntityDef {
                     id: "cube_green".to_string(),
@@ -218,6 +221,7 @@ impl Default for SceneDef {
                     script: None,
                     physics: None,
                     point_light: None,
+                    animation_player: None,
                 },
                 EntityDef {
                     id: "cube_blue".to_string(),
@@ -237,6 +241,7 @@ impl Default for SceneDef {
                     script: None,
                     physics: None,
                     point_light: None,
+                    animation_player: None,
                 },
             ],
         }
@@ -281,7 +286,7 @@ pub fn extract_scene_from_world(
     };
 
     let mut entities = Vec::new();
-    for (meta, transform, mesh, script_opt, rb_opt, light_comp_opt) in world
+    for (meta, transform, mesh, script_opt, rb_opt, light_comp_opt, anim_comp_opt) in world
         .query::<(
             &EntityMeta,
             &Transform,
@@ -289,6 +294,7 @@ pub fn extract_scene_from_world(
             Option<&ScriptComponent>,
             Option<&RigidBodyComponent>,
             Option<&crate::ecs::PointLight>,
+            Option<&crate::animation::AnimationPlayer>,
         )>()
         .iter()
     {
@@ -321,6 +327,8 @@ pub fn extract_scene_from_world(
             radius: l.radius,
         });
 
+        let anim_opt = anim_comp_opt.cloned();
+
         entities.push(EntityDef {
             id: meta.id.clone(),
             mesh: mesh.mesh_type.clone(),
@@ -339,6 +347,7 @@ pub fn extract_scene_from_world(
             script: script_opt.map(|s| s.path.clone()),
             physics: phys_def,
             point_light: light_opt,
+            animation_player: anim_opt,
         });
     }
 
@@ -419,6 +428,10 @@ pub fn apply_scene_to_world(
                 },
             );
         }
+
+        if let Some(anim_player) = &entity.animation_player {
+            let _ = world.insert_one(e, anim_player.clone());
+        }
     }
 }
 
@@ -450,6 +463,7 @@ pub fn extract_entity_def(
     let transform = world.get::<&Transform>(entity).ok()?;
     let mesh = world.get::<&MeshRender>(entity).ok()?;
     let script = world.get::<&ScriptComponent>(entity).ok().map(|s| s.path.clone());
+    let anim_opt = world.get::<&crate::animation::AnimationPlayer>(entity).ok().map(|a| (*a).clone());
 
     let phys_def = if let Ok(rb) = world.get::<&RigidBodyComponent>(entity) {
         if let Some(body) = physics.rigid_body_set.get(rb.handle) {
@@ -518,6 +532,7 @@ pub fn extract_entity_def(
         script,
         physics: phys_def,
         point_light,
+        animation_player: anim_opt,
     })
 }
 
@@ -572,6 +587,7 @@ mod tests {
                 intensity: 3.5,
                 radius: 12.0,
             }),
+            animation_player: None,
         };
         let json = serde_json::to_string(&def).unwrap();
         assert!(json.contains("\"parent\":\"parent_node\""));
@@ -601,6 +617,7 @@ mod tests {
             script: None,
             physics: None,
             point_light: None,
+            animation_player: None,
         };
         let json = serde_json::to_string(&def).unwrap();
         assert!(json.contains("\"blend_mode\":\"additive\""));

@@ -1,3 +1,4 @@
+pub mod animation;
 pub mod assets;
 pub mod audio;
 pub mod camera;
@@ -1130,7 +1131,7 @@ impl EngineState {
                             id, mesh, position: [x,y,z], rotation: [rx,ry,rz], scale: [sx,sy,sz],
                             color, texture, parent, emissive: 0.0,
                             fresnel_color: None, fresnel_power: None, blend_mode: None, wireframe: None, uv_scroll: None,
-                            script: None, physics: None, point_light: None
+                            script: None, physics: None, point_light: None, animation_player: None
                         };
                         if let Ok(mut list) = spawns_ref.lock() { list.push(def); }
                         Ok(())
@@ -1745,6 +1746,76 @@ impl EngineState {
                     let _ = self.world.despawn(e);
                     if self.selected_entity == Some(e) {
                         self.selected_entity = None;
+                    }
+                }
+            }
+
+            // 8. Handle pending animations from Lua
+            let pending_anims = if let Ok(mut a) = self.lua_ctx.pending_anims.lock() {
+                std::mem::take(&mut *a)
+            } else {
+                Vec::new()
+            };
+            for cmd in pending_anims {
+                match cmd {
+                    scripting::AnimationCommand::Play { entity_id, clip_name, looping } => {
+                        for entity_ref in self.world.iter() {
+                            if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                                if meta.id == entity_id {
+                                    let e = entity_ref.entity();
+                                    if let Ok(mut player) = self.world.get::<&mut crate::animation::AnimationPlayer>(e) {
+                                        player.play(&clip_name, looping);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    scripting::AnimationCommand::Stop { entity_id } => {
+                        for entity_ref in self.world.iter() {
+                            if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                                if meta.id == entity_id {
+                                    let e = entity_ref.entity();
+                                    if let Ok(mut player) = self.world.get::<&mut crate::animation::AnimationPlayer>(e) {
+                                        player.stop();
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 9. Update Animation Players (Play mode)
+            let mut anim_states = HashMap::new();
+            for (meta, player, transform, mesh_render) in self.world.query_mut::<(
+                &EntityMeta,
+                &mut crate::animation::AnimationPlayer,
+                &mut Transform,
+                Option<&mut MeshRender>,
+            )>() {
+                if let Some(state) = player.update(dt) {
+                    crate::animation::AnimationPlayer::apply_to(&state, transform, mesh_render);
+                }
+                anim_states.insert(meta.id.clone(), player.is_playing());
+            }
+            if let Ok(mut states_lock) = self.lua_ctx.anim_playing_states.write() {
+                *states_lock = anim_states;
+            }
+        }
+
+        // Preview Animation Players in Edit mode if playing
+        if self.play_mode == PlayMode::Edit {
+            for (_meta, player, transform, mesh_render) in self.world.query_mut::<(
+                &EntityMeta,
+                &mut crate::animation::AnimationPlayer,
+                &mut Transform,
+                Option<&mut MeshRender>,
+            )>() {
+                if player.playing {
+                    if let Some(state) = player.update(dt) {
+                        crate::animation::AnimationPlayer::apply_to(&state, transform, mesh_render);
                     }
                 }
             }
@@ -2974,7 +3045,109 @@ impl EngineState {
 
                                     ui.add_space(4.0);
 
-                                    // 7. Prefab Export
+                                    // 7. Animation Player
+                                    ui_theme::collapsible_card(ui, "insp_animation", "🎬 Animation Player", true, |ui| {
+                                        let has_anim = self.world.get::<&crate::animation::AnimationPlayer>(entity).is_ok();
+                                        let mut enable_anim = has_anim;
+                                        if ui.checkbox(&mut enable_anim, "Enable Animation Player").changed() {
+                                            if enable_anim {
+                                                let mut player = crate::animation::AnimationPlayer::new();
+                                                let mut default_clip = crate::animation::AnimationClip::new("idle", 2.0);
+                                                if let Ok(trans) = self.world.get::<&Transform>(entity) {
+                                                    default_clip.add_keyframe(crate::animation::Keyframe {
+                                                        time: 0.0,
+                                                        position: Some([trans.position.x, trans.position.y, trans.position.z]),
+                                                        rotation: Some([trans.rotation.x, trans.rotation.y, trans.rotation.z]),
+                                                        scale: Some([trans.scale.x, trans.scale.y, trans.scale.z]),
+                                                        color: None,
+                                                        emissive: None,
+                                                    });
+                                                }
+                                                player.add_clip(default_clip);
+                                                let _ = self.world.insert_one(entity, player);
+                                            } else {
+                                                let _ = self.world.remove_one::<crate::animation::AnimationPlayer>(entity);
+                                            }
+                                        }
+
+                                        if let Ok(mut player) = self.world.get::<&mut crate::animation::AnimationPlayer>(entity) {
+                                             let clip_names: Vec<String> = player.animations.keys().cloned().collect();
+                                             let current_clip = player.active_clip.clone().unwrap_or_else(|| "None".to_string());
+
+                                             ui.horizontal(|ui| {
+                                                 ui.label("Clip:");
+                                                 egui::ComboBox::from_id_salt("anim_clip_select")
+                                                     .selected_text(&current_clip)
+                                                     .show_ui(ui, |ui| {
+                                                         for name in &clip_names {
+                                                             let is_sel = player.active_clip.as_ref() == Some(name);
+                                                             if ui.selectable_label(is_sel, name).clicked() {
+                                                                 player.active_clip = Some(name.clone());
+                                                                 player.current_time = 0.0;
+                                                             }
+                                                         }
+                                                     });
+                                             });
+
+                                             let duration = if let Some(clip_name) = &player.active_clip {
+                                                 player.animations.get(clip_name).map(|c| c.duration).unwrap_or(1.0)
+                                             } else {
+                                                 1.0
+                                             };
+
+                                             ui.horizontal(|ui| {
+                                                 if player.playing {
+                                                     if ui.button("⏸ Pause").clicked() {
+                                                         player.pause();
+                                                     }
+                                                 } else {
+                                                     if ui.button("▶ Play").clicked() {
+                                                         player.resume();
+                                                     }
+                                                 }
+                                                 if ui.button("⏹ Stop").clicked() {
+                                                     player.stop();
+                                                 }
+                                             });
+
+                                             ui.horizontal(|ui| {
+                                                 ui.label("Time:");
+                                                 let mut t = player.current_time;
+                                                 if ui.add(egui::Slider::new(&mut t, 0.0..=duration).suffix(" s")).changed() {
+                                                     player.current_time = t;
+                                                 }
+                                             });
+
+                                             ui.horizontal(|ui| {
+                                                 ui.checkbox(&mut player.looping, "Loop");
+                                                 ui.label("Speed:");
+                                                 ui.add(egui::Slider::new(&mut player.speed, 0.1..=3.0));
+                                             });
+
+                                             if ui.button("+ Capture Keyframe").on_hover_text("Record current Transform & Material to active clip at cursor time").clicked() {
+                                                 let pos_rot_scale = if let Ok(t) = self.world.get::<&Transform>(entity) {
+                                                     Some(([t.position.x, t.position.y, t.position.z], [t.rotation.x, t.rotation.y, t.rotation.z], [t.scale.x, t.scale.y, t.scale.z]))
+                                                 } else {
+                                                     None
+                                                 };
+                                                 let col_em = if let Ok(m) = self.world.get::<&MeshRender>(entity) {
+                                                     Some((m.color, m.emissive))
+                                                 } else {
+                                                     None
+                                                 };
+                                                 if let Some((pos, rot, scl)) = pos_rot_scale {
+                                                     let col = col_em.map(|(c, _)| c);
+                                                     let em = col_em.map(|(_, e)| e);
+                                                     player.capture_keyframe(pos, rot, scl, col, em);
+                                                     self.logs.push(format!("Captured keyframe for entity at {:.2}s", player.current_time));
+                                                 }
+                                             }
+                                        }
+                                    });
+
+                                    ui.add_space(4.0);
+
+                                    // 8. Prefab Export
                                     ui_theme::collapsible_card(ui, "insp_prefab", "Prefab Export", false, |ui| {
                                         if ui.button("[*] Save as Prefab").clicked() {
                                             if let Some(def) = assets::extract_entity_def(&self.world, &self.physics, entity) {

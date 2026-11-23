@@ -125,6 +125,20 @@ pub struct LuaEngineContext {
     pub environment_settings: Arc<RwLock<crate::assets::EnvironmentDef>>,
     pub physics_raycaster: Arc<RwLock<Option<PhysicsRaycaster>>>,
     pub game_ui_elements: Arc<RwLock<Vec<crate::game_ui::UiElement>>>,
+    pub pending_anims: Arc<Mutex<Vec<AnimationCommand>>>,
+    pub anim_playing_states: Arc<RwLock<HashMap<String, bool>>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum AnimationCommand {
+    Play {
+        entity_id: String,
+        clip_name: String,
+        looping: bool,
+    },
+    Stop {
+        entity_id: String,
+    },
 }
 
 #[derive(Clone)]
@@ -253,6 +267,8 @@ impl LuaEngineContext {
             environment_settings: Arc::new(RwLock::new(crate::assets::EnvironmentDef::default())),
             physics_raycaster: Arc::new(RwLock::new(None)),
             game_ui_elements: Arc::new(RwLock::new(Vec::new())),
+            pending_anims: Arc::new(Mutex::new(Vec::new())),
+            anim_playing_states: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -404,6 +420,7 @@ impl ScriptComponent {
                     script,
                     physics: phys_def,
                     point_light: None,
+                    animation_player: None,
                 };
 
                 if let Ok(mut spawns) = spawns_ref.lock() {
@@ -1384,6 +1401,49 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register ui_button: {}", e))?;
         lua.globals().set("ui_button", ui_button).map_err(|e| e.to_string())?;
 
+        // 42. play_anim(entity_id, clip_name, [looping])
+        let anim_play_ref = ctx.pending_anims.clone();
+        let play_anim = lua
+            .create_function(
+                move |_, (entity_id, clip_name, looping): (String, String, Option<bool>)| {
+                    if let Ok(mut list) = anim_play_ref.lock() {
+                        list.push(AnimationCommand::Play {
+                            entity_id,
+                            clip_name,
+                            looping: looping.unwrap_or(true),
+                        });
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register play_anim: {}", e))?;
+        lua.globals().set("play_anim", play_anim).map_err(|e| e.to_string())?;
+
+        // 43. stop_anim(entity_id)
+        let anim_stop_ref = ctx.pending_anims.clone();
+        let stop_anim = lua
+            .create_function(move |_, entity_id: String| {
+                if let Ok(mut list) = anim_stop_ref.lock() {
+                    list.push(AnimationCommand::Stop { entity_id });
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register stop_anim: {}", e))?;
+        lua.globals().set("stop_anim", stop_anim).map_err(|e| e.to_string())?;
+
+        // 44. is_anim_playing(entity_id) -> bool
+        let anim_states_ref = ctx.anim_playing_states.clone();
+        let is_anim_playing = lua
+            .create_function(move |_, entity_id: String| {
+                if let Ok(states) = anim_states_ref.read() {
+                    Ok(states.get(&entity_id).copied().unwrap_or(false))
+                } else {
+                    Ok(false)
+                }
+            })
+            .map_err(|e| format!("Failed to register is_anim_playing: {}", e))?;
+        lua.globals().set("is_anim_playing", is_anim_playing).map_err(|e| e.to_string())?;
+
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
             .exec()
@@ -1655,6 +1715,50 @@ mod tests {
         assert_eq!(elements[1].id(), "hp_bar");
         assert_eq!(elements[2].id(), "score_lbl");
         assert_eq!(elements[3].id(), "btn_dash");
+
+        let _ = std::fs::remove_file(script_path);
+    }
+
+    #[test]
+    fn test_animation_lua_bindings() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        let test_script = r#"
+            play_anim("boss_leviathan", "rage_mode", false)
+            stop_anim("boss_minion")
+            local is_boss_playing = is_anim_playing("boss_leviathan")
+            assert(is_boss_playing == false)
+
+            function on_update(entity, dt)
+            end
+        "#;
+
+        let script_path = "assets/scripts/test_anim_lua.lua";
+        std::fs::write(script_path, test_script).unwrap();
+
+        let mut comp = ScriptComponent::new(script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Init failed: {:?}", res.err());
+
+        let anims = ctx.pending_anims.lock().unwrap();
+        assert_eq!(anims.len(), 2);
+        match &anims[0] {
+            AnimationCommand::Play { entity_id, clip_name, looping } => {
+                assert_eq!(entity_id, "boss_leviathan");
+                assert_eq!(clip_name, "rage_mode");
+                assert_eq!(*looping, false);
+            }
+            _ => panic!("Expected Play command"),
+        }
+        match &anims[1] {
+            AnimationCommand::Stop { entity_id } => {
+                assert_eq!(entity_id, "boss_minion");
+            }
+            _ => panic!("Expected Stop command"),
+        }
 
         let _ = std::fs::remove_file(script_path);
     }
