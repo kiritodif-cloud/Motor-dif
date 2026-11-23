@@ -124,6 +124,7 @@ pub struct LuaEngineContext {
     pub pending_environment: Arc<Mutex<Option<crate::assets::EnvironmentDef>>>,
     pub environment_settings: Arc<RwLock<crate::assets::EnvironmentDef>>,
     pub physics_raycaster: Arc<RwLock<Option<PhysicsRaycaster>>>,
+    pub game_ui_elements: Arc<RwLock<Vec<crate::game_ui::UiElement>>>,
 }
 
 #[derive(Clone)]
@@ -251,6 +252,7 @@ impl LuaEngineContext {
             pending_environment: Arc::new(Mutex::new(None)),
             environment_settings: Arc::new(RwLock::new(crate::assets::EnvironmentDef::default())),
             physics_raycaster: Arc::new(RwLock::new(None)),
+            game_ui_elements: Arc::new(RwLock::new(Vec::new())),
         }
     }
 }
@@ -1213,6 +1215,175 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register play_tone: {}", e))?;
         lua.globals().set("play_tone", play_tone).map_err(|e| e.to_string())?;
 
+        // 37. ui_clear()
+        let ui_clear_ref = ctx.game_ui_elements.clone();
+        let ui_clear = lua
+            .create_function(move |_, ()| {
+                if let Ok(mut list) = ui_clear_ref.write() {
+                    list.clear();
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register ui_clear: {}", e))?;
+        lua.globals().set("ui_clear", ui_clear).map_err(|e| e.to_string())?;
+
+        // 38. ui_panel(id, anchor, offset_x, offset_y, width, height, r, g, b, a)
+        let ui_panel_ref = ctx.game_ui_elements.clone();
+        let ui_panel = lua
+            .create_function(
+                move |_,
+                      (id, anchor, ox, oy, w, h, r, g, b, a): (
+                    String,
+                    String,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                )| {
+                    if let Ok(mut list) = ui_panel_ref.write() {
+                        let elem = crate::game_ui::UiElement::Panel {
+                            id: id.clone(),
+                            anchor,
+                            offset_x: ox,
+                            offset_y: oy,
+                            width: w,
+                            height: h,
+                            color: [r, g, b, a],
+                        };
+                        if let Some(pos) = list.iter().position(|e| e.id() == id) {
+                            list[pos] = elem;
+                        } else {
+                            list.push(elem);
+                        }
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register ui_panel: {}", e))?;
+        lua.globals().set("ui_panel", ui_panel).map_err(|e| e.to_string())?;
+
+        // 39. ui_bar(id, anchor, offset_x, offset_y, width, height, progress, label, r, g, b)
+        let ui_bar_ref = ctx.game_ui_elements.clone();
+        let ui_bar = lua
+            .create_function(
+                move |_,
+                      (id, anchor, ox, oy, w, h, progress, label, r, g, b): (
+                    String,
+                    String,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    String,
+                    f32,
+                    f32,
+                    f32,
+                )| {
+                    if let Ok(mut list) = ui_bar_ref.write() {
+                        let elem = crate::game_ui::UiElement::Bar {
+                            id: id.clone(),
+                            anchor,
+                            offset_x: ox,
+                            offset_y: oy,
+                            width: w,
+                            height: h,
+                            progress,
+                            label,
+                            color: [r, g, b],
+                        };
+                        if let Some(pos) = list.iter().position(|e| e.id() == id) {
+                            list[pos] = elem;
+                        } else {
+                            list.push(elem);
+                        }
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register ui_bar: {}", e))?;
+        lua.globals().set("ui_bar", ui_bar).map_err(|e| e.to_string())?;
+
+        // 40. ui_label(id, anchor, offset_x, offset_y, text, font_size, r, g, b)
+        let ui_label_ref = ctx.game_ui_elements.clone();
+        let ui_label = lua
+            .create_function(
+                move |_,
+                      (id, anchor, ox, oy, text, font_size, r, g, b): (
+                    String,
+                    String,
+                    f32,
+                    f32,
+                    String,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                )| {
+                    if let Ok(mut list) = ui_label_ref.write() {
+                        let elem = crate::game_ui::UiElement::Label {
+                            id: id.clone(),
+                            anchor,
+                            offset_x: ox,
+                            offset_y: oy,
+                            text,
+                            font_size,
+                            color: [r, g, b],
+                        };
+                        if let Some(pos) = list.iter().position(|e| e.id() == id) {
+                            list[pos] = elem;
+                        } else {
+                            list.push(elem);
+                        }
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register ui_label: {}", e))?;
+        lua.globals().set("ui_label", ui_label).map_err(|e| e.to_string())?;
+
+        // 41. ui_button(id, anchor, offset_x, offset_y, width, height, text, callback_name)
+        let ui_btn_ref = ctx.game_ui_elements.clone();
+        let ui_button = lua
+            .create_function(
+                move |_,
+                      (id, anchor, ox, oy, w, h, text, callback): (
+                    String,
+                    String,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    String,
+                    String,
+                )| {
+                    if let Ok(mut list) = ui_btn_ref.write() {
+                        let elem = crate::game_ui::UiElement::Button {
+                            id: id.clone(),
+                            anchor,
+                            offset_x: ox,
+                            offset_y: oy,
+                            width: w,
+                            height: h,
+                            text,
+                            callback,
+                        };
+                        if let Some(pos) = list.iter().position(|e| e.id() == id) {
+                            list[pos] = elem;
+                        } else {
+                            list.push(elem);
+                        }
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register ui_button: {}", e))?;
+        lua.globals().set("ui_button", ui_button).map_err(|e| e.to_string())?;
+
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
             .exec()
@@ -1449,6 +1620,41 @@ mod tests {
 
         let res_trigger = comp.on_trigger_enter("sensor_zone", "player");
         assert!(res_trigger.is_ok(), "Trigger failed: {:?}", res_trigger.err());
+
+        let _ = std::fs::remove_file(script_path);
+    }
+
+    #[test]
+    fn test_declarative_ui_bindings() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        let test_script = r#"
+            ui_clear()
+            ui_panel("hud_panel", "top_left", 20, 20, 240, 100, 0.1, 0.1, 0.15, 0.9)
+            ui_bar("hp_bar", "top_left", 30, 30, 220, 24, 0.85, "HP: 85/100", 0.2, 0.8, 0.3)
+            ui_label("score_lbl", "top_right", 30, 30, "Score: 9999", 18, 1.0, 0.9, 0.2)
+            ui_button("btn_dash", "bottom_center", 0, 50, 140, 36, "DASH (SPACE)", "on_dash_click")
+
+            function on_update(entity, dt)
+            end
+        "#;
+
+        let script_path = "assets/scripts/test_ui_decl.lua";
+        std::fs::write(script_path, test_script).unwrap();
+
+        let mut comp = ScriptComponent::new(script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Init failed: {:?}", res.err());
+
+        let elements = ctx.game_ui_elements.read().unwrap();
+        assert_eq!(elements.len(), 4);
+        assert_eq!(elements[0].id(), "hud_panel");
+        assert_eq!(elements[1].id(), "hp_bar");
+        assert_eq!(elements[2].id(), "score_lbl");
+        assert_eq!(elements[3].id(), "btn_dash");
 
         let _ = std::fs::remove_file(script_path);
     }

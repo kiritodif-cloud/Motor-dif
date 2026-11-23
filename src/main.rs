@@ -3,6 +3,7 @@ pub mod audio;
 pub mod camera;
 pub mod ecs;
 pub mod exporter;
+pub mod game_ui;
 pub mod hot_reload;
 pub mod mcp_server;
 pub mod particles;
@@ -2329,6 +2330,11 @@ impl EngineState {
                             let screen_size = [self.gpu.config.width as f32, self.gpu.config.height as f32];
                             let viewport_rect = ui.max_rect();
 
+                            // Declarative In-Game UI from Lua (game_ui)
+                            if let Ok(elements) = self.lua_ctx.game_ui_elements.read() {
+                                game_ui::render_declarative_ui(ui.ctx(), &painter, viewport_rect, &elements, &self.lua_ctx.pending_button_clicks);
+                            }
+
                             if let Ok(labels) = self.lua_ctx.world_labels.read() {
                                 for label in labels.values() {
                                     let mut found_pos = None;
@@ -3695,7 +3701,14 @@ impl EngineState {
                             }
                         }
 
-                        // 5b. World Labels & Floating Texts (from Lua)
+                        // 5b. Declarative In-Game UI from Lua (game_ui)
+                        if self.play_mode == PlayMode::Play {
+                            if let Ok(elements) = self.lua_ctx.game_ui_elements.read() {
+                                game_ui::render_declarative_ui(ui.ctx(), &painter, viewport_rect, &elements, &self.lua_ctx.pending_button_clicks);
+                            }
+                        }
+
+                        // 5c. World Labels & Floating Texts (from Lua)
                         if let Ok(labels) = self.lua_ctx.world_labels.read() {
                             for label in labels.values() {
                                 let mut found_pos = None;
