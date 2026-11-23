@@ -176,6 +176,11 @@ pub struct EngineState {
     pub show_export_modal: bool,
     pub export_game_name: String,
     pub export_entry_scene: String,
+    pub show_profiler: bool,
+    pub frametime_history: std::collections::VecDeque<f32>,
+    pub view_mode: renderer::ViewMode,
+    pub camera_bookmarks: [Option<(Vec3, Vec3)>; 4],
+    pub last_draw_calls: usize,
 
     // Mouse & Gizmo Interaction
     pub mouse_pos: [f32; 2],
@@ -453,6 +458,11 @@ impl EngineState {
             show_export_modal: false,
             export_game_name: "MyGame".to_string(),
             export_entry_scene: initial_scene_path.clone(),
+            show_profiler: false,
+            frametime_history: std::collections::VecDeque::with_capacity(100),
+            view_mode: renderer::ViewMode::Lit,
+            camera_bookmarks: [None, None, None, None],
+            last_draw_calls: 0,
 
             mouse_pos: [0.0, 0.0],
             is_right_mouse_down: false,
@@ -762,6 +772,14 @@ impl EngineState {
                 }
 
                 if is_pressed {
+                    let do_f3 = match logical_key {
+                        winit::keyboard::Key::Named(winit::keyboard::NamedKey::F3) => true,
+                        _ => false,
+                    };
+                    if do_f3 {
+                        self.show_profiler = !self.show_profiler;
+                    }
+
                     if self.is_standalone_play {
                         let is_escape = match logical_key {
                             winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => true,
@@ -792,6 +810,46 @@ impl EngineState {
                             !ctrl_down && set.contains("F"),
                         )
                     };
+
+                    let (ctrl_down, alt_down, key_1, key_2, key_3, key_4) = {
+                        let set = self.pressed_keys.read().unwrap();
+                        let ctrl = set.contains("CONTROL") || set.contains("CONTROLRIGHT") || set.contains("CONTROLLEFT");
+                        let alt = set.contains("ALT") || set.contains("ALTRIGHT") || set.contains("ALTLEFT");
+                        let k1 = set.contains("1") || set.contains("DIGIT1") || set.contains("NUMPAD1");
+                        let k2 = set.contains("2") || set.contains("DIGIT2") || set.contains("NUMPAD2");
+                        let k3 = set.contains("3") || set.contains("DIGIT3") || set.contains("NUMPAD3");
+                        let k4 = set.contains("4") || set.contains("DIGIT4") || set.contains("NUMPAD4");
+                        (ctrl, alt, k1, k2, k3, k4)
+                    };
+
+                    let bookmark_slot = if key_1 { Some(0) } else if key_2 { Some(1) } else if key_3 { Some(2) } else if key_4 { Some(3) } else { None };
+
+                    if let Some(slot) = bookmark_slot {
+                        if ctrl_down {
+                            self.camera_bookmarks[slot] = Some((self.camera.eye, self.camera.target));
+                            self.toasts.push((
+                                format!("Camera Bookmark {} saved", slot + 1),
+                                Instant::now(),
+                                egui::Color32::from_rgb(56, 189, 248),
+                            ));
+                        } else if alt_down {
+                            if let Some((eye, target)) = self.camera_bookmarks[slot] {
+                                self.camera.eye = eye;
+                                self.camera.target = target;
+                                self.toasts.push((
+                                    format!("Camera Bookmark {} restored", slot + 1),
+                                    Instant::now(),
+                                    egui::Color32::from_rgb(56, 189, 248),
+                                ));
+                            } else {
+                                self.toasts.push((
+                                    format!("Camera Bookmark {} is empty", slot + 1),
+                                    Instant::now(),
+                                    egui::Color32::from_rgb(250, 204, 21),
+                                ));
+                            }
+                        }
+                    }
 
                     if do_s {
                         self.save_scene_to_file("assets/scene.json");
@@ -1492,6 +1550,11 @@ impl EngineState {
             if let Some(env) = pending_env.take() {
                 self.environment_settings = env;
             }
+        }
+
+        self.frametime_history.push_back(dt * 1000.0);
+        if self.frametime_history.len() > 90 {
+            self.frametime_history.pop_front();
         }
 
         self.frame_counter += 1;
@@ -2286,7 +2349,13 @@ impl EngineState {
                     [0.0, 0.0, 0.0, 0.0]
                 };
                 let scroll = mesh.uv_scroll.unwrap_or([0.0, 0.0]);
-                let wire_flag = if mesh.wireframe.unwrap_or(false) { 1.0 } else { 0.0 };
+                let wire_flag = match self.view_mode {
+                    renderer::ViewMode::Lit => {
+                        if mesh.wireframe.unwrap_or(false) { 2.0 } else { 0.0 }
+                    }
+                    renderer::ViewMode::Unlit => 1.0,
+                    renderer::ViewMode::Wireframe => 2.0,
+                };
                 let raw = InstanceRaw {
                     model: model_mat,
                     color: mesh.color,
@@ -2302,6 +2371,8 @@ impl EngineState {
                     .push(raw);
             }
         }
+
+        self.last_draw_calls = instances_by_batch.len();
 
         for (mesh_id, tex_opt, _) in instances_by_batch.keys() {
             self.gpu.ensure_mesh(mesh_id);
@@ -3993,6 +4064,24 @@ impl EngineState {
                                                     }
                                                 }
                                             });
+                                        ui.separator();
+                                        let view_mode_str = match self.view_mode {
+                                            renderer::ViewMode::Lit => "View: Lit",
+                                            renderer::ViewMode::Unlit => "View: Unlit",
+                                            renderer::ViewMode::Wireframe => "View: Wireframe",
+                                        };
+                                        egui::ComboBox::from_id_salt("viewport_view_mode")
+                                            .selected_text(view_mode_str)
+                                            .width(95.0)
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(&mut self.view_mode, renderer::ViewMode::Lit, "Lit");
+                                                ui.selectable_value(&mut self.view_mode, renderer::ViewMode::Unlit, "Unlit");
+                                                ui.selectable_value(&mut self.view_mode, renderer::ViewMode::Wireframe, "Wireframe");
+                                            });
+                                        ui.separator();
+                                        if ui.selectable_label(self.show_profiler, "Profiler (F3)").clicked() {
+                                            self.show_profiler = !self.show_profiler;
+                                        }
                                     });
                                 });
                         });
@@ -4049,6 +4138,106 @@ impl EngineState {
                                     });
                                 });
                         });
+
+                        // 7b. F3 Profiler Overlay
+                        if self.show_profiler {
+                            let profiler_area = egui::Area::new(ui.make_persistent_id("viewport_profiler_f3"))
+                                .fixed_pos(egui::pos2((viewport_rect.max.x - 240.0).max(viewport_rect.min.x + 10.0), viewport_rect.min.y + 48.0));
+                            profiler_area.show(ui.ctx(), |ui| {
+                                egui::Frame::new()
+                                    .fill(egui::Color32::from_rgba_premultiplied(20, 23, 30, 235))
+                                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(56, 189, 248)))
+                                    .corner_radius(egui::CornerRadius::same(6))
+                                    .inner_margin(egui::Margin::symmetric(10, 8))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new("PROFILER (F3)").strong().color(egui::Color32::from_rgb(56, 189, 248)));
+                                            let avg_ms = if self.frametime_history.is_empty() {
+                                                0.0
+                                            } else {
+                                                self.frametime_history.iter().sum::<f32>() / self.frametime_history.len() as f32
+                                            };
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                ui.label(egui::RichText::new(format!("{:.1}ms", avg_ms)).size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                                            });
+                                        });
+                                        ui.separator();
+
+                                        // Sparkline Graph
+                                        let (rect, _) = ui.allocate_exact_size(egui::vec2(210.0, 50.0), egui::Sense::hover());
+                                        let painter = ui.painter();
+                                        painter.rect_filled(rect, egui::CornerRadius::same(4), egui::Color32::from_rgb(16, 18, 24));
+                                        painter.rect_stroke(rect, egui::CornerRadius::same(4), egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(46, 51, 64, 150)), egui::StrokeKind::Inside);
+
+                                        // Target reference lines: 16.6ms (60 FPS) and 33.3ms (30 FPS)
+                                        let max_graph_ms = 40.0f32;
+                                        let y_60 = rect.max.y - (16.6 / max_graph_ms) * rect.height();
+                                        let y_30 = rect.max.y - (33.3 / max_graph_ms) * rect.height();
+                                        painter.line_segment([egui::pos2(rect.min.x, y_60), egui::pos2(rect.max.x, y_60)], egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(60, 220, 100, 90)));
+                                        painter.line_segment([egui::pos2(rect.min.x, y_30), egui::pos2(rect.max.x, y_30)], egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(240, 120, 40, 80)));
+                                        painter.text(egui::pos2(rect.max.x - 2.0, y_60 - 2.0), egui::Align2::RIGHT_BOTTOM, "60 FPS", egui::FontId::proportional(8.0), egui::Color32::from_rgba_unmultiplied(60, 220, 100, 140));
+
+                                        if self.frametime_history.len() >= 2 {
+                                            let count = self.frametime_history.len();
+                                            let step_x = rect.width() / (count - 1) as f32;
+                                            let mut prev_pt: Option<egui::Pos2> = None;
+                                            for (i, &ms) in self.frametime_history.iter().enumerate() {
+                                                let clamped_ms = ms.clamp(0.0, max_graph_ms);
+                                                let px = rect.min.x + i as f32 * step_x;
+                                                let py = rect.max.y - (clamped_ms / max_graph_ms) * rect.height();
+                                                let cur_pt = egui::pos2(px, py);
+                                                if let Some(prev) = prev_pt {
+                                                    let col = if ms <= 17.5 {
+                                                        egui::Color32::from_rgb(56, 189, 248)
+                                                    } else if ms <= 33.3 {
+                                                        egui::Color32::from_rgb(250, 204, 21)
+                                                    } else {
+                                                        egui::Color32::from_rgb(248, 113, 113)
+                                                    };
+                                                    painter.line_segment([prev, cur_pt], egui::Stroke::new(1.5, col));
+                                                }
+                                                prev_pt = Some(cur_pt);
+                                            }
+                                        }
+
+                                        ui.add_space(4.0);
+
+                                        // Stats grid
+                                        let bodies_count = self.physics.dynamic_bodies_count() + self.physics.fixed_bodies_count();
+                                        let particles_count = self.particles.active_count();
+                                        let lights_count = self.world.query::<&crate::ecs::PointLight>().iter().count();
+
+                                        egui::Grid::new("profiler_stats_grid")
+                                            .num_columns(2)
+                                            .spacing([12.0, 3.0])
+                                            .show(ui, |ui| {
+                                                ui.label(egui::RichText::new("FPS / Frametime:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                                                ui.label(egui::RichText::new(format!("{:.0} FPS ({:.2} ms)", self.fps, 1000.0 / self.fps.max(1.0))).size(11.0).strong());
+                                                ui.end_row();
+
+                                                ui.label(egui::RichText::new("Draw Calls (Batches):").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                                                ui.label(egui::RichText::new(format!("{}", self.last_draw_calls)).size(11.0).strong().color(egui::Color32::from_rgb(56, 189, 248)));
+                                                ui.end_row();
+
+                                                ui.label(egui::RichText::new("Entities:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                                                ui.label(egui::RichText::new(format!("{}", self.world.len())).size(11.0).strong());
+                                                ui.end_row();
+
+                                                ui.label(egui::RichText::new("Physics Bodies:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                                                ui.label(egui::RichText::new(format!("{}", bodies_count)).size(11.0).strong());
+                                                ui.end_row();
+
+                                                ui.label(egui::RichText::new("Active Particles:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                                                ui.label(egui::RichText::new(format!("{}", particles_count)).size(11.0).strong());
+                                                ui.end_row();
+
+                                                ui.label(egui::RichText::new("Point Lights:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                                                ui.label(egui::RichText::new(format!("{}", lights_count)).size(11.0).strong());
+                                                ui.end_row();
+                                            });
+                                    });
+                            });
+                        }
 
                         // 8. Viewport Floating Overlay: Bottom-Right Toast Notifications
                         let now = Instant::now();

@@ -64,6 +64,19 @@ impl InstanceRaw {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ViewMode {
+    Lit,
+    Unlit,
+    Wireframe,
+}
+
+impl Default for ViewMode {
+    fn default() -> Self {
+        Self::Lit
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct PointLightRaw {
@@ -344,6 +357,7 @@ struct VertexOutput {
     @location(4) world_pos: vec3<f32>,
     @location(5) fresnel: vec4<f32>,
     @location(6) uv_scroll: vec2<f32>,
+    @location(7) view_mode: f32,
 };
 
 @vertex
@@ -375,6 +389,7 @@ fn vs_main(
     out.world_pos = world_pos.xyz;
     out.fresnel = instance.fresnel;
     out.uv_scroll = vec2<f32>(instance.inst_extra.y, instance.inst_extra.z);
+    out.view_mode = instance.inst_extra.w;
     return out;
 }
 
@@ -386,6 +401,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     if (base_color.a < 0.01) {
         discard;
+    }
+
+    let emissive = base_color.rgb * in.emissive * 2.0;
+
+    // View Modes: 0.0 = Lit, 1.0 = Unlit, 2.0 = Wireframe
+    if (in.view_mode > 1.5) {
+        let grid = abs(fract(in.uv * 8.0 - 0.5) - 0.5) / fwidth(in.uv * 8.0);
+        let line = 1.0 - clamp(min(grid.x, grid.y), 0.0, 1.0);
+        let wire_col = mix(vec3<f32>(0.07, 0.09, 0.13), vec3<f32>(0.22, 0.75, 0.98), line);
+        return vec4<f32>(wire_col, 1.0);
+    } else if (in.view_mode > 0.5) {
+        return vec4<f32>(base_color.rgb + emissive, base_color.a);
     }
 
     // 1. Hemispheric Ambient Lighting (Sky/Ground)
