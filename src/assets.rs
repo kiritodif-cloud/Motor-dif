@@ -812,4 +812,22 @@ mod tests {
             assert!(beacon.point_light.is_some());
         }
     }
+
+    #[test]
+    fn test_load_showcase_v20_vfx() {
+        let p = Path::new("assets/showcase_v20_vfx.json");
+        if p.exists() {
+            let scene = load_scene_from_file(p).expect("Failed to parse showcase_v20_vfx.json");
+            assert!(scene.entities.len() >= 15);
+            let portal = scene.entities.iter().find(|e| e.id == "portal_emitter").unwrap();
+            assert!(portal.vfx_emitter.is_some());
+            assert_eq!(portal.vfx_emitter.as_ref().unwrap().preset_or_recipe, "magic_portal");
+            let torch = scene.entities.iter().find(|e| e.id == "torch_l_fire").unwrap();
+            assert!(torch.vfx_emitter.is_some());
+            assert_eq!(torch.vfx_emitter.as_ref().unwrap().preset_or_recipe, "fire");
+            let core = scene.entities.iter().find(|e| e.id == "altar_core").unwrap();
+            assert_eq!(core.script, Some("assets/scripts/vfx_showcase.lua".to_string()));
+            assert!(core.point_light.is_some());
+        }
+    }
 }

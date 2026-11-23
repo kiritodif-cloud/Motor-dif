@@ -80,7 +80,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "arena_inner",
@@ -122,7 +123,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "rig_beacon",
@@ -172,7 +174,8 @@
         "radius": 24.0
       },
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "rig_beacon_ring1",
@@ -214,7 +217,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "mech_root",
@@ -270,7 +274,8 @@
         "bob_amplitude": 0.09,
         "breath_speed": 2.2,
         "breath_amplitude": 0.035
-      }
+      },
+      "vfx_emitter": null
     },
     {
       "id": "mech_torso",
@@ -312,7 +317,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "mech_head",
@@ -354,7 +360,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "mech_arm_l",
@@ -392,7 +399,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "mech_arm_r",
@@ -430,7 +438,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "mech_weapon",
@@ -472,7 +481,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "mech_leg_l",
@@ -510,7 +520,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "mech_leg_r",
@@ -548,7 +559,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "spider_root",
@@ -604,7 +616,8 @@
         "bob_amplitude": 0.06,
         "breath_speed": 1.8,
         "breath_amplitude": 0.02
-      }
+      },
+      "vfx_emitter": null
     },
     {
       "id": "spider_torso",
@@ -646,7 +659,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "spider_eye",
@@ -688,7 +702,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "spider_leg_fl",
@@ -726,7 +741,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "spider_leg_fr",
@@ -764,7 +780,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "spider_leg_bl",
@@ -802,7 +819,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "spider_leg_br",
@@ -840,7 +858,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "turret_root",
@@ -896,7 +915,8 @@
         "bob_amplitude": 0.08,
         "breath_speed": 1.5,
         "breath_amplitude": 0.03
-      }
+      },
+      "vfx_emitter": null
     },
     {
       "id": "turret_base",
@@ -934,7 +954,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "turret_ring",
@@ -976,7 +997,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "turret_dome",
@@ -1018,7 +1040,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "turret_cannons",
@@ -1060,7 +1083,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "trooper_root",
@@ -1116,7 +1140,8 @@
         "bob_amplitude": 0.07,
         "breath_speed": 2.4,
         "breath_amplitude": 0.025
-      }
+      },
+      "vfx_emitter": null
     },
     {
       "id": "trooper_torso",
@@ -1158,7 +1183,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "trooper_head",
@@ -1200,7 +1226,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "trooper_arm_l",
@@ -1238,7 +1265,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "trooper_arm_r",
@@ -1276,7 +1304,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "trooper_weapon",
@@ -1318,7 +1347,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "trooper_leg_l",
@@ -1356,7 +1386,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     },
     {
       "id": "trooper_leg_r",
@@ -1394,7 +1425,8 @@
       "physics": null,
       "point_light": null,
       "animation_player": null,
-      "procedural_rig": null
+      "procedural_rig": null,
+      "vfx_emitter": null
     }
   ]
 }
