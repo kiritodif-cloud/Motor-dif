@@ -108,6 +108,20 @@ pub enum McpCommand {
         id: String,
         respond_to: oneshot::Sender<Result<String, String>>,
     },
+    ForgeCreateModel {
+        recipe: crate::modeler::ModelRecipe,
+        respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
+    ForgeBakeGlb {
+        recipe: crate::modeler::ModelRecipe,
+        output_name: String,
+        insert_in_scene: bool,
+        respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
+    ForgeCaptureTurnaround {
+        angle: String,
+        respond_to: oneshot::Sender<Result<String, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -415,6 +429,57 @@ pub async fn handle_jsonrpc(
                                     }
                                 },
                                 "required": ["template_name"]
+                            }
+                        },
+                        {
+                            "name": "forge_create_model",
+                            "description": "Crea o actualiza un modelo procedural 3D en el Asset Forge a partir de una receta parametrica y/o SDF",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "recipe": {
+                                        "type": "object",
+                                        "description": "Receta con nombre, partes, nodos SDF y modificadores globales"
+                                    }
+                                },
+                                "required": ["recipe"]
+                            }
+                        },
+                        {
+                            "name": "forge_bake_glb",
+                            "description": "Hornea una receta de Asset Forge a un archivo binario glTF 2.0 (.glb) con Vertex Colors e inserta opcionalmente en la escena",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "recipe": {
+                                        "type": "object",
+                                        "description": "Receta del modelo (opcional si se usa la receta activa)"
+                                    },
+                                    "output_name": {
+                                        "type": "string",
+                                        "description": "Nombre del archivo a generar en assets/models/<output_name>.glb"
+                                    },
+                                    "insert_in_scene": {
+                                        "type": "boolean",
+                                        "description": "Si es true, instancia el modelo horneado como entidad en la escena activa"
+                                    }
+                                },
+                                "required": ["output_name"]
+                            }
+                        },
+                        {
+                            "name": "forge_capture_turnaround",
+                            "description": "Posiciona la camara en angulos ortogonales/isometricos ('front', 'side', 'iso', 'top') y captura el viewport en PNG Base64",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "angle": {
+                                        "type": "string",
+                                        "enum": ["front", "side", "iso", "top"],
+                                        "description": "Angulo de camara ('front', 'side', 'iso', 'top')"
+                                    }
+                                },
+                                "required": ["angle"]
                             }
                         }
                     ]
@@ -775,6 +840,74 @@ pub async fn handle_jsonrpc(
                         Err(e) => Some(JsonRpcResponse::error(id, -32000, format!("Error generando plantilla: {}", e))),
                     }
                 }
+                "forge_create_model" => {
+                    let recipe_val = match args.get("recipe") {
+                        Some(v) => v.clone(),
+                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'recipe'")),
+                    };
+                    let recipe: crate::modeler::ModelRecipe = match serde_json::from_value(recipe_val) {
+                        Ok(r) => r,
+                        Err(e) => return Some(JsonRpcResponse::error(id, -32602, format!("Formato de receta invalido: {}", e))),
+                    };
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::ForgeCreateModel { recipe, respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(val)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }], "data": val }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al crear modelo en Forge")),
+                    }
+                }
+                "forge_bake_glb" => {
+                    let output_name = match args.get("output_name").and_then(|v| v.as_str()) {
+                        Some(s) => s.to_string(),
+                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'output_name'")),
+                    };
+                    let recipe = if let Some(rv) = args.get("recipe") {
+                        match serde_json::from_value::<crate::modeler::ModelRecipe>(rv.clone()) {
+                            Ok(r) => r,
+                            Err(e) => return Some(JsonRpcResponse::error(id, -32602, format!("Formato de receta invalido: {}", e))),
+                        }
+                    } else {
+                        crate::modeler::preset_spaceship()
+                    };
+                    let insert_in_scene = args.get("insert_in_scene").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::ForgeBakeGlb { recipe, output_name, insert_in_scene, respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(val)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }], "data": val }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al hornear modelo GLB")),
+                    }
+                }
+                "forge_capture_turnaround" => {
+                    let angle = args.get("angle").and_then(|v| v.as_str()).unwrap_or("iso").to_string();
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::ForgeCaptureTurnaround { angle, respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(base64_png)) => {
+                            Some(JsonRpcResponse::success(
+                                id,
+                                json!({
+                                    "content": [
+                                        {
+                                            "type": "image",
+                                            "data": base64_png,
+                                            "mimeType": "image/png"
+                                        }
+                                    ]
+                                }),
+                            ))
+                        }
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, format!("Error capturando turnaround: {}", err))),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al capturar turnaround")),
+                    }
+                }
                 _ => Some(JsonRpcResponse::error(id, -32601, format!("Herramienta desconocida: {}", tool_name))),
             }
         }
@@ -979,5 +1112,30 @@ mod tests {
         let tree_json = serde_json::to_string_pretty(&tree).unwrap();
         assert!(tree_json.contains("\"selected_entity\": \"player\""));
         assert!(tree_json.contains("\"child_sword\""));
+    }
+
+    #[test]
+    fn test_mcp_forge_tools_schema_and_commands() {
+        let recipe = crate::modeler::preset_spaceship();
+        let recipe_json = serde_json::to_value(&recipe).unwrap();
+        assert_eq!(recipe.name, "spaceship");
+        assert!(recipe_json.get("parts").is_some());
+
+        // Test tools/list contains forge tools
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(1)),
+            method: "tools/list".to_string(),
+            params: None,
+        };
+        let (cmd_tx, _cmd_rx) = mpsc::channel(1);
+        let resp = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            handle_jsonrpc(&cmd_tx, req).await
+        }).unwrap();
+        let resp_json = serde_json::to_value(&resp).unwrap();
+        let resp_str = resp_json.to_string();
+        assert!(resp_str.contains("forge_create_model"));
+        assert!(resp_str.contains("forge_bake_glb"));
+        assert!(resp_str.contains("forge_capture_turnaround"));
     }
 }

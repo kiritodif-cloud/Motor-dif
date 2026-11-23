@@ -82,6 +82,12 @@ pub enum ConsoleFilter {
     Mcp,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorWorkspace {
+    Scene,
+    Modeler,
+}
+
 #[derive(Clone)]
 pub struct HistoryState {
     pub undo_stack: Vec<SceneDef>,
@@ -160,6 +166,9 @@ pub struct EngineState {
     pub total_time: f32,
 
     // Editor State
+    pub workspace: EditorWorkspace,
+    pub forge_recipe: crate::modeler::ModelRecipe,
+    pub forge_selected_part: Option<usize>,
     pub play_mode: PlayMode,
     pub play_snapshot: Option<SceneDef>,
     pub gizmo_mode: GizmoMode,
@@ -443,6 +452,10 @@ impl EngineState {
             post_process_settings: loaded_pp,
             environment_settings: loaded_env,
             total_time: 0.0,
+
+            workspace: EditorWorkspace::Scene,
+            forge_recipe: crate::modeler::preset_spaceship(),
+            forge_selected_part: None,
 
             play_mode: if is_standalone_play { PlayMode::Play } else { PlayMode::Edit },
             play_snapshot: None,
@@ -1658,6 +1671,77 @@ impl EngineState {
                         let _ = respond_to.send(Err(format!("Entity '{}' not found", id)));
                     }
                 }
+                McpCommand::ForgeCreateModel { recipe, respond_to } => {
+                    let mesh = recipe.build_mesh();
+                    self.forge_recipe = recipe;
+                    let v_count = mesh.positions.len();
+                    let t_count = mesh.indices.len() / 3;
+                    self.add_toast(format!("Forge: Loaded '{}' ({} verts)", self.forge_recipe.name, v_count), egui::Color32::from_rgb(56, 189, 248));
+                    let _ = respond_to.send(Ok(serde_json::json!({
+                        "success": true,
+                        "recipe_name": self.forge_recipe.name,
+                        "vertex_count": v_count,
+                        "triangle_count": t_count
+                    })));
+                }
+                McpCommand::ForgeBakeGlb { recipe, output_name, insert_in_scene, respond_to } => {
+                    let mesh = recipe.build_mesh();
+                    let out_path = format!("assets/models/{}.glb", output_name);
+                    match crate::glb_exporter::export_glb_to_file(&mesh, &output_name, &out_path) {
+                        Ok(()) => {
+                            self.gpu.ensure_mesh(&out_path);
+                            if insert_in_scene {
+                                let id = format!("{}_spawned", output_name);
+                                let pos = [0.0, 0.0, 0.0];
+                                let mut ent_builder = hecs::EntityBuilder::new();
+                                ent_builder.add(EntityMeta { id: id.clone(), name: output_name.clone(), parent: None });
+                                ent_builder.add(Transform {
+                                    position: Vec3::from(pos),
+                                    rotation: Vec3::ZERO,
+                                    scale: Vec3::ONE,
+                                });
+                                ent_builder.add(MeshRender {
+                                    mesh_type: out_path.clone(),
+                                    color: [1.0, 1.0, 1.0, 1.0],
+                                    emissive: 0.0,
+                                    wireframe: Some(false),
+                                    texture: None,
+                                    blend_mode: Some("opaque".to_string()),
+                                    fresnel_color: None,
+                                    fresnel_power: None,
+                                    uv_scroll: None,
+                                });
+                                let spawned = self.world.spawn(ent_builder.build());
+                                self.selected_entity = Some(spawned);
+                            }
+                            let v_count = mesh.positions.len();
+                            let t_count = mesh.indices.len() / 3;
+                            self.logs.push(format!("Baked Forge GLB model to '{}' ({} verts, {} tris)", out_path, v_count, t_count));
+                            self.add_toast(format!("Baked '{}'", out_path), egui::Color32::from_rgb(34, 197, 94));
+                            let _ = respond_to.send(Ok(serde_json::json!({
+                                "success": true,
+                                "path": out_path,
+                                "vertices": v_count,
+                                "triangles": t_count
+                            })));
+                        }
+                        Err(e) => {
+                            let _ = respond_to.send(Err(format!("Error baking GLB: {}", e)));
+                        }
+                    }
+                }
+                McpCommand::ForgeCaptureTurnaround { angle, respond_to } => {
+                    let (eye, target) = match angle.to_lowercase().as_str() {
+                        "front" => (Vec3::new(0.0, 1.5, 4.0), Vec3::new(0.0, 1.0, 0.0)),
+                        "side" => (Vec3::new(4.0, 1.5, 0.0), Vec3::new(0.0, 1.0, 0.0)),
+                        "top" => (Vec3::new(0.0, 6.0, 0.001), Vec3::new(0.0, 0.0, 0.0)),
+                        _ => (Vec3::new(3.0, 3.0, 3.0), Vec3::new(0.0, 0.5, 0.0)),
+                    };
+                    self.camera.eye = eye;
+                    self.camera.target = target;
+                    self.gpu.update_camera(&self.camera);
+                    self.pending_viewport_capture = Some(respond_to);
+                }
             }
         }
     }
@@ -2540,6 +2624,23 @@ impl EngineState {
             }
         }
 
+        if self.workspace == EditorWorkspace::Modeler {
+            let forge_mesh = self.forge_recipe.build_mesh();
+            self.gpu.insert_forge_mesh("forge_preview", &forge_mesh);
+            let raw = InstanceRaw {
+                model: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                color: [1.0, 1.0, 1.0, 1.0],
+                extra: [0.0, 0.0, 0.0, 0.0],
+                fresnel: [0.0, 0.0, 0.0, 0.0],
+                uv_offset: [0.0, 0.0],
+                uv_scale: [1.0, 1.0],
+            };
+            instances_by_batch
+                .entry(("forge_preview".to_string(), None, "opaque".to_string()))
+                .or_default()
+                .push(raw);
+        }
+
         self.last_draw_calls = instances_by_batch.len();
 
         for (mesh_id, tex_opt, _) in instances_by_batch.keys() {
@@ -2796,6 +2897,11 @@ impl EngineState {
 
                         ui.separator();
                         ui.checkbox(&mut self.snap_enabled, "Snap (Ctrl)");
+
+                        ui.separator();
+                        ui.label("Workspace:");
+                        ui.selectable_value(&mut self.workspace, EditorWorkspace::Scene, "🌐 Scene");
+                        ui.selectable_value(&mut self.workspace, EditorWorkspace::Modeler, "⚒ Modeler");
                     });
                 });
 
@@ -2845,6 +2951,108 @@ impl EngineState {
                     .resizable(true)
                     .default_size(240.0)
                     .show(ui, |ui| {
+                        if self.workspace == EditorWorkspace::Modeler {
+                            ui.heading("⚒ Asset Forge");
+                            ui.label(egui::RichText::new("Native Parametric 3D Modeler").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                            ui.separator();
+
+                            ui.horizontal(|ui| {
+                                ui.label("Name:");
+                                ui.text_edit_singleline(&mut self.forge_recipe.name);
+                            });
+
+                            ui.add_space(4.0);
+                            ui_theme::collapsible_card(ui, "forge_presets", "Presets", true, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    if ui.button("🚀 Spaceship").clicked() {
+                                        self.forge_recipe = crate::modeler::preset_spaceship();
+                                        self.forge_selected_part = None;
+                                    }
+                                    if ui.button("🪨 Asteroid").clicked() {
+                                        self.forge_recipe = crate::modeler::preset_asteroid();
+                                        self.forge_selected_part = None;
+                                    }
+                                    if ui.button("🗼 Turret").clicked() {
+                                        self.forge_recipe = crate::modeler::preset_turret();
+                                        self.forge_selected_part = None;
+                                    }
+                                    if ui.button("👾 Boss").clicked() {
+                                        self.forge_recipe = crate::modeler::preset_boss();
+                                        self.forge_selected_part = None;
+                                    }
+                                });
+                            });
+
+                            ui.add_space(4.0);
+                            ui_theme::collapsible_card(ui, "forge_add_parts", "Add Primitives", true, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    let mut add_prim = |name_prefix: &str, ptype: &str, col: [f32; 4]| {
+                                        let idx = self.forge_recipe.parts.len() + 1;
+                                        self.forge_recipe.parts.push(crate::modeler::PartDef {
+                                            name: format!("{}_{}", name_prefix, idx),
+                                            primitive: ptype.to_string(),
+                                            points: None,
+                                            position: [0.0, 0.0, 0.0],
+                                            rotation_deg: [0.0, 0.0, 0.0],
+                                            scale: [1.0, 1.0, 1.0],
+                                            color: col,
+                                            mirror_x: false,
+                                            mirror_z: false,
+                                            modifiers: Vec::new(),
+                                        });
+                                        self.forge_selected_part = Some(self.forge_recipe.parts.len() - 1);
+                                    };
+
+                                    if ui.button("+ Box").clicked() {
+                                        add_prim("box", "box", [0.7, 0.7, 0.8, 1.0]);
+                                    }
+                                    if ui.button("+ Sphere").clicked() {
+                                        add_prim("sphere", "sphere", [0.3, 0.7, 0.9, 1.0]);
+                                    }
+                                    if ui.button("+ Cylinder").clicked() {
+                                        add_prim("cylinder", "cylinder", [0.4, 0.8, 0.4, 1.0]);
+                                    }
+                                    if ui.button("+ Cone").clicked() {
+                                        add_prim("cone", "cone", [0.9, 0.6, 0.2, 1.0]);
+                                    }
+                                    if ui.button("+ Torus").clicked() {
+                                        add_prim("torus", "torus", [0.9, 0.4, 0.8, 1.0]);
+                                    }
+                                    if ui.button("+ Capsule").clicked() {
+                                        add_prim("capsule", "capsule", [0.2, 0.8, 0.7, 1.0]);
+                                    }
+                                    if ui.button("+ Prism").clicked() {
+                                        add_prim("prism", "prism", [0.8, 0.7, 0.3, 1.0]);
+                                    }
+                                    if ui.button("+ Lathe").clicked() {
+                                        add_prim("lathe", "lathe", [0.8, 0.3, 0.5, 1.0]);
+                                    }
+                                });
+                            });
+
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new(format!("Parts ({})", self.forge_recipe.parts.len())).strong());
+                            let mut to_delete = None;
+                            egui::ScrollArea::vertical().max_height(250.0).show(ui, |ui| {
+                                for (i, part) in self.forge_recipe.parts.iter().enumerate() {
+                                    let is_sel = self.forge_selected_part == Some(i);
+                                    ui.horizontal(|ui| {
+                                        if ui.selectable_label(is_sel, format!("{} ({})", part.name, part.primitive)).clicked() {
+                                            self.forge_selected_part = Some(i);
+                                        }
+                                        if ui.small_button("✖").clicked() {
+                                            to_delete = Some(i);
+                                        }
+                                    });
+                                }
+                            });
+                            if let Some(del_idx) = to_delete {
+                                self.forge_recipe.parts.remove(del_idx);
+                                self.forge_selected_part = None;
+                            }
+                            return;
+                        }
+
                         ui.heading("Scene Hierarchy");
                         ui.separator();
 
@@ -2975,6 +3183,187 @@ impl EngineState {
                     .resizable(true)
                     .default_size(290.0)
                     .show(ui, |ui| {
+                        if self.workspace == EditorWorkspace::Modeler {
+                            ui.heading("⚒ Part Inspector");
+                            ui.separator();
+
+                            if let Some(idx) = self.forge_selected_part {
+                                if idx < self.forge_recipe.parts.len() {
+                                    let part = &mut self.forge_recipe.parts[idx];
+                                    ui_theme::collapsible_card(ui, "forge_part_basic", "Basic Properties", true, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label("Name:");
+                                            ui.text_edit_singleline(&mut part.name);
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.label("Type:");
+                                            ui.label(egui::RichText::new(&part.primitive).strong());
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.checkbox(&mut part.mirror_x, "Mirror X");
+                                            ui.checkbox(&mut part.mirror_z, "Mirror Z");
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.label("Color:");
+                                            let mut c = egui::Color32::from_rgba_unmultiplied(
+                                                (part.color[0] * 255.0) as u8,
+                                                (part.color[1] * 255.0) as u8,
+                                                (part.color[2] * 255.0) as u8,
+                                                (part.color[3] * 255.0) as u8,
+                                            );
+                                            if egui::color_picker::color_edit_button_srgba(ui, &mut c, egui::color_picker::Alpha::Opaque).changed() {
+                                                part.color = [
+                                                    c.r() as f32 / 255.0,
+                                                    c.g() as f32 / 255.0,
+                                                    c.b() as f32 / 255.0,
+                                                    c.a() as f32 / 255.0,
+                                                ];
+                                            }
+                                        });
+                                    });
+
+                                    ui.add_space(4.0);
+                                    ui_theme::collapsible_card(ui, "forge_part_transform", "Transform", true, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label("Pos:");
+                                            ui.add(egui::DragValue::new(&mut part.position[0]).speed(0.05).prefix("X:"));
+                                            ui.add(egui::DragValue::new(&mut part.position[1]).speed(0.05).prefix("Y:"));
+                                            ui.add(egui::DragValue::new(&mut part.position[2]).speed(0.05).prefix("Z:"));
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.label("Rot:");
+                                            ui.add(egui::DragValue::new(&mut part.rotation_deg[0]).speed(1.0).prefix("X:").suffix("°"));
+                                            ui.add(egui::DragValue::new(&mut part.rotation_deg[1]).speed(1.0).prefix("Y:").suffix("°"));
+                                            ui.add(egui::DragValue::new(&mut part.rotation_deg[2]).speed(1.0).prefix("Z:").suffix("°"));
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.label("Scale:");
+                                            ui.add(egui::DragValue::new(&mut part.scale[0]).speed(0.05).prefix("X:"));
+                                            ui.add(egui::DragValue::new(&mut part.scale[1]).speed(0.05).prefix("Y:"));
+                                            ui.add(egui::DragValue::new(&mut part.scale[2]).speed(0.05).prefix("Z:"));
+                                        });
+                                    });
+
+                                    ui.add_space(4.0);
+                                    ui_theme::collapsible_card(ui, "forge_part_modifiers", "Modifiers", true, |ui| {
+                                        ui.horizontal_wrapped(|ui| {
+                                            if ui.button("+ Taper").clicked() {
+                                                part.modifiers.push(crate::modeler::ModifierDef::Taper { factor: 0.5, axis: "y".to_string() });
+                                            }
+                                            if ui.button("+ Twist").clicked() {
+                                                part.modifiers.push(crate::modeler::ModifierDef::Twist { angle_deg: 90.0, axis: "y".to_string() });
+                                            }
+                                            if ui.button("+ Bend").clicked() {
+                                                part.modifiers.push(crate::modeler::ModifierDef::Bend { angle_deg: 45.0, axis: "x".to_string() });
+                                            }
+                                            if ui.button("+ Noise").clicked() {
+                                                part.modifiers.push(crate::modeler::ModifierDef::NoiseDisplace { frequency: 2.0, amplitude: 0.1, seed: 42 });
+                                            }
+                                            if ui.button("+ Flat").clicked() {
+                                                part.modifiers.push(crate::modeler::ModifierDef::FlatShading);
+                                            }
+                                        });
+                                        let mut mod_del = None;
+                                        for (mi, m) in part.modifiers.iter_mut().enumerate() {
+                                            ui.horizontal(|ui| {
+                                                match m {
+                                                    crate::modeler::ModifierDef::Taper { factor, axis: _ } => {
+                                                        ui.label("Taper");
+                                                        ui.add(egui::DragValue::new(factor).speed(0.05).prefix("f:"));
+                                                    }
+                                                    crate::modeler::ModifierDef::Twist { angle_deg, axis: _ } => {
+                                                        ui.label("Twist");
+                                                        ui.add(egui::DragValue::new(angle_deg).speed(1.0).suffix("°"));
+                                                    }
+                                                    crate::modeler::ModifierDef::Bend { angle_deg, axis: _ } => {
+                                                        ui.label("Bend");
+                                                        ui.add(egui::DragValue::new(angle_deg).speed(1.0).suffix("°"));
+                                                    }
+                                                    crate::modeler::ModifierDef::NoiseDisplace { frequency, amplitude, seed: _ } => {
+                                                        ui.label("Noise");
+                                                        ui.add(egui::DragValue::new(amplitude).speed(0.01).prefix("amp:"));
+                                                        ui.add(egui::DragValue::new(frequency).speed(0.1).prefix("freq:"));
+                                                    }
+                                                    crate::modeler::ModifierDef::FlatShading => {
+                                                        ui.label("Flat Shading");
+                                                    }
+                                                }
+                                                if ui.small_button("✖").clicked() {
+                                                    mod_del = Some(mi);
+                                                }
+                                            });
+                                        }
+                                        if let Some(m_idx) = mod_del {
+                                            part.modifiers.remove(m_idx);
+                                        }
+                                    });
+                                }
+                            } else {
+                                ui.label("Select a part from the left list to inspect.");
+                            }
+
+                            ui.add_space(10.0);
+                            ui_theme::collapsible_card(ui, "forge_global_bake", "Bake & Export", true, |ui| {
+                                ui.checkbox(&mut self.forge_recipe.normalize_pivot, "Normalize Bottom Pivot");
+
+                                ui.add_space(6.0);
+                                if ui.button("💾 Bake to .GLB").clicked() {
+                                    let mesh = self.forge_recipe.build_mesh();
+                                    let out_path = format!("assets/models/{}.glb", self.forge_recipe.name);
+                                    match crate::glb_exporter::export_glb_to_file(&mesh, &self.forge_recipe.name, &out_path) {
+                                        Ok(()) => {
+                                            self.gpu.ensure_mesh(&out_path);
+                                            self.logs.push(format!("Saved model to '{}'", out_path));
+                                            self.add_toast(format!("Baked to '{}'", out_path), egui::Color32::from_rgb(34, 197, 94));
+                                        }
+                                        Err(e) => {
+                                            self.logs.push(format!("Failed to bake model: {}", e));
+                                            self.add_toast("Bake failed", egui::Color32::from_rgb(239, 68, 68));
+                                        }
+                                    }
+                                }
+
+                                if ui.button("🚀 Bake & Insert in Scene").clicked() {
+                                    let mesh = self.forge_recipe.build_mesh();
+                                    let out_path = format!("assets/models/{}.glb", self.forge_recipe.name);
+                                    match crate::glb_exporter::export_glb_to_file(&mesh, &self.forge_recipe.name, &out_path) {
+                                        Ok(()) => {
+                                            self.gpu.ensure_mesh(&out_path);
+                                            let ent_id = format!("{}_spawned", self.forge_recipe.name);
+                                            let mut ent_builder = hecs::EntityBuilder::new();
+                                            ent_builder.add(EntityMeta { id: ent_id.clone(), name: self.forge_recipe.name.clone(), parent: None });
+                                            ent_builder.add(Transform {
+                                                position: Vec3::new(0.0, 1.0, 0.0),
+                                                rotation: Vec3::ZERO,
+                                                scale: Vec3::ONE,
+                                            });
+                                            ent_builder.add(MeshRender {
+                                                mesh_type: out_path.clone(),
+                                                color: [1.0, 1.0, 1.0, 1.0],
+                                                emissive: 0.0,
+                                                wireframe: Some(false),
+                                                texture: None,
+                                                blend_mode: Some("opaque".to_string()),
+                                                fresnel_color: None,
+                                                fresnel_power: None,
+                                                uv_scroll: None,
+                                            });
+                                            let spawned = self.world.spawn(ent_builder.build());
+                                            self.selected_entity = Some(spawned);
+                                            self.workspace = EditorWorkspace::Scene;
+                                            self.logs.push(format!("Baked and inserted '{}' into active scene", out_path));
+                                            self.add_toast(format!("Inserted '{}' into scene", ent_id), egui::Color32::from_rgb(56, 189, 248));
+                                        }
+                                        Err(e) => {
+                                            self.logs.push(format!("Failed to bake and insert model: {}", e));
+                                            self.add_toast("Bake failed", egui::Color32::from_rgb(239, 68, 68));
+                                        }
+                                    }
+                                }
+                            });
+                            return;
+                        }
+
                         ui.heading("Inspector");
                         ui.separator();
 

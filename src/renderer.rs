@@ -1424,6 +1424,36 @@ impl GpuContext {
         }
     }
 
+    pub fn insert_forge_mesh(&mut self, mesh_id: &str, mesh: &crate::modeler::ForgeMesh) {
+        let vertices: Vec<Vertex> = (0..mesh.positions.len())
+            .map(|i| Vertex {
+                position: mesh.positions[i],
+                normal: mesh.normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]),
+                uv: mesh.uvs.get(i).copied().unwrap_or([0.0, 0.0]),
+                color: mesh.colors.get(i).copied().unwrap_or([1.0, 1.0, 1.0, 1.0]),
+            })
+            .collect();
+        let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("Forge Mesh Vertex Buffer: {}", mesh_id)),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("Forge Mesh Index Buffer: {}", mesh_id)),
+            contents: bytemuck::cast_slice(&mesh.indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        self.meshes.insert(
+            mesh_id.to_string(),
+            MeshGpu {
+                vertex_buffer,
+                index_buffer,
+                num_indices: mesh.indices.len() as u32,
+                index_format: wgpu::IndexFormat::Uint32,
+            },
+        );
+    }
+
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.size = new_size;
