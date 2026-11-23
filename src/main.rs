@@ -1682,7 +1682,7 @@ impl EngineState {
                             id, mesh, position: [x,y,z], rotation: [rx,ry,rz], scale: [sx,sy,sz],
                             color, texture, parent, emissive: 0.0,
                             fresnel_color: None, fresnel_power: None, blend_mode: None, wireframe: None, uv_scroll: None,
-                            script: None, physics: None, point_light: None, animation_player: None, procedural_rig: None
+                            script: None, physics: None, point_light: None, animation_player: None, procedural_rig: None, vfx_emitter: None
                         };
                         if let Ok(mut list) = spawns_ref.lock() { list.push(def); }
                         Ok(())
@@ -2613,6 +2613,27 @@ impl EngineState {
                 if let Some(anim) = &def.animation_player {
                     let _ = self.world.insert_one(e, anim.clone());
                 }
+
+                if let Some(vfx) = &def.vfx_emitter {
+                    let recipe = if let Some(r) = &vfx.recipe {
+                        r.clone()
+                    } else if let Some(p) = crate::vfx_forge::get_vfx_preset(&vfx.preset_or_recipe) {
+                        p
+                    } else if let Ok(custom) = serde_json::from_str::<crate::vfx_forge::VfxRecipe>(&vfx.preset_or_recipe) {
+                        custom
+                    } else {
+                        crate::vfx_forge::preset_fire()
+                    };
+                    let comp = crate::vfx_forge::VfxEmitterComponent {
+                        recipe,
+                        enabled: vfx.enabled,
+                        looping: vfx.looping,
+                        offset: vfx.offset,
+                        accumulator: 0.0,
+                        burst_fired: false,
+                    };
+                    let _ = self.world.insert_one(e, comp);
+                }
             }
 
             // 7. Handle pending destroys from Lua
@@ -2804,6 +2825,36 @@ impl EngineState {
         // Evaluate Procedural Rigs (locomotion, idle breathing, look-at and recoil)
         if self.play_mode != PlayMode::Pause {
             crate::procedural_rig::update_procedural_rigs(&mut self.world, dt);
+        }
+
+        // Evaluate persistent VFX Emitters on scene entities
+        if self.play_mode != PlayMode::Pause {
+            for (_meta, transform, emitter) in self.world.query_mut::<(&EntityMeta, &Transform, &mut crate::vfx_forge::VfxEmitterComponent)>() {
+                if emitter.enabled {
+                    let world_pos = transform.position + Vec3::from(emitter.offset);
+
+                    // 1. One-shot burst (if any and not yet fired)
+                    if !emitter.burst_fired && emitter.recipe.burst_count > 0 {
+                        self.particles.spawn_vfx(world_pos, &emitter.recipe, emitter.recipe.burst_count);
+                        emitter.burst_fired = true;
+                    }
+
+                    // 2. Continuous emission (rate_per_sec)
+                    if emitter.recipe.rate_per_sec > 0.0 {
+                        emitter.accumulator += dt * emitter.recipe.rate_per_sec;
+                        let count_to_spawn = emitter.accumulator as usize;
+                        if count_to_spawn > 0 {
+                            emitter.accumulator -= count_to_spawn as f32;
+                            self.particles.spawn_vfx(world_pos, &emitter.recipe, count_to_spawn.min(25));
+                        }
+                    }
+
+                    // 3. Auto-disable if non-looping burst completed
+                    if !emitter.looping && emitter.recipe.rate_per_sec <= 0.0 && emitter.burst_fired {
+                        emitter.enabled = false;
+                    }
+                }
+            }
         }
 
         // Check for pending scene transition from Lua

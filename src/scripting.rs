@@ -484,6 +484,7 @@ impl ScriptComponent {
                     point_light: None,
                     animation_player: None,
                     procedural_rig: None,
+                    vfx_emitter: None,
                 };
 
                 if let Ok(mut spawns) = spawns_ref.lock() {

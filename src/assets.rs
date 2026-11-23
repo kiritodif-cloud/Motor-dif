@@ -59,6 +59,19 @@ fn default_light_radius() -> f32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VfxEmitterDef {
+    pub preset_or_recipe: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub looping: bool,
+    #[serde(default)]
+    pub offset: [f32; 3],
+    #[serde(default)]
+    pub recipe: Option<crate::vfx_forge::VfxRecipe>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityDef {
     pub id: String,
     pub mesh: String,
@@ -94,6 +107,8 @@ pub struct EntityDef {
     pub animation_player: Option<crate::animation::AnimationPlayer>,
     #[serde(default)]
     pub procedural_rig: Option<crate::procedural_rig::ProceduralRig>,
+    #[serde(default)]
+    pub vfx_emitter: Option<VfxEmitterDef>,
 }
 
 fn default_scale() -> [f32; 3] {
@@ -205,6 +220,7 @@ impl Default for SceneDef {
                     point_light: None,
                     animation_player: None,
                     procedural_rig: None,
+                    vfx_emitter: None,
                 },
                 EntityDef {
                     id: "cube_green".to_string(),
@@ -226,6 +242,7 @@ impl Default for SceneDef {
                     point_light: None,
                     animation_player: None,
                     procedural_rig: None,
+                    vfx_emitter: None,
                 },
                 EntityDef {
                     id: "cube_blue".to_string(),
@@ -247,6 +264,7 @@ impl Default for SceneDef {
                     point_light: None,
                     animation_player: None,
                     procedural_rig: None,
+                    vfx_emitter: None,
                 },
             ],
         }
@@ -291,72 +309,80 @@ pub fn extract_scene_from_world(
     };
 
     let mut entities = Vec::new();
-    for (meta, transform, mesh, script_opt, rb_opt, light_comp_opt, anim_comp_opt, rig_comp_opt) in world
-        .query::<(
-            &EntityMeta,
-            &Transform,
-            &MeshRender,
-            Option<&ScriptComponent>,
-            Option<&RigidBodyComponent>,
-            Option<&crate::ecs::PointLight>,
-            Option<&crate::animation::AnimationPlayer>,
-            Option<&crate::procedural_rig::ProceduralRig>,
-        )>()
-        .iter()
-    {
-        let phys_def = rb_opt.and_then(|rb| {
-            physics.rigid_body_set.get(rb.handle).map(|body| {
-                // Find collider associated with body
-                let collider_shape = body.colliders().first().and_then(|h| physics.collider_set.get(*h)).map(|c| {
-                    if c.shape().as_ball().is_some() {
-                        "ball".to_string()
-                    } else {
-                        "cuboid".to_string()
+    for er in world.iter() {
+        if let (Some(meta), Some(transform), Some(mesh)) = (
+            er.get::<&EntityMeta>(),
+            er.get::<&Transform>(),
+            er.get::<&MeshRender>(),
+        ) {
+            let script_opt = er.get::<&ScriptComponent>();
+            let rb_opt = er.get::<&RigidBodyComponent>();
+            let light_comp_opt = er.get::<&crate::ecs::PointLight>();
+            let anim_comp_opt = er.get::<&crate::animation::AnimationPlayer>();
+            let rig_comp_opt = er.get::<&crate::procedural_rig::ProceduralRig>();
+            let vfx_comp_opt = er.get::<&crate::vfx_forge::VfxEmitterComponent>();
+
+            let phys_def = rb_opt.as_deref().and_then(|rb| {
+                physics.rigid_body_set.get(rb.handle).map(|body| {
+                    let collider_shape = body.colliders().first().and_then(|h| physics.collider_set.get(*h)).map(|c| {
+                        if c.shape().as_ball().is_some() {
+                            "ball".to_string()
+                        } else {
+                            "cuboid".to_string()
+                        }
+                    }).unwrap_or_else(|| "cuboid".to_string());
+
+                    let is_sensor = body.colliders().first().and_then(|h| physics.collider_set.get(*h)).map(|c| c.is_sensor());
+
+                    PhysicsDef {
+                        body: if body.is_dynamic() { "dynamic".to_string() } else { "fixed".to_string() },
+                        collider: collider_shape,
+                        mass: body.mass(),
+                        restitution: 0.5,
+                        is_sensor,
                     }
-                }).unwrap_or_else(|| "cuboid".to_string());
+                })
+            });
 
-                let is_sensor = body.colliders().first().and_then(|h| physics.collider_set.get(*h)).map(|c| c.is_sensor());
+            let light_opt = light_comp_opt.as_deref().map(|l| PointLightDef {
+                color: l.color,
+                intensity: l.intensity,
+                radius: l.radius,
+            });
 
-                PhysicsDef {
-                    body: if body.is_dynamic() { "dynamic".to_string() } else { "fixed".to_string() },
-                    collider: collider_shape,
-                    mass: body.mass(),
-                    restitution: 0.5,
-                    is_sensor,
-                }
-            })
-        });
+            let anim_opt = anim_comp_opt.as_deref().cloned();
+            let rig_opt = rig_comp_opt.as_deref().cloned();
+            let vfx_opt = vfx_comp_opt.as_deref().map(|v| VfxEmitterDef {
+                preset_or_recipe: v.recipe.name.clone(),
+                enabled: v.enabled,
+                looping: v.looping,
+                offset: v.offset,
+                recipe: Some(v.recipe.clone()),
+            });
 
-        let light_opt = light_comp_opt.map(|l| PointLightDef {
-            color: l.color,
-            intensity: l.intensity,
-            radius: l.radius,
-        });
-
-        let anim_opt = anim_comp_opt.cloned();
-        let rig_opt = rig_comp_opt.cloned();
-
-        entities.push(EntityDef {
-            id: meta.id.clone(),
-            mesh: mesh.mesh_type.clone(),
-            position: [transform.position.x, transform.position.y, transform.position.z],
-            rotation: [transform.rotation.x, transform.rotation.y, transform.rotation.z],
-            scale: [transform.scale.x, transform.scale.y, transform.scale.z],
-            texture: mesh.texture.clone(),
-            parent: meta.parent.clone(),
-            color: mesh.color,
-            emissive: mesh.emissive,
-            fresnel_color: mesh.fresnel_color,
-            fresnel_power: mesh.fresnel_power,
-            blend_mode: mesh.blend_mode.clone(),
-            wireframe: mesh.wireframe,
-            uv_scroll: mesh.uv_scroll,
-            script: script_opt.map(|s| s.path.clone()),
-            physics: phys_def,
-            point_light: light_opt,
-            animation_player: anim_opt,
-            procedural_rig: rig_opt,
-        });
+            entities.push(EntityDef {
+                id: meta.id.clone(),
+                mesh: mesh.mesh_type.clone(),
+                position: [transform.position.x, transform.position.y, transform.position.z],
+                rotation: [transform.rotation.x, transform.rotation.y, transform.rotation.z],
+                scale: [transform.scale.x, transform.scale.y, transform.scale.z],
+                texture: mesh.texture.clone(),
+                parent: meta.parent.clone(),
+                color: mesh.color,
+                emissive: mesh.emissive,
+                fresnel_color: mesh.fresnel_color,
+                fresnel_power: mesh.fresnel_power,
+                blend_mode: mesh.blend_mode.clone(),
+                wireframe: mesh.wireframe,
+                uv_scroll: mesh.uv_scroll,
+                script: script_opt.as_deref().map(|s| s.path.clone()),
+                physics: phys_def,
+                point_light: light_opt,
+                animation_player: anim_opt,
+                procedural_rig: rig_opt,
+                vfx_emitter: vfx_opt,
+            });
+        }
     }
 
     SceneDef {
@@ -444,6 +470,27 @@ pub fn apply_scene_to_world(
         if let Some(rig) = &entity.procedural_rig {
             let _ = world.insert_one(e, rig.clone());
         }
+
+        if let Some(emitter_def) = &entity.vfx_emitter {
+            let recipe = if let Some(r) = &emitter_def.recipe {
+                r.clone()
+            } else if let Some(preset) = crate::vfx_forge::get_vfx_preset(&emitter_def.preset_or_recipe) {
+                preset
+            } else if let Ok(custom) = serde_json::from_str::<crate::vfx_forge::VfxRecipe>(&emitter_def.preset_or_recipe) {
+                custom
+            } else {
+                crate::vfx_forge::preset_fire()
+            };
+            let comp = crate::vfx_forge::VfxEmitterComponent {
+                recipe,
+                enabled: emitter_def.enabled,
+                looping: emitter_def.looping,
+                offset: emitter_def.offset,
+                accumulator: 0.0,
+                burst_fired: false,
+            };
+            let _ = world.insert_one(e, comp);
+        }
     }
 }
 
@@ -527,6 +574,13 @@ pub fn extract_entity_def(
     });
 
     let rig_opt = world.get::<&crate::procedural_rig::ProceduralRig>(entity).ok().map(|r| (*r).clone());
+    let vfx_opt = world.get::<&crate::vfx_forge::VfxEmitterComponent>(entity).ok().map(|v| VfxEmitterDef {
+        preset_or_recipe: v.recipe.name.clone(),
+        enabled: v.enabled,
+        looping: v.looping,
+        offset: v.offset,
+        recipe: Some(v.recipe.clone()),
+    });
 
     Some(EntityDef {
         id: meta.id.clone(),
@@ -548,6 +602,7 @@ pub fn extract_entity_def(
         point_light,
         animation_player: anim_opt,
         procedural_rig: rig_opt,
+        vfx_emitter: vfx_opt,
     })
 }
 
@@ -604,6 +659,7 @@ mod tests {
             }),
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         };
         let json = serde_json::to_string(&def).unwrap();
         assert!(json.contains("\"parent\":\"parent_node\""));
@@ -635,6 +691,7 @@ mod tests {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         };
         let json = serde_json::to_string(&def).unwrap();
         assert!(json.contains("\"blend_mode\":\"additive\""));
@@ -644,6 +701,46 @@ mod tests {
         assert_eq!(decoded.blend_mode, Some("additive".to_string()));
         assert_eq!(decoded.wireframe, Some(true));
         assert_eq!(decoded.fresnel_power, Some(3.0));
+    }
+
+    #[test]
+    fn test_entity_def_vfx_emitter() {
+        let def = EntityDef {
+            id: "magic_torch".to_string(),
+            mesh: "cylinder".to_string(),
+            position: [0.0, 0.5, 0.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [0.2, 1.0, 0.2],
+            texture: None,
+            parent: None,
+            color: [0.6, 0.4, 0.2, 1.0],
+            emissive: 0.0,
+            fresnel_color: None,
+            fresnel_power: None,
+            blend_mode: None,
+            wireframe: None,
+            uv_scroll: None,
+            script: None,
+            physics: None,
+            point_light: None,
+            animation_player: None,
+            procedural_rig: None,
+            vfx_emitter: Some(VfxEmitterDef {
+                preset_or_recipe: "fire".to_string(),
+                enabled: true,
+                looping: true,
+                offset: [0.0, 0.5, 0.0],
+                recipe: None,
+            }),
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        assert!(json.contains("\"vfx_emitter\""));
+        assert!(json.contains("\"preset_or_recipe\":\"fire\""));
+        let decoded: EntityDef = serde_json::from_str(&json).unwrap();
+        assert!(decoded.vfx_emitter.is_some());
+        let emitter = decoded.vfx_emitter.unwrap();
+        assert_eq!(emitter.preset_or_recipe, "fire");
+        assert!(emitter.enabled);
     }
 
     #[test]

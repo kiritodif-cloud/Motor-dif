@@ -248,6 +248,37 @@ pub fn list_vfx_presets() -> Vec<&'static str> {
 }
 
 // ============================================================================
+// 2.1. RUNTIME VFX EMITTER COMPONENT
+// ============================================================================
+
+#[derive(Debug, Clone)]
+pub struct VfxEmitterComponent {
+    pub recipe: VfxRecipe,
+    pub enabled: bool,
+    pub looping: bool,
+    pub offset: [f32; 3],
+    pub accumulator: f32,
+    pub burst_fired: bool,
+}
+
+impl VfxEmitterComponent {
+    pub fn new(recipe: VfxRecipe) -> Self {
+        Self {
+            recipe,
+            enabled: true,
+            looping: true,
+            offset: [0.0, 0.0, 0.0],
+            accumulator: 0.0,
+            burst_fired: false,
+        }
+    }
+
+    pub fn from_preset(name: &str) -> Option<Self> {
+        get_vfx_preset(name).map(Self::new)
+    }
+}
+
+// ============================================================================
 // 3. DETERMINISTIC RANDOM SAMPLER FOR PARTICLE SPAWNING
 // ============================================================================
 

@@ -568,6 +568,7 @@ fn build_preset_mech_biped(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: Some(rig),
+            vfx_emitter: None,
         },
         // 2. Torso
         EntityDef {
@@ -590,6 +591,7 @@ fn build_preset_mech_biped(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         // 3. Head (with glowing visor)
         EntityDef {
@@ -612,6 +614,7 @@ fn build_preset_mech_biped(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         // 4. Arm Left
         EntityDef {
@@ -634,6 +637,7 @@ fn build_preset_mech_biped(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         // 5. Arm Right
         EntityDef {
@@ -656,6 +660,7 @@ fn build_preset_mech_biped(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         // 6. Weapon (Mounted on right arm)
         EntityDef {
@@ -678,6 +683,7 @@ fn build_preset_mech_biped(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         // 7. Leg Left
         EntityDef {
@@ -700,6 +706,7 @@ fn build_preset_mech_biped(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         // 8. Leg Right
         EntityDef {
@@ -722,6 +729,7 @@ fn build_preset_mech_biped(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
     ]
 }
@@ -774,6 +782,7 @@ fn build_preset_sci_fi_trooper(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: Some(rig),
+            vfx_emitter: None,
         },
         EntityDef {
             id: torso_id.clone(),
@@ -795,6 +804,7 @@ fn build_preset_sci_fi_trooper(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         EntityDef {
             id: head_id,
@@ -816,6 +826,7 @@ fn build_preset_sci_fi_trooper(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         EntityDef {
             id: arm_l_id,
@@ -837,6 +848,7 @@ fn build_preset_sci_fi_trooper(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         EntityDef {
             id: arm_r_id.clone(),
@@ -858,6 +870,7 @@ fn build_preset_sci_fi_trooper(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         EntityDef {
             id: weapon_id,
@@ -879,6 +892,7 @@ fn build_preset_sci_fi_trooper(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         EntityDef {
             id: leg_l_id,
@@ -900,6 +914,7 @@ fn build_preset_sci_fi_trooper(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         EntityDef {
             id: leg_r_id,
@@ -921,6 +936,7 @@ fn build_preset_sci_fi_trooper(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
     ]
 }
@@ -971,6 +987,7 @@ fn build_preset_spider_drone(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: Some(rig),
+            vfx_emitter: None,
         },
         EntityDef {
             id: torso_id.clone(),
@@ -992,6 +1009,7 @@ fn build_preset_spider_drone(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         EntityDef {
             id: eye_id,
@@ -1013,6 +1031,7 @@ fn build_preset_spider_drone(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         EntityDef {
             id: leg_fl,
@@ -1034,6 +1053,7 @@ fn build_preset_spider_drone(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         EntityDef {
             id: leg_fr,
@@ -1055,6 +1075,7 @@ fn build_preset_spider_drone(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         EntityDef {
             id: leg_bl,
@@ -1076,6 +1097,7 @@ fn build_preset_spider_drone(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         EntityDef {
             id: leg_br,
@@ -1097,6 +1119,7 @@ fn build_preset_spider_drone(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
     ]
 }
@@ -1138,6 +1161,7 @@ fn build_preset_defense_turret(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: Some(rig),
+            vfx_emitter: None,
         },
         EntityDef {
             id: base_id,
@@ -1159,6 +1183,7 @@ fn build_preset_defense_turret(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         EntityDef {
             id: torso_id.clone(),
@@ -1180,6 +1205,7 @@ fn build_preset_defense_turret(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         EntityDef {
             id: head_id,
@@ -1201,6 +1227,7 @@ fn build_preset_defense_turret(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
         EntityDef {
             id: weapon_id,
@@ -1222,6 +1249,7 @@ fn build_preset_defense_turret(prefix: &str, pos: [f32; 3]) -> Vec<EntityDef> {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         },
     ]
 }
@@ -1373,6 +1401,7 @@ mod tests {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         });
 
         entities.push(EntityDef {
@@ -1395,6 +1424,7 @@ mod tests {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         });
 
         // 2. Central Tracking Beacon
@@ -1422,6 +1452,7 @@ mod tests {
             }),
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         });
 
         entities.push(EntityDef {
@@ -1444,6 +1475,7 @@ mod tests {
             point_light: None,
             animation_player: None,
             procedural_rig: None,
+            vfx_emitter: None,
         });
 
         // 3. Modular Character 1: Mech Biped (with showcase Lua script)

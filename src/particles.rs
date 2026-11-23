@@ -5,11 +5,17 @@ use crate::renderer::InstanceRaw;
 pub struct Particle {
     pub position: Vec3,
     pub velocity: Vec3,
-    pub color: [f32; 4],
-    pub size: f32,
+    pub size_start: f32,
+    pub size_end: f32,
+    pub color_start: [f32; 4],
+    pub color_end: [f32; 4],
+    pub emissive_boost: f32,
     pub lifetime: f32,
     pub max_lifetime: f32,
-    pub gravity: f32,
+    pub gravity: Vec3,
+    pub drag: f32,
+    pub vortex_strength: f32,
+    pub emitter_center: Vec3,
 }
 
 #[derive(Debug, Clone)]
@@ -58,7 +64,7 @@ impl ParticleSystem {
         lifetime: f32,
     ) {
         let count_to_spawn = count.min(self.max_particles.saturating_sub(self.particles.len()));
-        let base_gravity = 9.81;
+        let base_gravity = Vec3::new(0.0, -9.81, 0.0);
 
         for _ in 0..count_to_spawn {
             // Generate a random 3D direction
@@ -80,11 +86,47 @@ impl ParticleSystem {
             self.particles.push(Particle {
                 position: origin,
                 velocity: dir * spd,
-                color,
-                size,
+                size_start: size,
+                size_end: size * 0.3,
+                color_start: color,
+                color_end: [color[0], color[1], color[2], 0.0],
+                emissive_boost: 1.0,
                 lifetime: p_life,
                 max_lifetime: p_life,
                 gravity: base_gravity,
+                drag: 0.0,
+                vortex_strength: 0.0,
+                emitter_center: origin,
+            });
+        }
+    }
+
+    /// Spawns particles configured via a procedural VfxRecipe
+    pub fn spawn_vfx(
+        &mut self,
+        origin: Vec3,
+        recipe: &crate::vfx_forge::VfxRecipe,
+        count: usize,
+    ) {
+        let count_to_spawn = count.min(self.max_particles.saturating_sub(self.particles.len()));
+        let grav = Vec3::from(recipe.gravity);
+
+        for _ in 0..count_to_spawn {
+            let (pos, vel, life) = crate::vfx_forge::sample_particle_spawn(recipe, origin, &mut self.rng_seed);
+            self.particles.push(Particle {
+                position: pos,
+                velocity: vel,
+                size_start: recipe.size_start,
+                size_end: recipe.size_end,
+                color_start: recipe.color_start,
+                color_end: recipe.color_end,
+                emissive_boost: recipe.emissive_boost,
+                lifetime: life,
+                max_lifetime: life,
+                gravity: grav,
+                drag: recipe.drag,
+                vortex_strength: recipe.vortex_strength,
+                emitter_center: origin,
             });
         }
     }
@@ -92,7 +134,25 @@ impl ParticleSystem {
     pub fn update(&mut self, dt: f32) {
         for p in &mut self.particles {
             p.lifetime -= dt;
-            p.velocity.y -= p.gravity * dt;
+
+            // Apply 3D gravity vector
+            p.velocity += p.gravity * dt;
+
+            // Apply aerodynamic drag
+            if p.drag > 0.0 {
+                p.velocity *= 1.0 - (p.drag * dt).min(0.99);
+            }
+
+            // Apply vortex force (swirling in XZ plane around emitter_center)
+            if p.vortex_strength.abs() > 0.001 {
+                let r_xz = Vec3::new(p.position.x - p.emitter_center.x, 0.0, p.position.z - p.emitter_center.z);
+                let dist = r_xz.length();
+                if dist > 0.001 {
+                    let tangent = Vec3::new(-r_xz.z, 0.0, r_xz.x) / dist;
+                    p.velocity += tangent * (p.vortex_strength * dt);
+                }
+            }
+
             p.position += p.velocity * dt;
         }
         self.particles.retain(|p| p.lifetime > 0.0);
@@ -101,21 +161,28 @@ impl ParticleSystem {
     pub fn get_instances(&self) -> Vec<InstanceRaw> {
         let mut instances = Vec::with_capacity(self.particles.len());
         for p in &self.particles {
-            let progress = (p.lifetime / p.max_lifetime).clamp(0.0, 1.0);
-            let current_size = p.size * (0.3 + 0.7 * progress);
+            let u = (1.0 - p.lifetime / p.max_lifetime).clamp(0.0, 1.0);
+            let current_size = p.size_start + (p.size_end - p.size_start) * u;
             let model = Mat4::from_scale_rotation_translation(
-                Vec3::splat(current_size),
+                Vec3::splat(current_size.max(0.001)),
                 Quat::IDENTITY,
                 p.position,
             );
 
-            let mut col = p.color;
-            col[3] = progress; // Fade alpha smoothly
+            // Interpolate color and alpha with smooth fade
+            let col = [
+                p.color_start[0] + (p.color_end[0] - p.color_start[0]) * u,
+                p.color_start[1] + (p.color_end[1] - p.color_start[1]) * u,
+                p.color_start[2] + (p.color_end[2] - p.color_start[2]) * u,
+                (p.color_start[3] + (p.color_end[3] - p.color_start[3]) * u) * (1.0 - u * u),
+            ];
+
+            let emissive = p.emissive_boost.max(1.0);
 
             instances.push(InstanceRaw {
                 model: model.to_cols_array_2d(),
                 color: col,
-                extra: [1.0, 0.0, 0.0, 0.0], // Emissive glow = 1.0
+                extra: [emissive, 0.0, 0.0, 0.0], // Emissive glow for HDR Bloom
                 fresnel: [0.0, 0.0, 0.0, 0.0],
                 uv_offset: [0.0, 0.0],
                 uv_scale: [1.0, 1.0],
@@ -160,5 +227,25 @@ mod tests {
         assert_eq!(ps.active_count(), 20);
         ps.clear();
         assert_eq!(ps.active_count(), 0);
+    }
+
+    #[test]
+    fn test_particle_system_vfx_recipe_and_forces() {
+        let mut ps = ParticleSystem::new();
+        let portal = crate::vfx_forge::preset_magic_portal();
+        ps.spawn_vfx(Vec3::ZERO, &portal, 30);
+        assert_eq!(ps.active_count(), 30);
+
+        let instances = ps.get_instances();
+        assert_eq!(instances.len(), 30);
+        assert!((instances[0].extra[0] - 4.0).abs() < 1e-4, "Expected emissive boost of 4.0");
+
+        // Update with drag and vortex
+        ps.update(0.1);
+        assert_eq!(ps.active_count(), 30);
+        for p in &ps.particles {
+            assert!(!p.position.is_nan());
+            assert!(!p.velocity.is_nan());
+        }
     }
 }
