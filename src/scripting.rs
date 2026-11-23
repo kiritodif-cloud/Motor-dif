@@ -2724,4 +2724,27 @@ mod tests {
 
         let _ = std::fs::remove_file(test_script_path);
     }
+
+    #[test]
+    fn test_terrain_scout_script_compilation() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio.clone());
+
+        let mut recipe = crate::level_forge::TerrainRecipe::default();
+        recipe.max_height = 14.0;
+        recipe.noise_scale = 0.035;
+        *ctx.active_terrain.write().unwrap() = Some(recipe);
+
+        let mut comp = ScriptComponent::new("assets/scripts/terrain_scout.lua".to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Init failed: {:?}", res.err());
+
+        // Test one update step
+        let mut transform = crate::ecs::Transform::from_xyz(0.0, 5.0, 0.0);
+        let res_step = comp.update(&mut transform, 0.016);
+        assert!(res_step.is_ok(), "Update error: {:?}", res_step.err());
+        assert!(transform.position.y > 0.0, "Expected hover_y to be above ground, got {}", transform.position.y);
+    }
 }

@@ -670,4 +670,18 @@ mod tests {
         let hero = scene.entities.iter().find(|e| e.id == "hero_agent").unwrap();
         assert_eq!(hero.script, Some("assets/scripts/showcase_v12.lua".to_string()));
     }
+
+    #[test]
+    fn test_load_showcase_v18_terrain() {
+        let p = Path::new("assets/showcase_v18_terrain.json");
+        assert!(p.exists());
+        let scene = load_scene_from_file(p).expect("Failed to parse showcase_v18_terrain.json");
+        assert!(scene.entities.len() >= 20);
+        let terrain = scene.entities.iter().find(|e| e.id == "alien_terrain").unwrap();
+        assert_eq!(terrain.mesh, "assets/models/terrain_demo.glb");
+        let beacon = scene.entities.iter().find(|e| e.id == "plasma_beacon").unwrap();
+        assert!(beacon.point_light.is_some());
+        let scout = scene.entities.iter().find(|e| e.id == "terrain_scout").unwrap();
+        assert_eq!(scout.script, Some("assets/scripts/terrain_scout.lua".to_string()));
+    }
 }

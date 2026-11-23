@@ -1,0 +1,1170 @@
+{
+  "camera": {
+    "mode": "3d",
+    "ortho_size": 15.0,
+    "position": [
+      0.0,
+      22.0,
+      38.0
+    ],
+    "target": [
+      0.0,
+      7.0,
+      0.0
+    ]
+  },
+  "entities": [
+    {
+      "blend_mode": "opaque",
+      "color": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissive": 0.0,
+      "id": "alien_terrain",
+      "mesh": "assets/models/terrain_demo.glb",
+      "name": "Alien Terrain",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "wireframe": false
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.15,
+        0.9,
+        1.0,
+        1.0
+      ],
+      "emissive": 4.5,
+      "fresnel_color": [
+        0.4,
+        0.95,
+        1.0
+      ],
+      "fresnel_power": 2.5,
+      "id": "plasma_beacon",
+      "mesh": "icosphere",
+      "name": "Alien Sanctuary Beacon",
+      "point_light": {
+        "color": [
+          0.2,
+          0.85,
+          1.0
+        ],
+        "intensity": 6.0,
+        "radius": 30.0
+      },
+      "position": [
+        0.0,
+        13.170663833618164,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.8,
+        1.8,
+        1.8
+      ]
+    },
+    {
+      "color": [
+        0.95,
+        0.2,
+        0.85,
+        1.0
+      ],
+      "emissive": 3.0,
+      "fresnel_color": [
+        1.0,
+        0.4,
+        0.9
+      ],
+      "fresnel_power": 2.0,
+      "id": "terrain_scout",
+      "mesh": "cone",
+      "name": "Terrain Rover Scout",
+      "position": [
+        22.0,
+        10.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.9,
+        0.9,
+        1.2
+      ],
+      "script": "assets/scripts/terrain_scout.lua"
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.15,
+        0.85,
+        0.95,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        0.18,
+        1.02,
+        1.14
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_1",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 1",
+      "position": [
+        -26.42252540588379,
+        8.39089298248291,
+        19.840991973876953
+      ],
+      "rotation": [
+        0.0,
+        220.63255310058594,
+        0.0
+      ],
+      "scale": [
+        0.8598926663398743,
+        3.152939558029175,
+        0.8598926663398743
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.85,
+        0.2,
+        0.9,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        1.02,
+        0.24,
+        1.08
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_2",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 2",
+      "position": [
+        25.954669952392578,
+        8.474471092224121,
+        18.849695205688477
+      ],
+      "rotation": [
+        0.0,
+        42.44392013549805,
+        0.0
+      ],
+      "scale": [
+        0.5164417624473572,
+        1.8936196565628052,
+        0.5164417624473572
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.15,
+        0.85,
+        0.95,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        0.18,
+        1.02,
+        1.14
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_3",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 3",
+      "position": [
+        2.612863063812256,
+        13.401825904846191,
+        -8.81477165222168
+      ],
+      "rotation": [
+        0.0,
+        27.879201889038086,
+        0.0
+      ],
+      "scale": [
+        0.7395956516265869,
+        2.711850643157959,
+        0.7395956516265869
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.85,
+        0.2,
+        0.9,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        1.02,
+        0.24,
+        1.08
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_4",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 4",
+      "position": [
+        36.289337158203125,
+        7.049068927764893,
+        2.2144925594329834
+      ],
+      "rotation": [
+        0.0,
+        48.40953826904297,
+        0.0
+      ],
+      "scale": [
+        0.9142755270004272,
+        3.3523435592651367,
+        0.9142755270004272
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.15,
+        0.85,
+        0.95,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        0.18,
+        1.02,
+        1.14
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_5",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 5",
+      "position": [
+        13.661516189575195,
+        6.169410228729248,
+        33.96434783935547
+      ],
+      "rotation": [
+        0.0,
+        256.54803466796875,
+        0.0
+      ],
+      "scale": [
+        0.7996765375137329,
+        2.932147264480591,
+        0.7996765375137329
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.85,
+        0.2,
+        0.9,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        1.02,
+        0.24,
+        1.08
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_6",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 6",
+      "position": [
+        13.032506942749023,
+        12.93619155883789,
+        -7.151318550109863
+      ],
+      "rotation": [
+        0.0,
+        219.78541564941406,
+        0.0
+      ],
+      "scale": [
+        0.9336462616920471,
+        3.4233694076538086,
+        0.9336462616920471
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.15,
+        0.85,
+        0.95,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        0.18,
+        1.02,
+        1.14
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_7",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 7",
+      "position": [
+        5.910162448883057,
+        11.984413146972656,
+        -17.224044799804688
+      ],
+      "rotation": [
+        0.0,
+        185.7173309326172,
+        0.0
+      ],
+      "scale": [
+        0.5452643036842346,
+        1.9993025064468384,
+        0.5452643036842346
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.85,
+        0.2,
+        0.9,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        1.02,
+        0.24,
+        1.08
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_8",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 8",
+      "position": [
+        0.623616099357605,
+        11.033441543579102,
+        -23.327905654907227
+      ],
+      "rotation": [
+        0.0,
+        172.77505493164062,
+        0.0
+      ],
+      "scale": [
+        0.4202123284339905,
+        1.5407785177230835,
+        0.4202123284339905
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.15,
+        0.85,
+        0.95,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        0.18,
+        1.02,
+        1.14
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_9",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 9",
+      "position": [
+        -18.64019203186035,
+        10.359911918640137,
+        -19.59700584411621
+      ],
+      "rotation": [
+        0.0,
+        353.6802978515625,
+        0.0
+      ],
+      "scale": [
+        0.8500638008117676,
+        3.116900682449341,
+        0.8500638008117676
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.85,
+        0.2,
+        0.9,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        1.02,
+        0.24,
+        1.08
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_10",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 10",
+      "position": [
+        29.02250099182129,
+        9.170915603637695,
+        5.960452079772949
+      ],
+      "rotation": [
+        0.0,
+        1.7690777778625488,
+        0.0
+      ],
+      "scale": [
+        0.5911429524421692,
+        2.1675240993499756,
+        0.5911429524421692
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.15,
+        0.85,
+        0.95,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        0.18,
+        1.02,
+        1.14
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_11",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 11",
+      "position": [
+        -20.721614837646484,
+        8.979804992675781,
+        21.250267028808594
+      ],
+      "rotation": [
+        0.0,
+        251.76498413085938,
+        0.0
+      ],
+      "scale": [
+        0.48317018151283264,
+        1.771623969078064,
+        0.48317018151283264
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.85,
+        0.2,
+        0.9,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        1.02,
+        0.24,
+        1.08
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_12",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 12",
+      "position": [
+        -10.390362739562988,
+        10.627549171447754,
+        19.370222091674805
+      ],
+      "rotation": [
+        0.0,
+        80.7245101928711,
+        0.0
+      ],
+      "scale": [
+        0.4842909276485443,
+        1.7757333517074585,
+        0.4842909276485443
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.15,
+        0.85,
+        0.95,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        0.18,
+        1.02,
+        1.14
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_13",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 13",
+      "position": [
+        30.46860122680664,
+        9.410359382629395,
+        -4.826582908630371
+      ],
+      "rotation": [
+        0.0,
+        7.653093338012695,
+        0.0
+      ],
+      "scale": [
+        0.9418243765830994,
+        3.4533560276031494,
+        0.9418243765830994
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.85,
+        0.2,
+        0.9,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        1.02,
+        0.24,
+        1.08
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_14",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 14",
+      "position": [
+        18.259124755859375,
+        9.170841217041016,
+        22.999725341796875
+      ],
+      "rotation": [
+        0.0,
+        137.54197692871094,
+        0.0
+      ],
+      "scale": [
+        0.5032816529273987,
+        1.8453660011291504,
+        0.5032816529273987
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.15,
+        0.85,
+        0.95,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        0.18,
+        1.02,
+        1.14
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_15",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 15",
+      "position": [
+        -4.348109722137451,
+        10.842731475830078,
+        -25.71257972717285
+      ],
+      "rotation": [
+        0.0,
+        9.531562805175781,
+        0.0
+      ],
+      "scale": [
+        0.8659700155258179,
+        3.1752233505249023,
+        0.8659700155258179
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.85,
+        0.2,
+        0.9,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        1.02,
+        0.24,
+        1.08
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_16",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 16",
+      "position": [
+        6.234552383422852,
+        6.038590908050537,
+        -35.93792724609375
+      ],
+      "rotation": [
+        0.0,
+        232.2796630859375,
+        0.0
+      ],
+      "scale": [
+        0.46998655796051025,
+        1.7232840061187744,
+        0.46998655796051025
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.15,
+        0.85,
+        0.95,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        0.18,
+        1.02,
+        1.14
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_17",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 17",
+      "position": [
+        3.4868078231811523,
+        13.395256996154785,
+        -0.9139671325683594
+      ],
+      "rotation": [
+        0.0,
+        283.6771240234375,
+        0.0
+      ],
+      "scale": [
+        0.9463552832603455,
+        3.4699692726135254,
+        0.9463552832603455
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.85,
+        0.2,
+        0.9,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        1.02,
+        0.24,
+        1.08
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_18",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 18",
+      "position": [
+        -16.16826057434082,
+        12.52618408203125,
+        -9.8970308303833
+      ],
+      "rotation": [
+        0.0,
+        67.26136779785156,
+        0.0
+      ],
+      "scale": [
+        0.8130484223365784,
+        2.98117733001709,
+        0.8130484223365784
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.15,
+        0.85,
+        0.95,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        0.18,
+        1.02,
+        1.14
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_19",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 19",
+      "position": [
+        -2.4969425201416016,
+        12.53538990020752,
+        5.1278076171875
+      ],
+      "rotation": [
+        0.0,
+        5.597405433654785,
+        0.0
+      ],
+      "scale": [
+        0.44974732398986816,
+        1.6490734815597534,
+        0.44974732398986816
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.85,
+        0.2,
+        0.9,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        1.02,
+        0.24,
+        1.08
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_20",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 20",
+      "position": [
+        -9.921637535095215,
+        13.250493049621582,
+        4.123735427856445
+      ],
+      "rotation": [
+        0.0,
+        235.5686492919922,
+        0.0
+      ],
+      "scale": [
+        0.6919064521789551,
+        2.5369904041290283,
+        0.6919064521789551
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.15,
+        0.85,
+        0.95,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        0.18,
+        1.02,
+        1.14
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_21",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 21",
+      "position": [
+        -9.441155433654785,
+        7.449024200439453,
+        30.54126739501953
+      ],
+      "rotation": [
+        0.0,
+        234.18360900878906,
+        0.0
+      ],
+      "scale": [
+        0.706035852432251,
+        2.5887980461120605,
+        0.706035852432251
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.85,
+        0.2,
+        0.9,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        1.02,
+        0.24,
+        1.08
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_22",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 22",
+      "position": [
+        29.784696578979492,
+        7.658520221710205,
+        -17.775705337524414
+      ],
+      "rotation": [
+        0.0,
+        270.8966064453125,
+        0.0
+      ],
+      "scale": [
+        0.7864120006561279,
+        2.8835105895996094,
+        0.7864120006561279
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.15,
+        0.85,
+        0.95,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        0.18,
+        1.02,
+        1.14
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_23",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 23",
+      "position": [
+        -12.296548843383789,
+        13.229023933410645,
+        -0.5445699691772461
+      ],
+      "rotation": [
+        0.0,
+        95.6714096069336,
+        0.0
+      ],
+      "scale": [
+        0.5896391272544861,
+        2.1620101928710938,
+        0.5896391272544861
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.85,
+        0.2,
+        0.9,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        1.02,
+        0.24,
+        1.08
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_24",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 24",
+      "position": [
+        14.658943176269531,
+        12.74522876739502,
+        -1.7988004684448242
+      ],
+      "rotation": [
+        0.0,
+        230.3035888671875,
+        0.0
+      ],
+      "scale": [
+        0.8222470283508301,
+        3.0149056911468506,
+        0.8222470283508301
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.15,
+        0.85,
+        0.95,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        0.18,
+        1.02,
+        1.14
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_25",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 25",
+      "position": [
+        29.261152267456055,
+        8.046929359436035,
+        15.265069961547852
+      ],
+      "rotation": [
+        0.0,
+        323.19580078125,
+        0.0
+      ],
+      "scale": [
+        0.4415121078491211,
+        1.6188777685165405,
+        0.4415121078491211
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.85,
+        0.2,
+        0.9,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        1.02,
+        0.24,
+        1.08
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_26",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 26",
+      "position": [
+        -1.3286831378936768,
+        5.767382621765137,
+        -37.686012268066406
+      ],
+      "rotation": [
+        0.0,
+        37.708553314208984,
+        0.0
+      ],
+      "scale": [
+        0.7139537334442139,
+        2.617830276489258,
+        0.7139537334442139
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.15,
+        0.85,
+        0.95,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        0.18,
+        1.02,
+        1.14
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_27",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 27",
+      "position": [
+        -30.1236515045166,
+        7.872580528259277,
+        -1.8211681842803955
+      ],
+      "rotation": [
+        0.0,
+        185.87791442871094,
+        0.0
+      ],
+      "scale": [
+        0.3702847361564636,
+        1.357710599899292,
+        0.3702847361564636
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.85,
+        0.2,
+        0.9,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        1.02,
+        0.24,
+        1.08
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_28",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 28",
+      "position": [
+        -23.716960906982422,
+        10.198716163635254,
+        13.760903358459473
+      ],
+      "rotation": [
+        0.0,
+        359.8512268066406,
+        0.0
+      ],
+      "scale": [
+        0.8728799819946289,
+        3.2005598545074463,
+        0.8728799819946289
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.15,
+        0.85,
+        0.95,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        0.18,
+        1.02,
+        1.14
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_29",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 29",
+      "position": [
+        -8.46174144744873,
+        12.698602676391602,
+        13.334676742553711
+      ],
+      "rotation": [
+        0.0,
+        53.69125747680664,
+        0.0
+      ],
+      "scale": [
+        0.8003720641136169,
+        2.934697389602661,
+        0.8003720641136169
+      ]
+    },
+    {
+      "blend_mode": "opaque",
+      "color": [
+        0.85,
+        0.2,
+        0.9,
+        1.0
+      ],
+      "emissive": 2.2,
+      "fresnel_color": [
+        1.02,
+        0.24,
+        1.08
+      ],
+      "fresnel_power": 2.2,
+      "id": "crystal_30",
+      "mesh": "cylinder",
+      "name": "Alien Monolith 30",
+      "position": [
+        -11.581570625305176,
+        7.813371658325195,
+        -29.30251121520996
+      ],
+      "rotation": [
+        0.0,
+        272.1560974121094,
+        0.0
+      ],
+      "scale": [
+        0.5800850987434387,
+        2.126978635787964,
+        0.5800850987434387
+      ]
+    }
+  ],
+  "environment": {
+    "fog_color": [
+      0.03,
+      0.04,
+      0.12
+    ],
+    "fog_density": 0.008,
+    "horizon_color": [
+      0.02,
+      0.02,
+      0.08
+    ],
+    "sky_mode": "space",
+    "zenith_color": [
+      0.05,
+      0.08,
+      0.18
+    ]
+  },
+  "post_process": {
+    "bloom_enabled": true,
+    "bloom_intensity": 1.25,
+    "bloom_threshold": 1.0,
+    "exposure": 1.15,
+    "vignette_intensity": 0.35
+  }
+}

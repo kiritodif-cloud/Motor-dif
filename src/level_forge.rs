@@ -750,6 +750,28 @@ pub mod tests {
     }
 
     #[test]
+    fn test_bake_alien_terrain_demo_glb() {
+        let recipe = TerrainRecipe {
+            name: "terrain_demo".to_string(),
+            width: 100.0,
+            depth: 100.0,
+            resolution: 64,
+            max_height: 14.0,
+            noise_scale: 0.035,
+            octaves: 4,
+            seed: 888,
+            island_falloff: true,
+            flat_shading: false,
+            palette: "alien".to_string(),
+        };
+
+        let path = "assets/models/terrain_demo.glb";
+        let res = recipe.bake_to_glb(path);
+        assert!(res.is_ok(), "Bake failed: {:?}", res.err());
+        assert!(std::path::Path::new(path).exists());
+    }
+
+    #[test]
     fn test_dungeon_generation_and_connectivity() {
         let recipe = DungeonRecipe {
             name: "test_dungeon".to_string(),
@@ -821,5 +843,141 @@ pub mod tests {
             let h = sample_terrain_height(&terrain, inst.position[0], inst.position[2]);
             assert!((inst.position[1] - h).abs() < 1e-4);
         }
+    }
+
+    #[test]
+    fn test_generate_showcase_v18_terrain_scene() {
+        let terrain_recipe = TerrainRecipe {
+            name: "terrain_demo".to_string(),
+            width: 100.0,
+            depth: 100.0,
+            resolution: 64,
+            max_height: 14.0,
+            noise_scale: 0.035,
+            octaves: 4,
+            seed: 888,
+            island_falloff: true,
+            flat_shading: false,
+            palette: "alien".to_string(),
+        };
+
+        let scatter_recipe = ScatterRecipe {
+            name: "crystal_monolith".to_string(),
+            prefab_or_mesh: "cylinder".to_string(),
+            count: 30,
+            area_radius: 38.0,
+            min_spacing: 4.5,
+            scale_min: 0.6,
+            scale_max: 1.6,
+            random_yaw: true,
+            max_slope_deg: 35.0,
+            seed: 777,
+        };
+
+        let instances = generate_scatter_instances(&scatter_recipe, Some(&terrain_recipe));
+        assert!(!instances.is_empty());
+
+        let mut entities = Vec::new();
+
+        // 1. Terrain Entity
+        entities.push(serde_json::json!({
+            "id": "alien_terrain",
+            "name": "Alien Terrain",
+            "mesh": "assets/models/terrain_demo.glb",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+            "color": [1.0, 1.0, 1.0, 1.0],
+            "emissive": 0.0,
+            "wireframe": false,
+            "blend_mode": "opaque"
+        }));
+
+        // 2. Plasma Beacon Core at center peak
+        let peak_h = sample_terrain_height(&terrain_recipe, 0.0, 0.0);
+        entities.push(serde_json::json!({
+            "id": "plasma_beacon",
+            "name": "Alien Sanctuary Beacon",
+            "mesh": "icosphere",
+            "position": [0.0, peak_h + 1.2, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.8, 1.8, 1.8],
+            "color": [0.15, 0.9, 1.0, 1.0],
+            "emissive": 4.5,
+            "fresnel_color": [0.4, 0.95, 1.0],
+            "fresnel_power": 2.5,
+            "blend_mode": "opaque",
+            "point_light": {
+                "color": [0.2, 0.85, 1.0],
+                "intensity": 6.0,
+                "radius": 30.0
+            }
+        }));
+
+        // 3. Terrain Scout Drone
+        entities.push(serde_json::json!({
+            "id": "terrain_scout",
+            "name": "Terrain Rover Scout",
+            "mesh": "cone",
+            "position": [22.0, 10.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [0.9, 0.9, 1.2],
+            "color": [0.95, 0.2, 0.85, 1.0],
+            "emissive": 3.0,
+            "fresnel_color": [1.0, 0.4, 0.9],
+            "fresnel_power": 2.0,
+            "script": "assets/scripts/terrain_scout.lua"
+        }));
+
+        // 4. Scattered Crystal Monoliths
+        for (idx, inst) in instances.iter().enumerate() {
+            let col = if idx % 2 == 0 {
+                [0.15, 0.85, 0.95, 1.0]
+            } else {
+                [0.85, 0.2, 0.9, 1.0]
+            };
+            let h = inst.scale[0] * 2.2;
+            entities.push(serde_json::json!({
+                "id": format!("crystal_{}", idx + 1),
+                "name": format!("Alien Monolith {}", idx + 1),
+                "mesh": "cylinder",
+                "position": [inst.position[0], inst.position[1] + h * 0.5, inst.position[2]],
+                "rotation": [0.0, inst.rotation_deg[1], 0.0],
+                "scale": [inst.scale[0] * 0.6, h, inst.scale[2] * 0.6],
+                "color": col,
+                "emissive": 2.2,
+                "fresnel_color": [col[0] * 1.2, col[1] * 1.2, col[2] * 1.2],
+                "fresnel_power": 2.2,
+                "blend_mode": "opaque"
+            }));
+        }
+
+        let scene = serde_json::json!({
+            "camera": {
+                "mode": "3d",
+                "position": [0.0, 22.0, 38.0],
+                "target": [0.0, 7.0, 0.0],
+                "ortho_size": 15.0
+            },
+            "post_process": {
+                "bloom_enabled": true,
+                "bloom_intensity": 1.25,
+                "bloom_threshold": 1.0,
+                "vignette_intensity": 0.35,
+                "exposure": 1.15
+            },
+            "environment": {
+                "sky_mode": "space",
+                "zenith_color": [0.05, 0.08, 0.18],
+                "horizon_color": [0.02, 0.02, 0.08],
+                "fog_color": [0.03, 0.04, 0.12],
+                "fog_density": 0.008
+            },
+            "entities": entities
+        });
+
+        let scene_json = serde_json::to_string_pretty(&scene).unwrap();
+        std::fs::write("assets/showcase_v18_terrain.json", scene_json).unwrap();
+        assert!(std::path::Path::new("assets/showcase_v18_terrain.json").exists());
     }
 }
