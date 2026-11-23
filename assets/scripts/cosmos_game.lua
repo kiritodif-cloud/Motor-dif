@@ -1,6 +1,8 @@
 -- ============================================================================
--- COSMOS.IO 3D — COSMIC LEVIATHAN BOSS UPDATE
+-- COSMOS.IO 3D — COSMIC LEVIATHAN BOSS UPDATE (FASE 16)
 -- Complete Game Script for Motor-dif
+-- Features: Real Baked GLB Models, Procedural Textures, Declarative UI,
+--           Camera Cinematics, Animation Presets, and Slingshot Gravity.
 -- ============================================================================
 
 -- Game State Variables
@@ -17,6 +19,7 @@ local mine_cooldown = 0.0
 local shoot_cooldown = 0.0
 local emp_cooldown = 0.0
 local game_time = 0.0
+local cam_cinematic_timer = 0.0
 
 -- Evolution
 local evolution = "None"
@@ -44,14 +47,14 @@ local storm_active = false
 local storm_warning = false
 local SANCTUARY_RADIUS = 35.0
 
--- Boss Apophis
-local boss_spawned = false
-local boss_alive = false
+-- Boss Apophis Leviathan
+local boss_spawned = true
+local boss_alive = true
 local boss_id = "apophis_boss"
 local boss_hp = 600.0
 local boss_max_hp = 600.0
 local boss_x = 0.0
-local boss_z = -55.0
+local boss_z = -40.0
 local boss_vx = 0.0
 local boss_vz = 0.0
 local boss_mine_timer = 0.0
@@ -84,9 +87,12 @@ function restart_game()
     storm_timer = 0.0
     storm_active = false
     storm_warning = false
-    boss_spawned = false
-    boss_alive = false
+    boss_alive = true
+    boss_spawned = true
     boss_hp = boss_max_hp
+    boss_x = 0.0
+    boss_z = -40.0
+    cam_cinematic_timer = 0.0
     play_sound("assets/sfx/bounce.wav", 0.8)
     camera_shake(0.5, 0.4)
 end
@@ -184,7 +190,7 @@ local function spawn_single_bot(custom_id)
     table.insert(bots_list, bot_data)
 end
 
--- Initial World Population
+-- Initial World Population & Procedural Animations
 local function init_world()
     food_list = {}
     bots_list = {}
@@ -201,9 +207,16 @@ local function init_world()
         spawn_single_bot()
     end
 
-    -- Setup persistent HUD buttons
+    -- Setup persistent HUD buttons (legacy)
     set_hud_button("btn_restart", "[Restart]", 280, 18, "restart_game")
     set_hud_button("btn_shop", "[+Masa Inicial (50 DM)]", 365, 18, "buy_starting_mass")
+
+    -- Trigger procedural animation presets
+    play_preset_anim("player_cosmos", "hover_idle")
+    play_preset_anim("dyson_sanctuary", "spin_y")
+    play_preset_anim("black_hole_disk", "spin_y")
+    play_preset_anim("comet_shard_1", "pulse_glow")
+    play_preset_anim("comet_shard_2", "pulse_glow")
 
     initialized = true
 end
@@ -225,6 +238,7 @@ function on_update(entity, dt)
     if mine_cooldown > 0.0 then mine_cooldown = mine_cooldown - dt end
     if shoot_cooldown > 0.0 then shoot_cooldown = shoot_cooldown - dt end
     if emp_cooldown > 0.0 then emp_cooldown = emp_cooldown - dt end
+    if cam_cinematic_timer > 0.0 then cam_cinematic_timer = cam_cinematic_timer - dt end
 
     -- 2. Player Input & Movement (W, A, S, D)
     local move_x = 0.0
@@ -248,6 +262,7 @@ function on_update(entity, dt)
     if evolution == "Pulsar" then
         speed_mult = 1.35
     end
+
     local accel = (16.0 / math.max(1.0, (player_mass / 50.0) ^ 0.3)) * speed_mult
 
     player_vx = player_vx + move_x * accel * dt
@@ -258,7 +273,23 @@ function on_update(entity, dt)
     player_vx = player_vx * friction
     player_vz = player_vz * friction
 
-    -- 3. Dash Ability (Shift)
+    -- 3. Slingshot Gravitational Acceleration near Black Hole (45, 0, 45)
+    local bh_dx = 45.0 - entity.x
+    local bh_dz = 45.0 - entity.z
+    local bh_dist = math.sqrt(bh_dx * bh_dx + bh_dz * bh_dz)
+    if bh_dist < 26.0 and bh_dist > 2.0 then
+        local bh_pull = (40.0 / bh_dist) * dt
+        local tan_x = -bh_dz / bh_dist
+        local tan_z = bh_dx / bh_dist
+        -- Inward suction + Tangential orbital boost
+        player_vx = player_vx + (bh_dx / bh_dist) * bh_pull * 12.0 + tan_x * 16.0 * dt
+        player_vz = player_vz + (bh_dz / bh_dist) * bh_pull * 12.0 + tan_z * 16.0 * dt
+        if math.random() < 0.25 then
+            spawn_particles(entity.x, entity.y, entity.z, 0.75, 0.15, 1.0, 5, 3.5, 0.35)
+        end
+    end
+
+    -- 4. Dash Ability (Shift)
     if is_key_down("Shift") and dash_cooldown <= 0.0 and len > 0.01 then
         player_vx = player_vx + move_x * 24.0
         player_vz = player_vz + move_z * 24.0
@@ -268,12 +299,11 @@ function on_update(entity, dt)
         play_sound("assets/sfx/bounce.wav", 0.6)
     end
 
-    -- 4. Gravitational Well (C - Hold)
+    -- 5. Gravitational Well (C - Hold)
     local suction_radius = (evolution == "BlackHole") and 32.0 or 18.0
     local suction_force = (evolution == "BlackHole") and 18.0 or 9.0
 
     if is_key_down("C") then
-        -- Particle visual cue
         if math.random() < 0.4 then
             local p_ang = math.random() * math.pi * 2.0
             local p_rad = suction_radius * (0.4 + math.random() * 0.6)
@@ -306,7 +336,7 @@ function on_update(entity, dt)
         end
     end
 
-    -- 5. Shoot / Eject Mass (Space)
+    -- 6. Shoot / Eject Mass (Space)
     if is_key_just_pressed("Space") and shoot_cooldown <= 0.0 and player_mass > 20.0 then
         player_mass = player_mass - 4.0
         shoot_cooldown = 0.22
@@ -337,11 +367,13 @@ function on_update(entity, dt)
             life = 2.5
         })
 
+        -- Recoil procedural animation & sound
+        play_preset_anim("player_cosmos", "recoil")
         play_sound("assets/sfx/bounce.wav", 0.45)
         spawn_particles(entity.x, entity.y, entity.z, 0.2, 0.8, 1.0, 8, 3.5, 0.25)
     end
 
-    -- 6. Antimatter Mine (F)
+    -- 7. Antimatter Mine (F)
     if is_key_just_pressed("F") and mine_cooldown <= 0.0 then
         mine_cooldown = 4.0
         local mid = "mine_" .. get_next_uid()
@@ -356,7 +388,7 @@ function on_update(entity, dt)
         spawn_particles(entity.x, 0.6, entity.z, 1.0, 0.2, 0.2, 12, 4.0, 0.3)
     end
 
-    -- 7. EMP Pulse Ability (E - Pulsar Only)
+    -- 8. EMP Pulse Ability (E - Pulsar Only)
     if evolution == "Pulsar" and is_key_just_pressed("E") and emp_cooldown <= 0.0 then
         emp_cooldown = 5.0
         camera_shake(0.9, 0.5)
@@ -399,12 +431,14 @@ function on_update(entity, dt)
     entity.sz = player_scale
     entity.y = player_scale * 0.5
 
-    -- Dynamic Camera follow smoothly adjusting distance by mass
-    local cam_dist = 11.0 + player_scale * 4.5
-    local cam_height = 8.0 + player_scale * 3.8
-    follow_entity("player_cosmos", 0.0, cam_height, cam_dist, 0.16)
+    -- Smooth Camera Follow (when not in cinematic lerp)
+    if cam_cinematic_timer <= 0.0 then
+        local cam_dist = 11.0 + player_scale * 4.5
+        local cam_height = 8.0 + player_scale * 3.8
+        follow_entity("player_cosmos", 0.0, cam_height, cam_dist, 0.16)
+    end
 
-    -- 8. Food Absorption (Eating Food)
+    -- 9. Food Absorption (Eating Food)
     local player_r = player_scale * 0.5
     local i_f = 1
     while i_f <= #food_list do
@@ -415,14 +449,13 @@ function on_update(entity, dt)
             play_sound("assets/sfx/bounce.wav", 0.35)
             destroy_entity(food.id)
             table.remove(food_list, i_f)
-            -- Instant respawn elsewhere
             spawn_single_food()
         else
             i_f = i_f + 1
         end
     end
 
-    -- 9. Update Projectiles & Check Collisions
+    -- 10. Update Projectiles & Check Collisions
     local i_p = 1
     while i_p <= #projectiles_list do
         local p = projectiles_list[i_p]
@@ -464,7 +497,7 @@ function on_update(entity, dt)
         end
     end
 
-    -- 10. Update Mines & Check Trigger
+    -- 11. Update Mines & Check Trigger
     local i_m = 1
     while i_m <= #mines_list do
         local m = mines_list[i_m]
@@ -501,7 +534,7 @@ function on_update(entity, dt)
         end
     end
 
-    -- 11. Bots AI, Movement & Collisions
+    -- 12. Bots AI, Movement & Collisions
     local i_b = 1
     while i_b <= #bots_list do
         local bot = bots_list[i_b]
@@ -523,22 +556,18 @@ function on_update(entity, dt)
                 b_target_z = 0.0
                 b_urge = 2.5
             else
-                -- Interact with Player
                 local d_player = dist(bot.x, bot.z, entity.x, entity.z)
                 if d_player < 22.0 then
                     if bot.mass > player_mass * 1.15 then
-                        -- Chase Player
                         b_target_x = entity.x
                         b_target_z = entity.z
                         b_urge = 1.8
                     elseif bot.mass < player_mass * 0.9 then
-                        -- Flee from Player
                         b_target_x = bot.x + (bot.x - entity.x)
                         b_target_z = bot.z + (bot.z - entity.z)
                         b_urge = 2.0
                     end
                 else
-                    -- Move towards closest food
                     local min_fd = 999.0
                     local close_fx = 0.0
                     local close_fz = 0.0
@@ -565,7 +594,6 @@ function on_update(entity, dt)
                 bot.vz = bot.vz + (b_dz / b_len) * b_accel * dt
             end
 
-            -- Bot friction
             bot.vx = bot.vx * (1.0 - 3.5 * dt)
             bot.vz = bot.vz * (1.0 - 3.5 * dt)
             bot.x = bot.x + bot.vx * dt
@@ -573,7 +601,6 @@ function on_update(entity, dt)
             bot.x = clamp(bot.x, -map_bound, map_bound)
             bot.z = clamp(bot.z, -map_bound, map_bound)
 
-            -- Update bot scale
             bot.scale = 0.8 + (bot.mass / 100.0) * 0.5
             tween_position(bot.id, bot.x, bot.scale * 0.5, bot.z, 0.0)
 
@@ -592,7 +619,6 @@ function on_update(entity, dt)
             local p_dist = dist(entity.x, entity.z, bot.x, bot.z)
             if p_dist < (player_r + bot.scale * 0.5) then
                 if player_mass >= bot.mass then
-                    -- Player eats Bot!
                     player_mass = player_mass + bot.mass * 0.65
                     spawn_particles(bot.x, 0.8, bot.z, 0.9, 0.3, 0.4, 35, 6.0, 0.7)
                     play_sound("assets/sfx/bounce.wav", 0.7)
@@ -601,7 +627,6 @@ function on_update(entity, dt)
                     table.remove(bots_list, i_b)
                     spawn_single_bot()
                 else
-                    -- Bot hurts Player
                     player_mass = math.max(10.0, player_mass - 18.0)
                     local rep_x = (entity.x - bot.x) / (p_dist + 0.01)
                     local rep_z = (entity.z - bot.z) / (p_dist + 0.01)
@@ -618,7 +643,7 @@ function on_update(entity, dt)
         end
     end
 
-    -- 12. Gamma Radiation Storm Cycle
+    -- 13. Gamma Radiation Storm Cycle
     storm_timer = storm_timer + dt
     local cycle_time = storm_timer % (storm_interval + storm_duration)
 
@@ -636,20 +661,18 @@ function on_update(entity, dt)
     if storm_active then
         local p_dist_origin = math.sqrt(entity.x * entity.x + entity.z * entity.z)
         if p_dist_origin > SANCTUARY_RADIUS then
-            -- Radiation drains mass!
             player_mass = math.max(10.0, player_mass - 14.0 * dt)
             if math.random() < 0.25 then
                 spawn_particles(entity.x, entity.y, entity.z, 1.0, 0.1, 0.1, 5, 2.5, 0.3)
             end
         else
-            -- Safe inside sanctuary!
             if math.random() < 0.15 then
                 spawn_particles(entity.x, 0.2, entity.z, 0.0, 1.0, 0.5, 3, 2.0, 0.4)
             end
         end
     end
 
-    -- 13. Evolution Stage 1 (at 250 TJ)
+    -- 14. Evolution Stage 1 (at 250 TJ)
     if player_mass >= 250.0 and not evolved then
         if is_key_just_pressed("1") then
             evolution = "Sol"
@@ -658,6 +681,8 @@ function on_update(entity, dt)
             camera_shake(0.8, 0.5)
             spawn_particles(entity.x, entity.y, entity.z, 1.0, 0.85, 0.2, 60, 8.0, 0.8)
             play_sound("assets/sfx/bounce.wav", 0.9)
+            camera_lerp_to(entity.x, 12.0, entity.z + 16.0, entity.x, entity.y, entity.z, 1.2)
+            cam_cinematic_timer = 1.2
         elseif is_key_just_pressed("2") then
             evolution = "Pulsar"
             evolved = true
@@ -665,6 +690,8 @@ function on_update(entity, dt)
             camera_shake(0.8, 0.5)
             spawn_particles(entity.x, entity.y, entity.z, 0.2, 1.0, 0.9, 60, 8.0, 0.8)
             play_sound("assets/sfx/bounce.wav", 0.9)
+            camera_lerp_to(entity.x, 12.0, entity.z + 16.0, entity.x, entity.y, entity.z, 1.2)
+            cam_cinematic_timer = 1.2
         elseif is_key_just_pressed("3") then
             evolution = "Agujero Negro"
             evolved = true
@@ -672,6 +699,8 @@ function on_update(entity, dt)
             camera_shake(0.8, 0.5)
             spawn_particles(entity.x, entity.y, entity.z, 0.72, 0.16, 1.0, 60, 8.0, 0.8)
             play_sound("assets/sfx/bounce.wav", 0.9)
+            camera_lerp_to(entity.x, 12.0, entity.z + 16.0, entity.x, entity.y, entity.z, 1.2)
+            cam_cinematic_timer = 1.2
         end
     end
 
@@ -712,34 +741,19 @@ function on_update(entity, dt)
         end
     end
 
-    -- 14. Boss Apophis Spawning & Behavior
-    if (game_time >= 20.0 or player_mass >= 180.0) and not boss_spawned then
-        boss_spawned = true
-        boss_alive = true
-        boss_hp = boss_max_hp
-        boss_x = 0.0
-        boss_z = -55.0
-        spawn_prefab("cosmos_boss", boss_x, 3.5, boss_z)
-        camera_shake(1.2, 1.0)
-        spawn_particles(boss_x, 3.5, boss_z, 1.0, 0.2, 0.05, 70, 9.0, 1.0)
-        play_sound("assets/sfx/bounce.wav", 1.0)
-    end
-
+    -- 15. Boss Apophis Leviathan AI & Behavior
     if boss_alive then
         boss_mine_timer = boss_mine_timer + dt
 
-        -- Boss chases player outside sanctuary
         local b_to_p_dist = dist(boss_x, boss_z, entity.x, entity.z)
         local p_to_center = math.sqrt(entity.x * entity.x + entity.z * entity.z)
 
         if p_to_center > SANCTUARY_RADIUS then
-            -- Player outside: pursue player
             local b_dir_x = (entity.x - boss_x) / (b_to_p_dist + 0.01)
             local b_dir_z = (entity.z - boss_z) / (b_to_p_dist + 0.01)
             boss_vx = boss_vx + b_dir_x * 9.0 * dt
             boss_vz = boss_vz + b_dir_z * 9.0 * dt
         else
-            -- Player inside sanctuary: patrol perimeter
             local angle_patrol = game_time * 0.5
             local target_px = math.cos(angle_patrol) * 48.0
             local target_pz = math.sin(angle_patrol) * 48.0
@@ -752,7 +766,7 @@ function on_update(entity, dt)
         boss_vz = boss_vz * (1.0 - 2.5 * dt)
         boss_x = boss_x + boss_vx * dt
         boss_z = boss_z + boss_vz * dt
-        tween_position(boss_id, boss_x, 3.5, boss_z, 0.0)
+        tween_position(boss_id, boss_x, 2.2, boss_z, 0.0)
 
         -- Boss drops mines every 6s
         if boss_mine_timer >= 6.0 then
@@ -771,7 +785,7 @@ function on_update(entity, dt)
             camera_shake(0.5, 0.2)
         end
 
-        -- Boss Defeat Check
+        -- Boss Defeat
         if boss_hp <= 0.0 then
             boss_alive = false
             spawn_particles(boss_x, 3.5, boss_z, 1.0, 0.3, 0.0, 120, 12.0, 1.8)
@@ -781,46 +795,61 @@ function on_update(entity, dt)
             player_mass = player_mass + 500.0
             dark_matter = dark_matter + 150.0
             save_data("cosmos_dm", dark_matter)
+            camera_lerp_to(boss_x, 12.0, boss_z + 18.0, boss_x, 2.2, boss_z, 1.8)
+            cam_cinematic_timer = 1.8
         end
     end
 
-    -- 15. Record Update & Save
+    -- 16. Record Update & Save
     if player_mass > record_tj then
         record_tj = player_mass
         save_data("cosmos_record", record_tj)
     end
 
-    -- 16. Rich HUD Rendering
+    local evo_str = (evolution == "None") and "Proto-Estrella" or evolution
+
+    -- 17. Declarative UI (game_ui) rendering
+    ui_clear()
+
+    -- Card 1: Telemetry (Top Left)
+    ui_panel("card_telemetry", "top_left", 16, 16, 250, 125, 0.08, 0.09, 0.12, 0.90)
+    ui_label("lbl_mass", "top_left", 26, 24, string.format("MASA: %.1f TJ", player_mass), 16, 0.35, 0.9, 1.0)
+    ui_label("lbl_rec", "top_left", 26, 46, string.format("RÉCORD: %.1f TJ", record_tj), 13, 0.85, 0.85, 0.9)
+    ui_label("lbl_dm", "top_left", 26, 66, string.format("MATERIA OSCURA: %d DM", math.floor(dark_matter)), 13, 0.95, 0.8, 0.2)
+    ui_label("lbl_evo", "top_left", 26, 86, string.format("FASE: %s", evo_str), 13, 0.4, 0.85, 0.6)
+    ui_label("lbl_skills", "top_left", 26, 108, "[Shift]Dash [C]Succión [Spc]Tiro [F]Mina", 11, 0.7, 0.75, 0.85)
+
+    -- Card 2: Kardashev Status (Top Right)
+    local k_scale = 0.70 + (player_mass / 500.0) * 0.30
+    ui_panel("card_kardashev", "top_right", 16, 16, 210, 68, 0.08, 0.09, 0.12, 0.90)
+    ui_label("lbl_kard_title", "top_right", 26, 24, "CIVILIZACIÓN KARDASHEV", 11, 0.8, 0.85, 0.9)
+    ui_label("lbl_kard_val", "top_right", 26, 42, string.format("Tipo: %.2f", k_scale), 18, 0.35, 0.85, 1.0)
+
+    -- Card 3: Boss HP Bar (Top Center)
+    if boss_alive then
+        local b_ratio = math.max(0.0, math.min(1.0, boss_hp / boss_max_hp))
+        ui_bar("boss_hp_bar", "top_center", 0, 22, 460, 24, b_ratio, string.format("APOPHIS LEVIATHAN — %d / %d HP", math.max(0, math.floor(boss_hp)), math.floor(boss_max_hp)), 0.95, 0.15, 0.1)
+    end
+
+    -- Card 4: Event / Upgrade Alert Banner (Top Center below Boss Bar)
+    if storm_warning then
+        ui_panel("card_alert", "top_center", 0, 56, 500, 32, 0.35, 0.22, 0.05, 0.92)
+        ui_label("lbl_alert", "top_center", 0, 63, "⚠️ RADIACIÓN GAMMA EN 5s — BUSCA EL SANTUARIO DYSON (0,0)", 12, 1.0, 0.85, 0.2)
+    elseif storm_active then
+        ui_panel("card_alert", "top_center", 0, 56, 500, 32, 0.45, 0.05, 0.05, 0.92)
+        ui_label("lbl_alert", "top_center", 0, 63, "⚡ TORMENTA GAMMA ACTIVA — QUÉDATE DENTRO DEL SANTUARIO", 12, 1.0, 0.3, 0.3)
+    elseif player_mass >= 250.0 and not evolved then
+        ui_panel("card_alert", "top_center", 0, 56, 500, 32, 0.08, 0.22, 0.40, 0.92)
+        ui_label("lbl_alert", "top_center", 0, 63, "⭐ EVOLUCIÓN DISPONIBLE: Presiona [1] Sol | [2] Púlsar | [3] Agujero Negro", 12, 0.4, 0.9, 1.0)
+    end
+
+    -- Bottom interactive UI buttons
+    ui_button("btn_restart", "bottom_left", 16, 16, 110, 32, "Reiniciar", "restart_game")
+    ui_button("btn_shop", "bottom_left", 136, 16, 160, 32, "+80 TJ (50 DM)", "buy_starting_mass")
+
+    -- 18. Legacy HUD Fallback
     set_hud_text("1_MASA", string.format("%.1f TJ", player_mass))
     set_hud_text("2_RECORD", string.format("%.1f TJ", record_tj))
     set_hud_text("3_MATERIA_OSCURA", string.format("%d DM", math.floor(dark_matter)))
-
-    local evo_str = (evolution == "None") and "Proto-Estrella" or evolution
     set_hud_text("4_EVOLUCION", evo_str)
-
-    local skills_str = "[Shift] Dash | [C] Succión | [Espacio] Disparo | [F] Mina"
-    if evolution == "Pulsar" then
-        skills_str = skills_str .. " | [E] EMP"
-    end
-    set_hud_text("5_HABILIDADES", skills_str)
-
-    if boss_alive then
-        set_hud_text("6_JEFE", string.format("APOPHIS HP: %d / %d", math.max(0, math.floor(boss_hp)), math.floor(boss_max_hp)))
-    else
-        set_hud_text("6_JEFE", boss_spawned and "APOPHIS DERROTADO (+150 DM)" or "En acecho...")
-    end
-
-    if storm_warning then
-        set_hud_text("7_EVENTO", "⚠️ TORMENTA GAMMA EN 5s — VE AL SANTUARIO (0,0)")
-    elseif storm_active then
-        set_hud_text("7_EVENTO", "⚡ TORMENTA GAMMA ACTIVA — QUÉDATE EN EL SANTUARIO")
-    else
-        set_hud_text("7_EVENTO", "Espacio Estable")
-    end
-
-    if player_mass >= 250.0 and not evolved then
-        set_hud_text("8_UPGRADE", "⭐ EVOLUCIÓN: [1] Sol | [2] Púlsar | [3] Agujero Negro")
-    else
-        set_hud_text("8_UPGRADE", "")
-    end
 end

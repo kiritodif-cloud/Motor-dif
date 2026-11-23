@@ -2134,8 +2134,19 @@ mod tests {
         let audio = Arc::new(std::sync::Mutex::new(audio_inner));
         let ctx = LuaEngineContext::new(pressed_keys, audio);
         let mut comp = ScriptComponent::new("assets/scripts/cosmos_game.lua".to_string());
-        let res = comp.init_or_reload(ctx);
+        let res = comp.init_or_reload(ctx.clone());
         assert!(res.is_ok(), "Failed to compile cosmos_game.lua: {:?}", res.err());
+
+        // Test one update frame: verify entity transforms, declarative UI elements, and animation presets
+        let mut transform = Transform::from_xyz(0.0, 0.0, 0.0);
+        let update_res = comp.update(&mut transform, 0.016);
+        assert!(update_res.is_ok(), "Failed to run on_update in cosmos_game.lua: {:?}", update_res.err());
+
+        let ui_len = ctx.game_ui_elements.read().unwrap().len();
+        assert!(ui_len >= 8, "Expected at least 8 declarative UI elements in cosmos_game, got {}", ui_len);
+
+        let anims_len = ctx.pending_anims.lock().unwrap().len();
+        assert!(anims_len >= 3, "Expected at least 3 animation presets triggered in cosmos_game, got {}", anims_len);
     }
 
     #[test]
