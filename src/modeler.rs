@@ -1,6 +1,7 @@
 use glam::{EulerRot, Mat3, Vec3};
 use serde::{Deserialize, Serialize};
 use std::f32::consts::PI;
+use std::path::Path;
 
 #[derive(Debug, Clone, Default)]
 pub struct ForgeMesh {
@@ -931,6 +932,133 @@ pub fn preset_boss() -> ModelRecipe {
     }
 }
 
+pub fn preset_dyson_ring() -> ModelRecipe {
+    ModelRecipe {
+        name: "dyson_ring".to_string(),
+        parts: vec![
+            PartDef {
+                name: "main_ring".to_string(),
+                primitive: "torus".to_string(),
+                points: None,
+                position: [0.0, 0.5, 0.0],
+                rotation_deg: [0.0, 0.0, 0.0],
+                scale: [4.0, 0.5, 4.0],
+                color: [0.1, 0.85, 0.65, 1.0],
+                mirror_x: false,
+                mirror_z: false,
+                modifiers: vec![],
+            },
+            PartDef {
+                name: "inner_ring".to_string(),
+                primitive: "torus".to_string(),
+                points: None,
+                position: [0.0, 0.5, 0.0],
+                rotation_deg: [0.0, 0.0, 0.0],
+                scale: [3.2, 0.2, 3.2],
+                color: [0.3, 0.95, 0.85, 1.0],
+                mirror_x: false,
+                mirror_z: false,
+                modifiers: vec![],
+            },
+            PartDef {
+                name: "pylon_n".to_string(),
+                primitive: "lathe".to_string(),
+                points: Some(vec![
+                    [0.0, 0.0],
+                    [0.4, 0.1],
+                    [0.25, 0.8],
+                    [0.5, 1.4],
+                    [0.1, 1.5],
+                    [0.0, 1.5],
+                ]),
+                position: [0.0, 0.0, 3.8],
+                rotation_deg: [0.0, 0.0, 0.0],
+                scale: [0.8, 1.0, 0.8],
+                color: [0.15, 0.22, 0.3, 1.0],
+                mirror_x: false,
+                mirror_z: true,
+                modifiers: vec![],
+            },
+            PartDef {
+                name: "pylon_e".to_string(),
+                primitive: "lathe".to_string(),
+                points: Some(vec![
+                    [0.0, 0.0],
+                    [0.4, 0.1],
+                    [0.25, 0.8],
+                    [0.5, 1.4],
+                    [0.1, 1.5],
+                    [0.0, 1.5],
+                ]),
+                position: [3.8, 0.0, 0.0],
+                rotation_deg: [0.0, 90.0, 0.0],
+                scale: [0.8, 1.0, 0.8],
+                color: [0.15, 0.22, 0.3, 1.0],
+                mirror_x: true,
+                mirror_z: false,
+                modifiers: vec![],
+            },
+        ],
+        sdf_nodes: Vec::new(),
+        global_modifiers: vec![],
+        normalize_pivot: true,
+    }
+}
+
+pub fn preset_comet_shard() -> ModelRecipe {
+    ModelRecipe {
+        name: "comet_shard".to_string(),
+        parts: vec![
+            PartDef {
+                name: "crystal_body".to_string(),
+                primitive: "prism".to_string(),
+                points: None,
+                position: [0.0, 1.0, 0.0],
+                rotation_deg: [15.0, 20.0, 35.0],
+                scale: [0.8, 2.2, 0.8],
+                color: [0.2, 0.8, 1.0, 1.0],
+                mirror_x: false,
+                mirror_z: false,
+                modifiers: vec![
+                    ModifierDef::Taper { factor: 0.7, axis: "y".to_string() },
+                    ModifierDef::Twist { angle_deg: 45.0, axis: "y".to_string() },
+                    ModifierDef::NoiseDisplace { frequency: 2.2, amplitude: 0.15, seed: 77 },
+                    ModifierDef::FlatShading,
+                ],
+            },
+        ],
+        sdf_nodes: Vec::new(),
+        global_modifiers: vec![ModifierDef::FlatShading],
+        normalize_pivot: true,
+    }
+}
+
+pub fn bake_all_cosmos_assets() -> Result<(), String> {
+    let models = [
+        preset_boss(),
+        preset_spaceship(),
+        preset_dyson_ring(),
+        preset_comet_shard(),
+    ];
+    let dir = Path::new("assets/models");
+    let _ = std::fs::create_dir_all(dir);
+
+    for m in &models {
+        let mesh = m.build_mesh();
+        let path = dir.join(format!("{}.glb", m.name));
+        crate::glb_exporter::export_glb_to_file(&mesh, &m.name, &path)
+            .map_err(|e| format!("Failed to export {}: {}", m.name, e))?;
+    }
+
+    // Also bake textures
+    let _ = crate::texture_forge::save_procedural_texture("planet", "planet_blue", 256, 101, [0.15, 0.45, 0.95, 1.0]);
+    let _ = crate::texture_forge::save_procedural_texture("planet", "planet_lava", 256, 202, [0.95, 0.25, 0.1, 1.0]);
+    let _ = crate::texture_forge::save_procedural_texture("planet", "planet_gas", 256, 303, [0.8, 0.3, 0.85, 1.0]);
+    let _ = crate::texture_forge::save_procedural_texture("grid_neon", "arena_grid", 512, 404, [0.1, 0.85, 0.95, 1.0]);
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -983,5 +1111,17 @@ mod tests {
         let boss = preset_boss();
         let boss_mesh = boss.build_mesh();
         assert!(!boss_mesh.positions.is_empty());
+    }
+
+    #[test]
+    fn test_bake_all_cosmos_assets() {
+        let res = bake_all_cosmos_assets();
+        assert!(res.is_ok(), "Failed to bake cosmos assets: {:?}", res.err());
+        assert!(Path::new("assets/models/apophis_boss.glb").exists());
+        assert!(Path::new("assets/models/spaceship.glb").exists());
+        assert!(Path::new("assets/models/dyson_ring.glb").exists());
+        assert!(Path::new("assets/models/comet_shard.glb").exists());
+        assert!(Path::new("assets/textures/arena_grid.png").exists());
+        assert!(Path::new("assets/textures/planet_blue.png").exists());
     }
 }
