@@ -1766,6 +1766,102 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register ui_button: {}", e))?;
         lua.globals().set("ui_button", ui_button).map_err(|e| e.to_string())?;
 
+        // 41b. ui_image(path, x, y, w, h, [uv_rect])
+        let ui_img_ref = ctx.game_ui_elements.clone();
+        let ui_image = lua
+            .create_function(
+                move |_,
+                      (path, x, y, w, h, uv_table): (
+                    String,
+                    f32,
+                    f32,
+                    f32,
+                    f32,
+                    Option<mlua::Table>,
+                )| {
+                    let mut uv_rect = [0.0, 0.0, 1.0, 1.0];
+                    if let Some(t) = uv_table {
+                        let u0 = t.get(1).or_else(|_| t.get("u0")).unwrap_or(0.0);
+                        let v0 = t.get(2).or_else(|_| t.get("v0")).unwrap_or(0.0);
+                        let u1 = t.get(3).or_else(|_| t.get("u1")).unwrap_or(1.0);
+                        let v1 = t.get(4).or_else(|_| t.get("v1")).unwrap_or(1.0);
+                        uv_rect = [u0, v0, u1, v1];
+                    }
+                    let id = format!("img_{}_{}_{}_{}_{}", path, x as i32, y as i32, w as i32, h as i32);
+                    if let Ok(mut list) = ui_img_ref.write() {
+                        let elem = crate::game_ui::UiElement::Image {
+                            id: id.clone(),
+                            texture_path: path,
+                            x,
+                            y,
+                            width: w,
+                            height: h,
+                            uv_rect,
+                        };
+                        if let Some(pos) = list.iter().position(|e| e.id() == id) {
+                            list[pos] = elem;
+                        } else {
+                            list.push(elem);
+                        }
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register ui_image: {}", e))?;
+        lua.globals().set("ui_image", ui_image).map_err(|e| e.to_string())?;
+
+        // 41c. ui_slot(x, y, size, [texture_path], [uv_rect], [count_text], [selected], [hotkey_label])
+        let ui_slot_ref = ctx.game_ui_elements.clone();
+        let ui_slot = lua
+            .create_function(
+                move |_,
+                      (x, y, size, texture_path, uv_table, count_text, selected, hotkey_label): (
+                    f32,
+                    f32,
+                    f32,
+                    Option<String>,
+                    Option<mlua::Table>,
+                    Option<String>,
+                    Option<bool>,
+                    Option<String>,
+                )| {
+                    let uv_rect = uv_table.map(|t| {
+                        let u0 = t.get(1).or_else(|_| t.get("u0")).unwrap_or(0.0);
+                        let v0 = t.get(2).or_else(|_| t.get("v0")).unwrap_or(0.0);
+                        let u1 = t.get(3).or_else(|_| t.get("u1")).unwrap_or(1.0);
+                        let v1 = t.get(4).or_else(|_| t.get("v1")).unwrap_or(1.0);
+                        [u0, v0, u1, v1]
+                    });
+                    let clean_tex = texture_path.filter(|p| !p.trim().is_empty());
+                    let clean_count = count_text.filter(|c| !c.trim().is_empty());
+                    let clean_hotkey = hotkey_label.filter(|h| !h.trim().is_empty());
+                    let is_selected = selected.unwrap_or(false);
+
+                    let id = format!("slot_{}_{}", x as i32, y as i32);
+                    if let Ok(mut list) = ui_slot_ref.write() {
+                        let elem = crate::game_ui::UiElement::Slot {
+                            id: id.clone(),
+                            x,
+                            y,
+                            size,
+                            texture_path: clean_tex,
+                            uv_rect,
+                            count_text: clean_count,
+                            selected: is_selected,
+                            hotkey_label: clean_hotkey,
+                        };
+                        if let Some(pos) = list.iter().position(|e| e.id() == id) {
+                            list[pos] = elem;
+                        } else {
+                            list.push(elem);
+                        }
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register ui_slot: {}", e))?;
+        lua.globals().set("ui_slot", ui_slot).map_err(|e| e.to_string())?;
+
         // 42. play_anim(entity_id, clip_name, [looping])
         let anim_play_ref = ctx.pending_anims.clone();
         let play_anim = lua
@@ -2704,6 +2800,72 @@ mod tests {
         assert_eq!(elements[1].id(), "hp_bar");
         assert_eq!(elements[2].id(), "score_lbl");
         assert_eq!(elements[3].id(), "btn_dash");
+
+        let _ = std::fs::remove_file(script_path);
+    }
+
+    #[test]
+    fn test_ui_image_and_slot_bindings() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        let test_script = r#"
+            ui_clear()
+            ui_image("assets/textures/voxel_atlas.png", 50, 50, 64, 64, {0.0, 0.0, 0.5, 0.5})
+            ui_slot(120, 50, 48, "assets/textures/voxel_atlas.png", {0.5, 0.5, 1.0, 1.0}, "64", true, "1")
+            ui_slot(175, 50, 48, nil, nil, nil, false, "2")
+        "#;
+
+        let script_path = "assets/scripts/test_ui_img_slot.lua";
+        std::fs::write(script_path, test_script).unwrap();
+
+        let mut comp = ScriptComponent::new(script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Init failed: {:?}", res.err());
+
+        let elements = ctx.game_ui_elements.read().unwrap();
+        assert_eq!(elements.len(), 3);
+
+        match &elements[0] {
+            crate::game_ui::UiElement::Image { texture_path, x, y, width, height, uv_rect, .. } => {
+                assert_eq!(texture_path, "assets/textures/voxel_atlas.png");
+                assert_eq!(*x, 50.0);
+                assert_eq!(*y, 50.0);
+                assert_eq!(*width, 64.0);
+                assert_eq!(*height, 64.0);
+                assert_eq!(*uv_rect, [0.0, 0.0, 0.5, 0.5]);
+            }
+            _ => panic!("Expected UiElement::Image"),
+        }
+
+        match &elements[1] {
+            crate::game_ui::UiElement::Slot { x, y, size, texture_path, uv_rect, count_text, selected, hotkey_label, .. } => {
+                assert_eq!(*x, 120.0);
+                assert_eq!(*y, 50.0);
+                assert_eq!(*size, 48.0);
+                assert_eq!(texture_path.as_deref(), Some("assets/textures/voxel_atlas.png"));
+                assert_eq!(*uv_rect, Some([0.5, 0.5, 1.0, 1.0]));
+                assert_eq!(count_text.as_deref(), Some("64"));
+                assert!(*selected);
+                assert_eq!(hotkey_label.as_deref(), Some("1"));
+            }
+            _ => panic!("Expected UiElement::Slot for elements[1]"),
+        }
+
+        match &elements[2] {
+            crate::game_ui::UiElement::Slot { x, y, size, texture_path, count_text, selected, hotkey_label, .. } => {
+                assert_eq!(*x, 175.0);
+                assert_eq!(*y, 50.0);
+                assert_eq!(*size, 48.0);
+                assert_eq!(texture_path, &None);
+                assert_eq!(count_text, &None);
+                assert!(!*selected);
+                assert_eq!(hotkey_label.as_deref(), Some("2"));
+            }
+            _ => panic!("Expected UiElement::Slot for elements[2]"),
+        }
 
         let _ = std::fs::remove_file(script_path);
     }

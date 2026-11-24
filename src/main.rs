@@ -176,6 +176,7 @@ pub struct EngineState {
     pub active_sun_color: glam::Vec3,
     pub active_sun_intensity: f32,
     pub active_stars_vis: f32,
+    pub ui_texture_cache: HashMap<String, egui::TextureHandle>,
     pub total_time: f32,
 
     // Editor State
@@ -511,6 +512,7 @@ impl EngineState {
             active_sun_color: glam::Vec3::new(1.0, 0.98, 0.92),
             active_sun_intensity: 1.0,
             active_stars_vis: 0.0,
+            ui_texture_cache: HashMap::new(),
             total_time: 0.0,
 
             workspace: EditorWorkspace::Scene,
@@ -4259,7 +4261,7 @@ impl EngineState {
 
                             // Declarative In-Game UI from Lua (game_ui)
                             if let Ok(elements) = self.lua_ctx.game_ui_elements.read() {
-                                game_ui::render_declarative_ui(ui.ctx(), &painter, viewport_rect, &elements, &self.lua_ctx.pending_button_clicks);
+                                game_ui::render_declarative_ui(ui.ctx(), &painter, viewport_rect, &elements, &self.lua_ctx.pending_button_clicks, &mut self.ui_texture_cache);
                             }
 
                             if let Ok(labels) = self.lua_ctx.world_labels.read() {
@@ -6233,7 +6235,7 @@ impl EngineState {
                         // 5b. Declarative In-Game UI from Lua (game_ui)
                         if self.play_mode == PlayMode::Play {
                             if let Ok(elements) = self.lua_ctx.game_ui_elements.read() {
-                                game_ui::render_declarative_ui(ui.ctx(), &painter.with_clip_rect(viewport_rect), viewport_rect, &elements, &self.lua_ctx.pending_button_clicks);
+                                game_ui::render_declarative_ui(ui.ctx(), &painter.with_clip_rect(viewport_rect), viewport_rect, &elements, &self.lua_ctx.pending_button_clicks, &mut self.ui_texture_cache);
                             }
                         }
 

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Stroke, StrokeKind, Vec2};
 
@@ -42,6 +43,26 @@ pub enum UiElement {
         text: String,
         callback: String,
     },
+    Image {
+        id: String,
+        texture_path: String,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        uv_rect: [f32; 4],
+    },
+    Slot {
+        id: String,
+        x: f32,
+        y: f32,
+        size: f32,
+        texture_path: Option<String>,
+        uv_rect: Option<[f32; 4]>,
+        count_text: Option<String>,
+        selected: bool,
+        hotkey_label: Option<String>,
+    },
 }
 
 impl UiElement {
@@ -51,6 +72,8 @@ impl UiElement {
             UiElement::Bar { id, .. } => id,
             UiElement::Label { id, .. } => id,
             UiElement::Button { id, .. } => id,
+            UiElement::Image { id, .. } => id,
+            UiElement::Slot { id, .. } => id,
         }
     }
 }
@@ -95,6 +118,25 @@ pub fn calculate_anchor_pos(
     }
 }
 
+pub fn get_or_load_egui_texture(
+    ctx: &egui::Context,
+    texture_cache: &mut HashMap<String, egui::TextureHandle>,
+    path: &str,
+) -> Option<egui::TextureHandle> {
+    if let Some(handle) = texture_cache.get(path) {
+        return Some(handle.clone());
+    }
+
+    let bytes = std::fs::read(path).ok()?;
+    let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    let pixels = image.into_raw();
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+    let handle = ctx.load_texture(path, color_image, egui::TextureOptions::NEAREST);
+    texture_cache.insert(path.to_string(), handle.clone());
+    Some(handle)
+}
+
 #[allow(deprecated)]
 pub fn render_declarative_ui(
     ctx: &egui::Context,
@@ -102,6 +144,7 @@ pub fn render_declarative_ui(
     viewport_rect: Rect,
     elements: &[UiElement],
     pending_clicks: &Arc<Mutex<Vec<String>>>,
+    texture_cache: &mut HashMap<String, egui::TextureHandle>,
 ) {
     let painter = painter.with_clip_rect(viewport_rect);
     for elem in elements {
@@ -210,6 +253,101 @@ pub fn render_declarative_ui(
                         }
                     }
                 });
+            }
+            UiElement::Image {
+                texture_path,
+                x,
+                y,
+                width,
+                height,
+                uv_rect,
+                ..
+            } => {
+                let px = if *x < 0.0 { viewport_rect.max.x + *x } else { viewport_rect.min.x + *x };
+                let py = if *y < 0.0 { viewport_rect.max.y + *y } else { viewport_rect.min.y + *y };
+                let img_rect = Rect::from_min_size(Pos2::new(px, py), Vec2::new(*width, *height));
+                if let Some(tex) = get_or_load_egui_texture(ctx, texture_cache, texture_path) {
+                    let uv = Rect::from_min_max(
+                        Pos2::new(uv_rect[0], uv_rect[1]),
+                        Pos2::new(uv_rect[2], uv_rect[3]),
+                    );
+                    painter.image(tex.id(), img_rect, uv, Color32::WHITE);
+                }
+            }
+            UiElement::Slot {
+                x,
+                y,
+                size,
+                texture_path,
+                uv_rect,
+                count_text,
+                selected,
+                hotkey_label,
+                ..
+            } => {
+                let px = if *x < 0.0 { viewport_rect.max.x + *x } else { viewport_rect.min.x + *x };
+                let py = if *y < 0.0 { viewport_rect.max.y + *y } else { viewport_rect.min.y + *y };
+                let slot_rect = Rect::from_min_size(Pos2::new(px, py), Vec2::splat(*size));
+
+                // 1. Background & border
+                let bg_fill = if *selected {
+                    Color32::from_rgba_unmultiplied(42, 50, 68, 235)
+                } else {
+                    Color32::from_rgba_unmultiplied(20, 24, 32, 215)
+                };
+                let stroke = if *selected {
+                    Stroke::new(2.5, Color32::from_rgb(255, 215, 0)) // Gold highlighted border
+                } else {
+                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 45))
+                };
+                painter.rect(slot_rect, CornerRadius::same(5), bg_fill, stroke, StrokeKind::Inside);
+
+                // 2. Icon (if texture_path is provided)
+                if let Some(path) = texture_path {
+                    if let Some(tex) = get_or_load_egui_texture(ctx, texture_cache, path) {
+                        let icon_rect = slot_rect.shrink((*size * 0.12).max(2.0));
+                        let uv = uv_rect
+                            .map(|r| Rect::from_min_max(Pos2::new(r[0], r[1]), Pos2::new(r[2], r[3])))
+                            .unwrap_or_else(|| Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)));
+                        painter.image(tex.id(), icon_rect, uv, Color32::WHITE);
+                    }
+                }
+
+                // 3. Hotkey Label (top-left)
+                if let Some(label) = hotkey_label {
+                    if !label.is_empty() {
+                        painter.text(
+                            slot_rect.min + Vec2::new(4.0, 3.0),
+                            Align2::LEFT_TOP,
+                            label,
+                            FontId::proportional(11.0),
+                            Color32::from_rgba_unmultiplied(210, 220, 235, 220),
+                        );
+                    }
+                }
+
+                // 4. Count Text (bottom-right with drop-shadow)
+                if let Some(count) = count_text {
+                    if !count.is_empty() {
+                        let text_pos = slot_rect.max - Vec2::new(4.0, 3.0);
+                        // Drop shadow
+                        painter.text(
+                            text_pos + Vec2::new(1.0, 1.0),
+                            Align2::RIGHT_BOTTOM,
+                            count,
+                            FontId::proportional(13.0),
+                            Color32::from_rgba_unmultiplied(0, 0, 0, 220),
+                        );
+                        // Text
+                        painter.text(
+                            text_pos,
+                            Align2::RIGHT_BOTTOM,
+                            count,
+                            FontId::proportional(13.0),
+                            Color32::WHITE,
+                        );
+                    }
+                }
             }
         }
     }
