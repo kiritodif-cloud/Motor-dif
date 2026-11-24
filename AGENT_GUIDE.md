@@ -7,6 +7,7 @@
   - Player-First Rule: Always spawn a player controller with `forge_spawn_controller({ controller_type: "fps"|"third_person"|"top_down"|"vehicle" })` before asking the user to test the scene.
   - Button callbacks: Define `function my_click() ... end` globally; referenced by name in `ui_button`.
   - File rule: Never overwrite `assets/scene.json` unless asked. Save new projects to `assets/<name>.json` and `assets/scripts/<name>.lua`, then load with `load_scene`.
+  - Standalone & Export: Running with `game_config.json` auto-boots cleanly in Standalone Mode without editor chrome. Press `F11` to toggle fullscreen. Export anytime via `export_game` or `File -> Export Game...`.
   - Visual Quality Rules:
     - NEVER use `set_hud_text` for game HUDs. Always use `ui_panel`, `ui_bar`, `ui_label`, `ui_button` from `lua_ui`.
     - Use Texture Forge (`forge_create_texture`), Asset Forge (`forge_create_model`), Procedural Rig (`forge_create_rigged_character`), and VFX Forge (`forge_spawn_vfx`) instead of plain untextured grey blocks.
@@ -69,7 +70,8 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `tween_scale(id, sx, sy, sz, duration)`: Smooth scale interpolation.
   - `set_sprite_frame(id, cols, rows, frame_idx)`: 2D sprite sheet tile selection.
   - `load_scene(path)`: Queues scene transition on frame boundary.
-  - `save_data(key, val)`, `load_data(key) -> val`: JSON persistence to `assets/save_data.json`.
+  - `save_data(key, val)`, `load_data(key) -> val`: Legacy JSON persistence to `assets/save_data.json`.
+  - `save_game(slot, data) -> bool`, `load_game(slot) -> table|nil`, `delete_save(slot) -> bool`, `list_saves() -> table`: Slotted JSON save/load in `saves/<slot>.json` with path traversal defense.
 - Camera & Input:
   - `set_camera(x,y,z, tx,ty,tz)`, `follow_entity(id, ox,oy,oz, smoothness)`
   - `camera_shake(intensity, duration)`, `camera_lerp_to(ex,ey,ez, tx,ty,tz, duration)`
@@ -199,3 +201,4 @@ MCP Tools Directory:
 - `forge_spawn_vfx({ preset, recipe, position, attach_to_entity })`: Spawns or attaches procedural VFX emitter.
 - `forge_create_voxel_world({ width_chunks, depth_chunks, seed, terrain_type, name })`: Generates procedural voxel world (16x32x16 chunks) with culling, AO, and pixel atlas.
 - `forge_spawn_controller({ controller_type, entity_id, position, voxel_collision, speed, jump_force, overwrite })`: Generates ready-to-play controller template script and spawns player entity.
+- `export_game({ title, scene_path, output_dir, fullscreen })`: 1-Click standalone exporter with smart asset dependency harvesting, `game_config.json`, and executable bundle.
