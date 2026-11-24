@@ -4,6 +4,7 @@
 - Execution lifecycle & rules:
   - `on_update(entity, dt)`: Called each frame during `PlayMode::Play`. `entity.x/y/z` (pos), `entity.rx/ry/rz` (Euler rot in RADIANS, not degrees! full turn = 6.283), `entity.sx/sy/sz` (scale). Method: `entity:apply_force(fx,fy,fz)`, `entity:apply_impulse(ix,iy,iz)`.
   - Init idiom: `local init=false; function on_update(e,dt) if not init then init=true; on_init(e) end ... end`.
+  - Player-First Rule: Always spawn a player controller with `forge_spawn_controller({ controller_type: "fps"|"third_person"|"top_down"|"vehicle" })` before asking the user to test the scene.
   - Button callbacks: Define `function my_click() ... end` globally; referenced by name in `ui_button`.
   - File rule: Never overwrite `assets/scene.json` unless asked. Save new projects to `assets/<name>.json` and `assets/scripts/<name>.lua`, then load with `load_scene`.
   - Visual Quality Rules:
@@ -139,6 +140,16 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `rig_trigger_recoil(entity_id, strength)`: Weapon kickback impulse with spring decay.
   - `solve_ik_2bone(rx, ry, rz, tx, ty, tz, len1, len2) -> { jx, jy, jz, ... }|nil`: 2-bone analytical IK.
 
+## player_templates
+- `forge_spawn_controller({ controller_type, [entity_id], [position], [voxel_collision], [speed], [jump_force], [overwrite] })`:
+  - Instantly spawns a player entity with mesh, dynamic collider, and complete Lua controller script in `assets/scripts/<entity_id>_controller.lua`.
+  - Types:
+    - `"fps"`: Pointer lock, mouse look (yaw/pitch), WASD camera-relative movement, Space jump, optional voxel collision.
+    - `"third_person"`: Smooth chase camera, WASD movement, turning towards heading, Space jump, 'V' perspective toggle.
+    - `"top_down"`: Isometric/overhead elevated follow camera, WASD XZ movement, character facing movement/cursor.
+    - `"vehicle"`: Forward/reverse acceleration, steering with yaw accumulation, natural drag/friction, dynamic follow camera.
+  - Template source files persist in `assets/scripts/templates/<type>_controller.lua`.
+
 ## mcp_workflow
 Recommended 4-step autonomous loop for AI agents (`http://127.0.0.1:3030/mcp`):
 1. **Query Docs:** Call `get_engine_docs({ topic: "all" })` (or specific topic) to verify signatures and workspace root without exploring source files.
@@ -179,3 +190,4 @@ MCP Tools Directory:
 - `forge_create_rigged_character({ preset, id_prefix, position })`: Spawns modular rigged character.
 - `forge_spawn_vfx({ preset, recipe, position, attach_to_entity })`: Spawns or attaches procedural VFX emitter.
 - `forge_create_voxel_world({ width_chunks, depth_chunks, seed, terrain_type, name })`: Generates procedural voxel world (16x32x16 chunks) with culling, AO, and pixel atlas.
+- `forge_spawn_controller({ controller_type, entity_id, position, voxel_collision, speed, jump_force, overwrite })`: Generates ready-to-play controller template script and spawns player entity.
