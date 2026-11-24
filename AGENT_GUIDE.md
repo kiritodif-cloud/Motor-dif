@@ -48,7 +48,7 @@ end
   ]
 }
 ```
-Meshes: `"cube"`, `"sphere"`, `"cylinder"`, `"quad"`, `"plane"`, `"torus"`, `"ring"`, `"cone"`, `"icosphere"`, or `"assets/models/*.glb"`.
+Meshes: `"cube"`, `"sphere"`, `"cylinder"`, `"quad"`, `"plane"`, `"torus"`, `"ring"`, `"cone"`, `"icosphere"`, `"basalt_pillar"`, `"jagged_rock"`, `"crystal_cluster"`, `"sci_fi_crate"`, or `"assets/models/*.glb"`.
 Rotation units: Euler angles in RADIANS `[rx, ry, rz]` (e.g. `[0, 1.57, 0]` for 90° yaw).
 Blend modes: `"opaque"`, `"additive"`.
 Sky modes: `"gradient"`, `"space"`, `"solid"`.
@@ -170,6 +170,6 @@ MCP Tools Directory:
 - `set_music_intensity({ intensity })`: Blends adaptive music intensity layers (0.0 to 1.0).
 - `forge_generate_terrain({ recipe, bake_path, add_to_scene })`: Generates procedural heightmap terrain.
 - `forge_generate_dungeon({ recipe, add_to_scene })`: Generates procedural grid dungeon.
-- `forge_scatter_props({ recipe, positions })`: Instanced or individual prop scattering.
+- `forge_scatter_props({ recipe, positions })`: Poisson-disc prop scattering (presets: `"basalt_pillar"`, `"jagged_rock"`, `"crystal_cluster"`, `"sci_fi_crate"`, or custom `.glb`).
 - `forge_create_rigged_character({ preset, id_prefix, position })`: Spawns modular rigged character.
 - `forge_spawn_vfx({ preset, recipe, position, attach_to_entity })`: Spawns or attaches procedural VFX emitter.

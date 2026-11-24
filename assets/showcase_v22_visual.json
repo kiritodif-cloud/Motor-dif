@@ -1,0 +1,628 @@
+{
+  "camera": {
+    "mode": "3d",
+    "position": [
+      0.0,
+      12.0,
+      18.0
+    ],
+    "target": [
+      0.0,
+      2.0,
+      -1.0
+    ],
+    "ortho_size": 12.0
+  },
+  "post_process": {
+    "bloom_enabled": true,
+    "bloom_intensity": 0.45,
+    "bloom_threshold": 0.8,
+    "vignette_intensity": 0.3,
+    "exposure": 1.05
+  },
+  "environment": {
+    "sky_mode": "gradient",
+    "zenith_color": [
+      0.08,
+      0.07,
+      0.12
+    ],
+    "horizon_color": [
+      0.22,
+      0.12,
+      0.1
+    ],
+    "fog_color": [
+      0.12,
+      0.08,
+      0.1
+    ],
+    "fog_density": 0.005
+  },
+  "entities": [
+    {
+      "id": "terrain_ground",
+      "name": "Volcanic Terrain",
+      "mesh": "assets/models/terrain_volcanic.glb",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "color": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissive": 0.0,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "basalt_pillar_0",
+      "name": "Basalt Pillar 0",
+      "mesh": "basalt_pillar",
+      "position": [
+        -6.0,
+        1.5,
+        -4.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.9,
+        1.3,
+        0.9
+      ],
+      "color": [
+        0.14,
+        0.14,
+        0.16,
+        1.0
+      ],
+      "emissive": 0.0,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "basalt_pillar_1",
+      "name": "Basalt Pillar 1",
+      "mesh": "basalt_pillar",
+      "position": [
+        -4.5,
+        2.0,
+        -5.5
+      ],
+      "rotation": [
+        0.0,
+        0.4,
+        0.0
+      ],
+      "scale": [
+        1.1,
+        1.6,
+        1.1
+      ],
+      "color": [
+        0.14,
+        0.14,
+        0.16,
+        1.0
+      ],
+      "emissive": 0.0,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "basalt_pillar_2",
+      "name": "Basalt Pillar 2",
+      "mesh": "basalt_pillar",
+      "position": [
+        -2.5,
+        2.3,
+        -6.5
+      ],
+      "rotation": [
+        0.0,
+        0.8,
+        0.0
+      ],
+      "scale": [
+        1.0,
+        1.8,
+        1.0
+      ],
+      "color": [
+        0.14,
+        0.14,
+        0.16,
+        1.0
+      ],
+      "emissive": 0.0,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "basalt_pillar_3",
+      "name": "Basalt Pillar 3",
+      "mesh": "basalt_pillar",
+      "position": [
+        0.0,
+        2.5,
+        -7.0
+      ],
+      "rotation": [
+        0.0,
+        1.2000000000000002,
+        0.0
+      ],
+      "scale": [
+        1.2,
+        2.0,
+        1.2
+      ],
+      "color": [
+        0.14,
+        0.14,
+        0.16,
+        1.0
+      ],
+      "emissive": 0.0,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "basalt_pillar_4",
+      "name": "Basalt Pillar 4",
+      "mesh": "basalt_pillar",
+      "position": [
+        2.8,
+        2.1,
+        -6.2
+      ],
+      "rotation": [
+        0.0,
+        1.6,
+        0.0
+      ],
+      "scale": [
+        0.95,
+        1.5,
+        0.95
+      ],
+      "color": [
+        0.14,
+        0.14,
+        0.16,
+        1.0
+      ],
+      "emissive": 0.0,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "basalt_pillar_5",
+      "name": "Basalt Pillar 5",
+      "mesh": "basalt_pillar",
+      "position": [
+        5.0,
+        1.7,
+        -4.8
+      ],
+      "rotation": [
+        0.0,
+        2.0,
+        0.0
+      ],
+      "scale": [
+        1.05,
+        1.4,
+        1.05
+      ],
+      "color": [
+        0.14,
+        0.14,
+        0.16,
+        1.0
+      ],
+      "emissive": 0.0,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "jagged_rock_0",
+      "name": "Jagged Rock 0",
+      "mesh": "jagged_rock",
+      "position": [
+        -8.0,
+        0.6,
+        -1.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.2,
+        1.2,
+        1.2
+      ],
+      "color": [
+        0.25,
+        0.23,
+        0.22,
+        1.0
+      ],
+      "emissive": 0.0,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "jagged_rock_1",
+      "name": "Jagged Rock 1",
+      "mesh": "jagged_rock",
+      "position": [
+        -5.0,
+        1.2,
+        2.0
+      ],
+      "rotation": [
+        0.0,
+        1.1,
+        0.0
+      ],
+      "scale": [
+        0.8,
+        0.8,
+        0.8
+      ],
+      "color": [
+        0.25,
+        0.23,
+        0.22,
+        1.0
+      ],
+      "emissive": 0.0,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "jagged_rock_2",
+      "name": "Jagged Rock 2",
+      "mesh": "jagged_rock",
+      "position": [
+        6.0,
+        0.8,
+        -1.5
+      ],
+      "rotation": [
+        0.0,
+        2.2,
+        0.0
+      ],
+      "scale": [
+        1.4,
+        1.4,
+        1.4
+      ],
+      "color": [
+        0.25,
+        0.23,
+        0.22,
+        1.0
+      ],
+      "emissive": 0.0,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "jagged_rock_3",
+      "name": "Jagged Rock 3",
+      "mesh": "jagged_rock",
+      "position": [
+        7.5,
+        0.5,
+        2.5
+      ],
+      "rotation": [
+        0.0,
+        3.3000000000000003,
+        0.0
+      ],
+      "scale": [
+        0.9,
+        0.9,
+        0.9
+      ],
+      "color": [
+        0.25,
+        0.23,
+        0.22,
+        1.0
+      ],
+      "emissive": 0.0,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "jagged_rock_4",
+      "name": "Jagged Rock 4",
+      "mesh": "jagged_rock",
+      "position": [
+        -1.0,
+        1.8,
+        -3.0
+      ],
+      "rotation": [
+        0.0,
+        4.4,
+        0.0
+      ],
+      "scale": [
+        0.7,
+        0.7,
+        0.7
+      ],
+      "color": [
+        0.25,
+        0.23,
+        0.22,
+        1.0
+      ],
+      "emissive": 0.0,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "crystal_cluster_0",
+      "name": "Crystal Cluster 0",
+      "mesh": "crystal_cluster",
+      "position": [
+        -3.0,
+        1.8,
+        0.5
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.1,
+        1.1,
+        1.1
+      ],
+      "color": [
+        0.15,
+        0.88,
+        1.0,
+        1.0
+      ],
+      "emissive": 0.7,
+      "fresnel_color": [
+        0.3,
+        0.9,
+        1.0
+      ],
+      "fresnel_power": 2.5,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "crystal_cluster_1",
+      "name": "Crystal Cluster 1",
+      "mesh": "crystal_cluster",
+      "position": [
+        3.5,
+        1.5,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        1.57,
+        0.0
+      ],
+      "scale": [
+        1.1,
+        1.1,
+        1.1
+      ],
+      "color": [
+        0.95,
+        0.25,
+        0.85,
+        1.0
+      ],
+      "emissive": 0.65,
+      "fresnel_color": [
+        1.0,
+        0.4,
+        0.9
+      ],
+      "fresnel_power": 2.5,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "crystal_cluster_2",
+      "name": "Crystal Cluster 2",
+      "mesh": "crystal_cluster",
+      "position": [
+        1.5,
+        2.2,
+        -3.5
+      ],
+      "rotation": [
+        0.0,
+        3.14,
+        0.0
+      ],
+      "scale": [
+        1.1,
+        1.1,
+        1.1
+      ],
+      "color": [
+        0.2,
+        0.95,
+        0.4,
+        1.0
+      ],
+      "emissive": 0.6,
+      "fresnel_color": [
+        0.4,
+        1.0,
+        0.5
+      ],
+      "fresnel_power": 2.5,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "crystal_cluster_3",
+      "name": "Crystal Cluster 3",
+      "mesh": "crystal_cluster",
+      "position": [
+        -1.5,
+        2.0,
+        3.5
+      ],
+      "rotation": [
+        0.0,
+        4.71,
+        0.0
+      ],
+      "scale": [
+        1.1,
+        1.1,
+        1.1
+      ],
+      "color": [
+        1.0,
+        0.65,
+        0.15,
+        1.0
+      ],
+      "emissive": 0.8,
+      "fresnel_color": [
+        1.0,
+        0.8,
+        0.3
+      ],
+      "fresnel_power": 2.5,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "sci_fi_crate_0",
+      "name": "Sci-Fi Crate 0",
+      "mesh": "sci_fi_crate",
+      "position": [
+        2.0,
+        1.8,
+        1.5
+      ],
+      "rotation": [
+        0.0,
+        0.3,
+        0.0
+      ],
+      "scale": [
+        0.85,
+        0.85,
+        0.85
+      ],
+      "color": [
+        0.22,
+        0.28,
+        0.32,
+        1.0
+      ],
+      "emissive": 0.1,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "sci_fi_crate_1",
+      "name": "Sci-Fi Crate 1",
+      "mesh": "sci_fi_crate",
+      "position": [
+        2.8,
+        1.8,
+        2.2
+      ],
+      "rotation": [
+        0.0,
+        0.8,
+        0.0
+      ],
+      "scale": [
+        0.75,
+        0.75,
+        0.75
+      ],
+      "color": [
+        0.22,
+        0.28,
+        0.32,
+        1.0
+      ],
+      "emissive": 0.1,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "sci_fi_crate_2",
+      "name": "Sci-Fi Crate 2",
+      "mesh": "sci_fi_crate",
+      "position": [
+        2.2,
+        2.7,
+        1.8
+      ],
+      "rotation": [
+        0.0,
+        -0.4,
+        0.0
+      ],
+      "scale": [
+        0.65,
+        0.65,
+        0.65
+      ],
+      "color": [
+        0.22,
+        0.28,
+        0.32,
+        1.0
+      ],
+      "emissive": 0.1,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "sci_fi_crate_3",
+      "name": "Sci-Fi Crate 3",
+      "mesh": "sci_fi_crate",
+      "position": [
+        -4.0,
+        1.4,
+        3.0
+      ],
+      "rotation": [
+        0.0,
+        0.5,
+        0.0
+      ],
+      "scale": [
+        0.9,
+        0.9,
+        0.9
+      ],
+      "color": [
+        0.22,
+        0.28,
+        0.32,
+        1.0
+      ],
+      "emissive": 0.1,
+      "blend_mode": "opaque"
+    }
+  ]
+}
