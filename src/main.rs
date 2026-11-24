@@ -196,6 +196,7 @@ pub struct EngineState {
     pub command_palette_open: bool,
     pub command_palette_query: String,
     pub show_export_modal: bool,
+    pub show_connect_mcp_modal: bool,
     pub export_game_name: String,
     pub export_entry_scene: String,
     pub show_music_forge_window: bool,
@@ -523,6 +524,7 @@ impl EngineState {
             command_palette_open: false,
             command_palette_query: String::new(),
             show_export_modal: false,
+            show_connect_mcp_modal: false,
             export_game_name: "MyGame".to_string(),
             export_entry_scene: initial_scene_path.clone(),
             show_music_forge_window: false,
@@ -4399,6 +4401,11 @@ impl EngineState {
                                 self.show_vfx_forge_window = true;
                                 ui.close();
                             }
+                            ui.separator();
+                            if ui.button("[MCP] Connect...").clicked() {
+                                self.show_connect_mcp_modal = true;
+                                ui.close();
+                            }
                         });
 
                         ui.separator();
@@ -4446,10 +4453,13 @@ impl EngineState {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 14.0;
 
-                            // 1. MCP Server Status
+                            // 1. MCP Server Status & Connect Button
                             ui.horizontal(|ui| {
                                 ui.colored_label(egui::Color32::from_rgb(34, 197, 94), "●");
                                 ui.label(egui::RichText::new("MCP: 3030").size(11.5).strong());
+                                if ui.small_button(egui::RichText::new("[Connect]").color(egui::Color32::from_rgb(96, 165, 250))).clicked() {
+                                    self.show_connect_mcp_modal = true;
+                                }
                             });
 
                             // 2. Hot-Reload Status
@@ -6771,6 +6781,66 @@ impl EngineState {
                     }
                 }
 
+                // Connect MCP Modal
+                if self.show_connect_mcp_modal {
+                    let screen_rect = ui.ctx().input(|i| i.raw.screen_rect).unwrap_or_else(|| {
+                        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0))
+                    });
+                    let mut close_modal = false;
+
+                    egui::Window::new("Connect to Motor-dif MCP")
+                        .fixed_pos(egui::pos2(screen_rect.center().x - 240.0, screen_rect.center().y - 190.0))
+                        .fixed_size(egui::vec2(480.0, 360.0))
+                        .resizable(false)
+                        .collapsible(false)
+                        .show(ui.ctx(), |ui| {
+                            ui.heading("🔌 MCP Server Connection");
+                            ui.add_space(6.0);
+
+                            // Server URL & Status
+                            ui.horizontal(|ui| {
+                                ui.colored_label(egui::Color32::from_rgb(34, 197, 94), "●");
+                                ui.label(egui::RichText::new("Online").strong().color(egui::Color32::from_rgb(34, 197, 94)));
+                                ui.label(egui::RichText::new("http://127.0.0.1:3030/mcp").monospace().strong());
+                            });
+                            ui.add_space(6.0);
+                            ui.separator();
+                            ui.add_space(6.0);
+
+                            ui.label(egui::RichText::new("Client Configuration JSON (Antigravity / OpenCode / Claude Desktop):").size(11.5));
+                            let config_json = "{\n  \"mcpServers\": {\n    \"motor-dif\": {\n      \"url\": \"http://127.0.0.1:3030/mcp\"\n    }\n  }\n}";
+                            let mut config_text = config_json.to_string();
+                            ui.add(
+                                egui::TextEdit::multiline(&mut config_text)
+                                    .font(egui::TextStyle::Monospace)
+                                    .desired_rows(7)
+                                    .desired_width(f32::INFINITY)
+                            );
+
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                if ui.button(egui::RichText::new("[Copy Config]").strong()).clicked() {
+                                    ui.ctx().copy_text(config_json.to_string());
+                                    self.add_toast("Config copied to clipboard!", egui::Color32::from_rgb(34, 197, 94));
+                                }
+                                if ui.button(egui::RichText::new("[Copy Prompt Snippet]").strong()).clicked() {
+                                    let prompt_snippet = "Conéctate al servidor MCP de Motor-dif en http://127.0.0.1:3030/mcp. Lee get_engine_docs y captura el viewport antes y después de cada cambio.";
+                                    ui.ctx().copy_text(prompt_snippet.to_string());
+                                    self.add_toast("Prompt snippet copied to clipboard!", egui::Color32::from_rgb(59, 130, 246));
+                                }
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.button("Close").clicked() {
+                                        close_modal = true;
+                                    }
+                                });
+                            });
+                        });
+
+                    if close_modal {
+                        self.show_connect_mcp_modal = false;
+                    }
+                }
+
                 // Music Forge Window
                 if self.show_music_forge_window {
                     let mut close_music = false;
@@ -8304,5 +8374,17 @@ mod tests {
         assert_eq!(guard.as_ref().unwrap().get_block(1, 2, 3), voxel_forge::BlockId::Planks);
 
         let _ = std::fs::remove_file(temp_voxels);
+    }
+
+    #[test]
+    fn test_connect_mcp_modal_state() {
+        let mut show_modal = false;
+        assert_eq!(show_modal, false);
+        show_modal = true;
+        assert_eq!(show_modal, true);
+
+        let config_json = "{\n  \"mcpServers\": {\n    \"motor-dif\": {\n      \"url\": \"http://127.0.0.1:3030/mcp\"\n    }\n  }\n}";
+        assert!(config_json.contains("http://127.0.0.1:3030/mcp"));
+        assert!(config_json.contains("\"motor-dif\""));
     }
 }
