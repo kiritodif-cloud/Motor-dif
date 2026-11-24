@@ -218,6 +218,8 @@ pub struct EngineState {
 
     // Mouse & Gizmo Interaction
     pub mouse_pos: [f32; 2],
+    pub pointer_locked: bool,
+    pub pointer_lock_requested: bool,
     pub is_right_mouse_down: bool,
     pub is_middle_mouse_down: bool,
     pub is_left_mouse_down: bool,
@@ -541,6 +543,8 @@ impl EngineState {
             last_draw_calls: 0,
 
             mouse_pos: [0.0, 0.0],
+            pointer_locked: false,
+            pointer_lock_requested: false,
             is_right_mouse_down: false,
             is_middle_mouse_down: false,
             is_left_mouse_down: false,
@@ -766,6 +770,8 @@ impl EngineState {
         }
         self.active_gizmo_axis = None;
         self.hovered_gizmo_axis = None;
+        self.pointer_lock_requested = false;
+        self.set_pointer_lock(false);
         self.was_cursor_in_viewport = false;
         self.just_pressed_mouse = [false; 3];
         if let Ok(mut minfo) = self.lua_ctx.mouse_info.write() {
@@ -787,6 +793,32 @@ impl EngineState {
         let scale_factor = self.window.scale_factor() as f32;
         let pt = egui::pos2(self.mouse_pos[0] / scale_factor, self.mouse_pos[1] / scale_factor);
         self.viewport_rect.contains(pt)
+    }
+
+    pub fn set_pointer_lock(&mut self, locked: bool) {
+        self.pointer_locked = locked;
+        self.lua_ctx.pointer_locked.store(locked, std::sync::atomic::Ordering::SeqCst);
+        if locked {
+            let res = self.window.set_cursor_grab(winit::window::CursorGrabMode::Locked);
+            if res.is_err() {
+                let _ = self.window.set_cursor_grab(winit::window::CursorGrabMode::Confined);
+            }
+            self.window.set_cursor_visible(false);
+        } else {
+            let _ = self.window.set_cursor_grab(winit::window::CursorGrabMode::None);
+            self.window.set_cursor_visible(true);
+        }
+    }
+
+    pub fn handle_device_event(&mut self, event: &winit::event::DeviceEvent) {
+        if let winit::event::DeviceEvent::MouseMotion { delta } = event {
+            if self.pointer_locked {
+                if let Ok(mut minfo) = self.lua_ctx.mouse_info.write() {
+                    minfo.delta[0] += delta.0 as f32;
+                    minfo.delta[1] += delta.1 as f32;
+                }
+            }
+        }
     }
 
     pub fn spawn_primitive(&mut self, mesh_type: &str, color: [f32; 4]) {
@@ -1308,23 +1340,27 @@ impl EngineState {
                 }
 
                 if is_pressed {
+                    let is_escape = match logical_key {
+                        winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => true,
+                        _ => false,
+                    };
+                    if is_escape {
+                        if self.pointer_locked {
+                            self.set_pointer_lock(false);
+                            return;
+                        }
+                        if self.is_standalone_play {
+                            event_loop.exit();
+                            return;
+                        }
+                    }
+
                     let do_f3 = match logical_key {
                         winit::keyboard::Key::Named(winit::keyboard::NamedKey::F3) => true,
                         _ => false,
                     };
                     if do_f3 {
                         self.show_profiler = !self.show_profiler;
-                    }
-
-                    if self.is_standalone_play {
-                        let is_escape = match logical_key {
-                            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => true,
-                            _ => false,
-                        };
-                        if is_escape {
-                            event_loop.exit();
-                            return;
-                        }
                     }
                 }
 
@@ -1426,20 +1462,22 @@ impl EngineState {
 
                 if let Ok(mut minfo) = self.lua_ctx.mouse_info.write() {
                     minfo.screen_pos = [new_x, new_y];
-                    if is_play_mode {
-                        if in_viewport {
-                            if self.was_cursor_in_viewport {
-                                minfo.delta[0] += dx;
-                                minfo.delta[1] += dy;
+                    if !self.pointer_locked {
+                        if is_play_mode {
+                            if in_viewport {
+                                if self.was_cursor_in_viewport {
+                                    minfo.delta[0] += dx;
+                                    minfo.delta[1] += dy;
+                                } else {
+                                    minfo.delta = [0.0, 0.0];
+                                }
                             } else {
                                 minfo.delta = [0.0, 0.0];
                             }
                         } else {
-                            minfo.delta = [0.0, 0.0];
+                            minfo.delta[0] += dx;
+                            minfo.delta[1] += dy;
                         }
-                    } else {
-                        minfo.delta[0] += dx;
-                        minfo.delta[1] += dy;
                     }
                 }
                 self.was_cursor_in_viewport = in_viewport;
@@ -1455,9 +1493,14 @@ impl EngineState {
 
                 match button {
                     winit::event::MouseButton::Left => {
-                        if is_pressed && !self.is_left_mouse_down {
-                            if !is_play_mode || in_viewport {
-                                self.just_pressed_mouse[0] = true;
+                        if is_pressed {
+                            if is_play_mode && in_viewport && self.pointer_lock_requested && !self.pointer_locked {
+                                self.set_pointer_lock(true);
+                            }
+                            if !self.is_left_mouse_down {
+                                if !is_play_mode || in_viewport {
+                                    self.just_pressed_mouse[0] = true;
+                                }
                             }
                         }
                         self.is_left_mouse_down = is_pressed;
@@ -1481,6 +1524,11 @@ impl EngineState {
                     _ => {}
                 }
                 self.window.request_redraw();
+            }
+            WindowEvent::Focused(focused) => {
+                if !focused && self.pointer_locked {
+                    self.set_pointer_lock(false);
+                }
             }
             WindowEvent::RedrawRequested => {
                 self.update_and_render();
@@ -2632,6 +2680,16 @@ impl EngineState {
             if let Some(env) = pending_env.take() {
                 self.environment_settings = env;
             }
+        }
+
+        // Drain pending pointer lock command from Lua
+        let pl_cmd = self.lua_ctx.pointer_lock_command.swap(0, std::sync::atomic::Ordering::SeqCst);
+        if pl_cmd == 1 {
+            self.pointer_lock_requested = true;
+            self.set_pointer_lock(true);
+        } else if pl_cmd == -1 {
+            self.pointer_lock_requested = false;
+            self.set_pointer_lock(false);
         }
 
         self.frametime_history.push_back(dt * 1000.0);
@@ -7522,6 +7580,17 @@ impl ApplicationHandler for App {
             if state.window.id() == window_id {
                 state.handle_event(event_loop, &event);
             }
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        if let Some(state) = &mut self.state {
+            state.handle_device_event(&event);
         }
     }
 

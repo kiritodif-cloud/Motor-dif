@@ -141,6 +141,8 @@ pub struct LuaEngineContext {
     pub active_terrain: Arc<RwLock<Option<crate::level_forge::TerrainHeightmap>>>,
     pub pending_rig_commands: Arc<Mutex<Vec<RigCommand>>>,
     pub pending_vfx_commands: Arc<Mutex<Vec<VfxCommand>>>,
+    pub pointer_locked: Arc<std::sync::atomic::AtomicBool>,
+    pub pointer_lock_command: Arc<std::sync::atomic::AtomicI8>,
 }
 
 #[derive(Debug, Clone)]
@@ -339,6 +341,8 @@ impl LuaEngineContext {
             active_terrain: Arc::new(RwLock::new(None)),
             pending_rig_commands: Arc::new(Mutex::new(Vec::new())),
             pending_vfx_commands: Arc::new(Mutex::new(Vec::new())),
+            pointer_locked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            pointer_lock_command: Arc::new(std::sync::atomic::AtomicI8::new(0)),
         }
     }
 
@@ -2106,6 +2110,25 @@ impl ScriptComponent {
             })
             .map_err(|e| format!("Failed to register stop_vfx: {}", e))?;
         lua.globals().set("stop_vfx", stop_vfx).map_err(|e| e.to_string())?;
+
+        // 68. set_pointer_lock(enabled: bool)
+        let pl_cmd_ref = ctx.pointer_lock_command.clone();
+        let set_pointer_lock = lua
+            .create_function(move |_, enabled: bool| {
+                pl_cmd_ref.store(if enabled { 1 } else { -1 }, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register set_pointer_lock: {}", e))?;
+        lua.globals().set("set_pointer_lock", set_pointer_lock).map_err(|e| e.to_string())?;
+
+        // 69. is_pointer_locked() -> bool
+        let pl_state_ref = ctx.pointer_locked.clone();
+        let is_pointer_locked = lua
+            .create_function(move |_, ()| {
+                Ok(pl_state_ref.load(std::sync::atomic::Ordering::SeqCst))
+            })
+            .map_err(|e| format!("Failed to register is_pointer_locked: {}", e))?;
+        lua.globals().set("is_pointer_locked", is_pointer_locked).map_err(|e| e.to_string())?;
 
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
