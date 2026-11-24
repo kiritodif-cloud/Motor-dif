@@ -8,9 +8,11 @@ pub struct GameConfig {
     pub title: String,
     #[serde(default = "default_entry")]
     pub entry_scene: String,
-    #[serde(default = "default_width")]
+    #[serde(default)]
+    pub fullscreen: bool,
+    #[serde(default = "default_width", rename = "window_width", alias = "width")]
     pub width: u32,
-    #[serde(default = "default_height")]
+    #[serde(default = "default_height", rename = "window_height", alias = "height")]
     pub height: u32,
 }
 
@@ -24,6 +26,7 @@ impl Default for GameConfig {
         Self {
             title: default_title(),
             entry_scene: default_entry(),
+            fullscreen: false,
             width: default_width(),
             height: default_height(),
         }
@@ -31,11 +34,13 @@ impl Default for GameConfig {
 }
 
 pub fn load_game_config_from_dir(dir: &Path) -> Option<GameConfig> {
-    let p = dir.join("game.json");
-    if p.exists() {
-        if let Ok(content) = fs::read_to_string(&p) {
-            if let Ok(cfg) = serde_json::from_str::<GameConfig>(&content) {
-                return Some(cfg);
+    for filename in &["game_config.json", "game.json"] {
+        let p = dir.join(filename);
+        if p.exists() {
+            if let Ok(content) = fs::read_to_string(&p) {
+                if let Ok(cfg) = serde_json::from_str::<GameConfig>(&content) {
+                    return Some(cfg);
+                }
             }
         }
     }
@@ -110,10 +115,11 @@ pub fn export_game(
             .map_err(|e| format!("Error al copiar assets: {}", e))?;
     }
 
-    // 3. Generate game.json
+    // 3. Generate game.json / game_config.json
     let game_config = GameConfig {
         title: clean_name.to_string(),
         entry_scene: entry_scene.trim().to_string(),
+        fullscreen: false,
         width: 1280,
         height: 720,
     };
@@ -160,15 +166,27 @@ mod tests {
         let cfg = GameConfig {
             title: "Test Game".to_string(),
             entry_scene: "assets/cosmos_scene.json".to_string(),
+            fullscreen: true,
             width: 1920,
             height: 1080,
         };
         let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"window_width\":1920"));
+        assert!(json.contains("\"fullscreen\":true"));
         let decoded: GameConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.title, "Test Game");
         assert_eq!(decoded.entry_scene, "assets/cosmos_scene.json");
+        assert_eq!(decoded.fullscreen, true);
         assert_eq!(decoded.width, 1920);
         assert_eq!(decoded.height, 1080);
+
+        // Test backward compatibility with legacy "width"/"height" json
+        let legacy_json = r#"{"title":"Legacy","entry_scene":"assets/scene.json","width":800,"height":600}"#;
+        let legacy_cfg: GameConfig = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(legacy_cfg.title, "Legacy");
+        assert_eq!(legacy_cfg.fullscreen, false);
+        assert_eq!(legacy_cfg.width, 800);
+        assert_eq!(legacy_cfg.height, 600);
     }
 
     #[test]

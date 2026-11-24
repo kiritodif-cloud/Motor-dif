@@ -155,7 +155,7 @@ pub struct EngineState {
     pub hot_reload: HotReloadManager,
     pub mcp_cmd_rx: mpsc::Receiver<McpCommand>,
     pub mcp_server_addr: String,
-    pub _mcp_handle: mcp_server::McpServerHandle,
+    pub _mcp_handle: Option<mcp_server::McpServerHandle>,
     pub pending_viewport_capture: Option<oneshot::Sender<Result<String, String>>>,
     pub last_frame_time: Instant,
     pub fps: f32,
@@ -354,7 +354,12 @@ fn resolve_world_matrix(
 }
 
 impl EngineState {
-    pub async fn new(window: Arc<Window>, is_standalone_play: bool, initial_scene_path: String) -> Self {
+    pub async fn new(
+        window: Arc<Window>,
+        is_standalone_play: bool,
+        initial_scene_path: String,
+        enable_mcp: bool,
+    ) -> Self {
         let size = window.inner_size();
         let aspect = size.width as f32 / size.height.max(1) as f32;
         let mut camera = Camera::new_3d(Vec3::new(0.0, 3.5, 9.0), Vec3::ZERO, aspect);
@@ -452,10 +457,16 @@ impl EngineState {
             }
         };
 
-        let (cmd_tx, cmd_rx) = mpsc::channel(64);
-        let mcp_handle = mcp_server::start_mcp_server(cmd_tx, 3030);
-        let mcp_server_addr = mcp_handle.bound_addr.to_string();
-        logs.push(format!("MCP Server: running at http://{}/mcp and stdio", mcp_server_addr));
+        let (mcp_handle, mcp_server_addr, cmd_rx) = if enable_mcp || !is_standalone_play {
+            let (tx, rx) = mpsc::channel(64);
+            let handle = mcp_server::start_mcp_server(tx, 3030);
+            let addr = handle.bound_addr.to_string();
+            logs.push(format!("MCP Server: running at http://{}/mcp and stdio", addr));
+            (Some(handle), addr, rx)
+        } else {
+            let (_tx, rx) = mpsc::channel(64);
+            (None, String::new(), rx)
+        };
 
         logs.push("Renderer: wgpu + WGSL directional lighting (Low-PBR).".to_string());
         logs.push("Depth Buffer: 32-bit Float enabled.".to_string());
@@ -1394,6 +1405,18 @@ impl EngineState {
                     };
                     if do_f3 {
                         self.show_profiler = !self.show_profiler;
+                    }
+
+                    let do_f11 = match logical_key {
+                        winit::keyboard::Key::Named(winit::keyboard::NamedKey::F11) => true,
+                        _ => false,
+                    };
+                    if do_f11 {
+                        if self.window.fullscreen().is_some() {
+                            self.window.set_fullscreen(None);
+                        } else {
+                            self.window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                        }
                     }
                 }
 
@@ -8089,6 +8112,8 @@ pub struct App {
     target_scene: String,
     custom_title: Option<String>,
     custom_size: Option<(u32, u32)>,
+    fullscreen: bool,
+    enable_mcp: bool,
 }
 
 impl App {
@@ -8097,6 +8122,8 @@ impl App {
         target_scene: String,
         custom_title: Option<String>,
         custom_size: Option<(u32, u32)>,
+        fullscreen: bool,
+        enable_mcp: bool,
     ) -> Self {
         Self {
             state: None,
@@ -8104,6 +8131,8 @@ impl App {
             target_scene,
             custom_title,
             custom_size,
+            fullscreen,
+            enable_mcp,
         }
     }
 }
@@ -8130,6 +8159,9 @@ impl ApplicationHandler for App {
                     .create_window(window_attributes)
                     .expect("Failed to create winit window"),
             );
+            if self.fullscreen {
+                window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+            }
             window.set_visible(true);
             window.set_minimized(false);
             window.focus_window();
@@ -8138,6 +8170,7 @@ impl ApplicationHandler for App {
                 window.clone(),
                 self.is_play_mode,
                 self.target_scene.clone(),
+                self.enable_mcp,
             ));
             window.set_visible(true);
             window.set_minimized(false);
@@ -8232,53 +8265,67 @@ fn main() {
     let mut target_scene = "assets/scene.json".to_string();
     let mut custom_title = None;
     let mut custom_size = None;
+    let mut fullscreen = false;
+    let mut enable_mcp = false;
 
-    if args.len() <= 1 {
-        if let Some(cfg) = exporter::check_auto_boot_game() {
+    if args.iter().any(|a| a == "--mcp") {
+        enable_mcp = true;
+    }
+
+    if let Some(cfg) = exporter::check_auto_boot_game() {
+        is_play_mode = true;
+        target_scene = cfg.entry_scene;
+        custom_title = Some(cfg.title);
+        custom_size = Some((cfg.width, cfg.height));
+        fullscreen = cfg.fullscreen;
+    }
+
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--play" {
             is_play_mode = true;
-            target_scene = cfg.entry_scene;
-            custom_title = Some(cfg.title);
-            custom_size = Some((cfg.width, cfg.height));
-        }
-    } else {
-        let mut i = 1;
-        while i < args.len() {
-            if args[i] == "--play" {
-                is_play_mode = true;
-                if i + 1 < args.len() && !args[i + 1].starts_with("--") {
-                    target_scene = args[i + 1].clone();
-                    i += 1;
-                }
-            } else if args[i] == "--export" {
-                let name = if i + 1 < args.len() { &args[i + 1] } else { "MyGame" };
-                let scene = if i + 2 < args.len() { &args[i + 2] } else { "assets/scene.json" };
-                let out = if i + 3 < args.len() { Some(args[i + 3].as_str()) } else { Some("dist") };
-                match exporter::export_game(name, scene, out) {
-                    Ok(p) => {
-                        println!("Standalone game exported successfully to: {:?}", p);
-                        return;
-                    }
-                    Err(e) => {
-                        eprintln!("Export error: {}", e);
-                        std::process::exit(1);
-                    }
-                }
-            } else if args[i] == "--scene" {
-                if i + 1 < args.len() {
-                    target_scene = args[i + 1].clone();
-                    i += 1;
-                }
-            } else if args[i].ends_with(".json") {
-                target_scene = args[i].clone();
+            if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                target_scene = args[i + 1].clone();
+                i += 1;
             }
-            i += 1;
+        } else if args[i] == "--fullscreen" {
+            fullscreen = true;
+        } else if args[i] == "--export" {
+            let name = if i + 1 < args.len() { &args[i + 1] } else { "MyGame" };
+            let scene = if i + 2 < args.len() { &args[i + 2] } else { "assets/scene.json" };
+            let out = if i + 3 < args.len() { Some(args[i + 3].as_str()) } else { Some("dist") };
+            match exporter::export_game(name, scene, out) {
+                Ok(p) => {
+                    println!("Standalone game exported successfully to: {:?}", p);
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("Export error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        } else if args[i] == "--scene" {
+            if i + 1 < args.len() {
+                target_scene = args[i + 1].clone();
+                i += 1;
+            }
+        } else if args[i].ends_with(".json") {
+            target_scene = args[i].clone();
         }
+        i += 1;
     }
 
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::new(is_play_mode, target_scene, custom_title, custom_size);
+    let mut app = App::new(
+        is_play_mode,
+        target_scene,
+        custom_title,
+        custom_size,
+        fullscreen,
+        enable_mcp,
+    );
     event_loop.run_app(&mut app).expect("Error running event loop");
 }
 
