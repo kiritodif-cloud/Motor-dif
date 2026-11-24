@@ -1154,9 +1154,7 @@ impl EngineState {
 
         if !instances.is_empty() {
             self.push_history();
-            if recipe.prefab_or_mesh.ends_with(".glb") {
-                self.gpu.ensure_mesh(&recipe.prefab_or_mesh);
-            }
+            self.gpu.ensure_mesh(&recipe.prefab_or_mesh);
 
             for inst in &instances {
                 self.entity_counter += 1;
@@ -1178,12 +1176,20 @@ impl EngineState {
                 let mesh = MeshRender {
                     mesh_type: inst.mesh.clone(),
                     color: inst.color,
-                    emissive: 0.0,
+                    emissive: inst.emissive.unwrap_or(0.0),
                     wireframe: Some(false),
                     texture: None,
                     blend_mode: Some("opaque".to_string()),
-                    fresnel_color: None,
-                    fresnel_power: None,
+                    fresnel_color: if inst.mesh == "crystal_cluster" {
+                        Some([0.3, 0.9, 1.0])
+                    } else {
+                        None
+                    },
+                    fresnel_power: if inst.mesh == "crystal_cluster" {
+                        Some(2.5)
+                    } else {
+                        None
+                    },
                     uv_scroll: None,
                 };
                 self.world.spawn((meta, transform, mesh));
@@ -6626,7 +6632,22 @@ impl EngineState {
                                         ui.label("Mesh o Prefab:");
                                         ui.text_edit_singleline(&mut self.level_forge_scatter.prefab_or_mesh);
                                     });
-                                    ui.label(egui::RichText::new("(ej: cube, sphere, cylinder o assets/models/...).").small().color(ui_theme::COLOR_TEXT_MUTED));
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new("Presets:").small().color(ui_theme::COLOR_TEXT_MUTED));
+                                        if ui.small_button("basalt_pillar").clicked() {
+                                            self.level_forge_scatter.prefab_or_mesh = "basalt_pillar".to_string();
+                                        }
+                                        if ui.small_button("jagged_rock").clicked() {
+                                            self.level_forge_scatter.prefab_or_mesh = "jagged_rock".to_string();
+                                        }
+                                        if ui.small_button("crystal_cluster").clicked() {
+                                            self.level_forge_scatter.prefab_or_mesh = "crystal_cluster".to_string();
+                                        }
+                                        if ui.small_button("sci_fi_crate").clicked() {
+                                            self.level_forge_scatter.prefab_or_mesh = "sci_fi_crate".to_string();
+                                        }
+                                    });
+                                    ui.label(egui::RichText::new("(basalt_pillar, jagged_rock, crystal_cluster, sci_fi_crate o assets/models/...).").small().color(ui_theme::COLOR_TEXT_MUTED));
 
                                     ui.horizontal(|ui| {
                                         ui.label("Cantidad deseada:");

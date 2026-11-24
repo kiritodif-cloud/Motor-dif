@@ -141,15 +141,15 @@ pub fn evaluate_terrain_color(palette: &str, height_ratio: f32, slope: f32) -> [
             }
         }
         "volcanic" => {
-            // Basalt, obsidian and glowing magma
-            if h < 0.15 && s < 0.35 {
-                [0.98, 0.36, 0.05, 1.0] // Magma pool
-            } else if s > 0.45 {
-                [0.24, 0.22, 0.22, 1.0] // Ash cliff
-            } else if h > 0.75 {
-                [0.45, 0.40, 0.40, 1.0] // Volcanic peak
+            // Dark basalt, ash crevices and glowing magma
+            if h < 0.18 && s < 0.40 {
+                [0.98, 0.36, 0.05, 1.0] // Magma pool / crevice
+            } else if s > 0.48 {
+                [0.18, 0.16, 0.19, 1.0] // Steep ash cliff
+            } else if h > 0.70 {
+                [0.14, 0.13, 0.15, 1.0] // Dark basalt peak
             } else {
-                [0.16, 0.16, 0.18, 1.0] // Obsidian basalt
+                [0.09, 0.09, 0.11, 1.0] // Deep basalt ground
             }
         }
         _ => {
@@ -621,6 +621,8 @@ pub struct ScatterInstance {
     pub scale: [f32; 3],
     pub mesh: String,
     pub color: [f32; 4],
+    #[serde(default)]
+    pub emissive: Option<f32>,
 }
 
 pub fn generate_scatter_instances(
@@ -685,13 +687,22 @@ pub fn generate_scatter_instances(
 
         let id = format!("{}_{}", recipe.name, instances.len() + 1);
 
+        let (color, emissive) = match recipe.prefab_or_mesh.as_str() {
+            "basalt_pillar" => ([0.14, 0.14, 0.16, 1.0], None),
+            "jagged_rock" => ([0.25, 0.23, 0.22, 1.0], None),
+            "crystal_cluster" => ([0.20, 0.85, 0.95, 1.0], Some(0.6)),
+            "sci_fi_crate" => ([0.22, 0.28, 0.32, 1.0], Some(0.15)),
+            _ => ([0.85, 0.85, 0.90, 1.0], None),
+        };
+
         instances.push(ScatterInstance {
             id,
             position: [x, y, z],
             rotation_deg: [0.0, yaw, 0.0],
             scale: [scale_val, scale_val, scale_val],
             mesh: recipe.prefab_or_mesh.clone(),
-            color: [0.85, 0.85, 0.9, 1.0],
+            color,
+            emissive,
         });
     }
 
@@ -979,5 +990,37 @@ pub mod tests {
         let scene_json = serde_json::to_string_pretty(&scene).unwrap();
         std::fs::write("assets/showcase_v18_terrain.json", scene_json).unwrap();
         assert!(std::path::Path::new("assets/showcase_v18_terrain.json").exists());
+    }
+
+    #[test]
+    fn test_stylized_scatter_presets_and_volcanic_palette() {
+        let presets = ["basalt_pillar", "jagged_rock", "crystal_cluster", "sci_fi_crate"];
+        for preset in presets {
+            let recipe = ScatterRecipe {
+                name: format!("prop_{}", preset),
+                prefab_or_mesh: preset.to_string(),
+                count: 10,
+                area_radius: 20.0,
+                min_spacing: 2.0,
+                scale_min: 0.8,
+                scale_max: 1.2,
+                random_yaw: true,
+                max_slope_deg: 45.0,
+                seed: 42,
+            };
+            let instances = generate_scatter_instances(&recipe, None);
+            assert_eq!(instances.len(), 10);
+            assert_eq!(instances[0].mesh, preset);
+        }
+
+        // Test volcanic palette colors are valid non-NaN and within basalt/magma range
+        let volcanic_low = evaluate_terrain_color("volcanic", 0.05, 0.1);
+        assert_eq!(volcanic_low, [0.98, 0.36, 0.05, 1.0]); // Magma crevice
+
+        let volcanic_cliff = evaluate_terrain_color("volcanic", 0.5, 0.6);
+        assert_eq!(volcanic_cliff, [0.18, 0.16, 0.19, 1.0]); // Steep ash cliff
+
+        let volcanic_ground = evaluate_terrain_color("volcanic", 0.5, 0.1);
+        assert_eq!(volcanic_ground, [0.09, 0.09, 0.11, 1.0]); // Deep basalt ground
     }
 }

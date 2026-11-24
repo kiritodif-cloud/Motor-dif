@@ -1572,6 +1572,10 @@ impl GpuContext {
         meshes.insert("ring".to_string(), create_ring_mesh(&device, 0.5, 1.0, 32));
         meshes.insert("cone".to_string(), create_cone_mesh(&device, 0.8, 1.6, 24));
         meshes.insert("icosphere".to_string(), create_icosphere_mesh(&device, 1.0, 2));
+        meshes.insert("basalt_pillar".to_string(), create_basalt_pillar_mesh(&device));
+        meshes.insert("jagged_rock".to_string(), create_jagged_rock_mesh(&device));
+        meshes.insert("crystal_cluster".to_string(), create_crystal_cluster_mesh(&device));
+        meshes.insert("sci_fi_crate".to_string(), create_sci_fi_crate_mesh(&device));
 
         // egui integration
         let egui_ctx = egui::Context::default();
@@ -1703,6 +1707,18 @@ impl GpuContext {
             }
             "icosphere" => {
                 self.meshes.insert("icosphere".to_string(), create_icosphere_mesh(&self.device, 1.0, 2));
+            }
+            "basalt_pillar" => {
+                self.meshes.insert("basalt_pillar".to_string(), create_basalt_pillar_mesh(&self.device));
+            }
+            "jagged_rock" => {
+                self.meshes.insert("jagged_rock".to_string(), create_jagged_rock_mesh(&self.device));
+            }
+            "crystal_cluster" => {
+                self.meshes.insert("crystal_cluster".to_string(), create_crystal_cluster_mesh(&self.device));
+            }
+            "sci_fi_crate" => {
+                self.meshes.insert("sci_fi_crate".to_string(), create_sci_fi_crate_mesh(&self.device));
             }
             _ => {
                 match load_gltf_mesh(&self.device, mesh_id) {
@@ -2501,6 +2517,267 @@ pub fn create_icosphere_mesh(device: &wgpu::Device, radius: f32, subdivisions: u
         usage: wgpu::BufferUsages::INDEX,
     });
 
+    MeshGpu {
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint16,
+    }
+}
+
+fn add_flat_triangle(
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u16>,
+    p0: [f32; 3],
+    p1: [f32; 3],
+    p2: [f32; 3],
+    uv0: [f32; 2],
+    uv1: [f32; 2],
+    uv2: [f32; 2],
+    color: [f32; 4],
+) {
+    let edge1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+    let edge2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+    let cx = edge1[1] * edge2[2] - edge1[2] * edge2[1];
+    let cy = edge1[2] * edge2[0] - edge1[0] * edge2[2];
+    let cz = edge1[0] * edge2[1] - edge1[1] * edge2[0];
+    let len = (cx * cx + cy * cy + cz * cz).sqrt().max(1e-6);
+    let normal = [cx / len, cy / len, cz / len];
+
+    let base_idx = vertices.len() as u16;
+    vertices.push(Vertex { position: p0, normal, uv: uv0, color });
+    vertices.push(Vertex { position: p1, normal, uv: uv1, color });
+    vertices.push(Vertex { position: p2, normal, uv: uv2, color });
+    indices.push(base_idx);
+    indices.push(base_idx + 1);
+    indices.push(base_idx + 2);
+}
+
+fn add_flat_quad(
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u16>,
+    p0: [f32; 3],
+    p1: [f32; 3],
+    p2: [f32; 3],
+    p3: [f32; 3],
+    color: [f32; 4],
+) {
+    add_flat_triangle(vertices, indices, p0, p1, p2, [0.0, 0.0], [1.0, 0.0], [1.0, 1.0], color);
+    add_flat_triangle(vertices, indices, p0, p2, p3, [0.0, 0.0], [1.0, 1.0], [0.0, 1.0], color);
+}
+
+pub fn create_basalt_pillar_mesh(device: &wgpu::Device) -> MeshGpu {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let white = [1.0, 1.0, 1.0, 1.0];
+    let sides = 6;
+    let r_bot = 0.65f32;
+    let r_top = 0.55f32;
+    let h = 3.2f32;
+    let cap_h = 3.35f32;
+
+    let mut bot_pts = Vec::new();
+    let mut top_pts = Vec::new();
+    for i in 0..sides {
+        let angle = i as f32 * std::f32::consts::TAU / sides as f32;
+        let c = angle.cos();
+        let s = angle.sin();
+        bot_pts.push([r_bot * c, 0.0, r_bot * s]);
+        top_pts.push([r_top * c, h, r_top * s]);
+    }
+
+    for i in 0..sides {
+        let next = (i + 1) % sides;
+        add_flat_quad(&mut vertices, &mut indices, bot_pts[i], bot_pts[next], top_pts[next], top_pts[i], white);
+    }
+
+    let apex = [0.0, cap_h, 0.0];
+    for i in 0..sides {
+        let next = (i + 1) % sides;
+        add_flat_triangle(&mut vertices, &mut indices, top_pts[i], top_pts[next], apex, [0.5, 0.5], [1.0, 0.5], [0.5, 1.0], white);
+    }
+
+    let base_center = [0.0, 0.0, 0.0];
+    for i in 0..sides {
+        let next = (i + 1) % sides;
+        add_flat_triangle(&mut vertices, &mut indices, bot_pts[next], bot_pts[i], base_center, [0.5, 0.5], [1.0, 0.5], [0.5, 1.0], white);
+    }
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Basalt Pillar Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Basalt Pillar Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+    MeshGpu {
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint16,
+    }
+}
+
+pub fn create_jagged_rock_mesh(device: &wgpu::Device) -> MeshGpu {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let white = [1.0, 1.0, 1.0, 1.0];
+    let t = (1.0 + 5.0f32.sqrt()) / 2.0;
+
+    let mut base_pts = vec![
+        [-1.0,  t,  0.0], [ 1.0,  t,  0.0], [-1.0, -t,  0.0], [ 1.0, -t,  0.0],
+        [ 0.0, -1.0,  t], [ 0.0,  1.0,  t], [ 0.0, -1.0, -t], [ 0.0,  1.0, -t],
+        [  t,  0.0, -1.0], [  t,  0.0,  1.0], [ -t,  0.0, -1.0], [ -t,  0.0,  1.0],
+    ];
+
+    for (i, p) in base_pts.iter_mut().enumerate() {
+        let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-6);
+        let scale = 1.0 + 0.35 * ((i as f32 * 4.67 + 1.2).sin());
+        p[0] = (p[0] / len) * scale * 1.1;
+        p[1] = ((p[1] / len) * scale * 0.9 + 0.6).max(0.0);
+        p[2] = (p[2] / len) * scale * 1.1;
+    }
+
+    let faces: [[usize; 3]; 20] = [
+        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+    ];
+
+    for f in faces {
+        add_flat_triangle(&mut vertices, &mut indices, base_pts[f[0]], base_pts[f[1]], base_pts[f[2]], [0.0, 0.0], [1.0, 0.0], [0.5, 1.0], white);
+    }
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Jagged Rock Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Jagged Rock Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+    MeshGpu {
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint16,
+    }
+}
+
+pub fn create_crystal_cluster_mesh(device: &wgpu::Device) -> MeshGpu {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let white = [1.0, 1.0, 1.0, 1.0];
+
+    let mut add_shard = |center: [f32; 3], tilt_axis: [f32; 3], tilt_angle_deg: f32, radius: f32, height: f32| {
+        let sides = 6;
+        let rad = tilt_angle_deg.to_radians();
+        let sin_t = rad.sin();
+        let cos_t = rad.cos();
+
+        let rotate = |p: [f32; 3]| -> [f32; 3] {
+            let along = p[0] * tilt_axis[0] + p[2] * tilt_axis[2];
+            let perp = p[0] * (-tilt_axis[2]) + p[2] * tilt_axis[0];
+            let rotated_along = along * cos_t - p[1] * sin_t;
+            let rotated_y = along * sin_t + p[1] * cos_t;
+            [
+                rotated_along * tilt_axis[0] + perp * (-tilt_axis[2]) + center[0],
+                rotated_y + center[1],
+                rotated_along * tilt_axis[2] + perp * tilt_axis[0] + center[2],
+            ]
+        };
+
+        let mut bot = Vec::new();
+        let mut mid = Vec::new();
+        let mid_h = height * 0.75;
+        for i in 0..sides {
+            let a = i as f32 * std::f32::consts::TAU / sides as f32;
+            let c = a.cos() * radius;
+            let s = a.sin() * radius;
+            bot.push(rotate([c, 0.0, s]));
+            mid.push(rotate([c * 0.95, mid_h, s * 0.95]));
+        }
+        let tip = rotate([0.0, height, 0.0]);
+
+        for i in 0..sides {
+            let next = (i + 1) % sides;
+            add_flat_quad(&mut vertices, &mut indices, bot[i], bot[next], mid[next], mid[i], white);
+            add_flat_triangle(&mut vertices, &mut indices, mid[i], mid[next], tip, [0.0, 0.0], [1.0, 0.0], [0.5, 1.0], white);
+        }
+    };
+
+    add_shard([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 6.0, 0.42, 2.7);
+    add_shard([-0.42, 0.0, 0.25], [-0.8, 0.0, 0.6], 26.0, 0.28, 1.8);
+    add_shard([0.38, 0.0, -0.22], [0.7, 0.0, -0.4], 32.0, 0.22, 1.3);
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Crystal Cluster Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Crystal Cluster Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+    MeshGpu {
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint16,
+    }
+}
+
+pub fn create_sci_fi_crate_mesh(device: &wgpu::Device) -> MeshGpu {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let white = [1.0, 1.0, 1.0, 1.0];
+
+    let half_w = 0.6f32;
+    let bevel = 0.12f32;
+    let b = half_w - bevel;
+
+    let faces: [([f32; 3], [f32; 3], [f32; 3]); 6] = [
+        ([0.0, 0.0, half_w], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        ([0.0, 0.0, -half_w], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        ([half_w, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]),
+        ([-half_w, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+        ([0.0, half_w, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
+        ([0.0, -half_w, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+    ];
+
+    for (pos, right, up) in faces {
+        let p0 = [pos[0] - right[0]*b - up[0]*b, pos[1] - right[1]*b - up[1]*b, pos[2] - right[2]*b - up[2]*b];
+        let p1 = [pos[0] + right[0]*b - up[0]*b, pos[1] + right[1]*b - up[1]*b, pos[2] + right[2]*b - up[2]*b];
+        let p2 = [pos[0] + right[0]*b + up[0]*b, pos[1] + right[1]*b + up[1]*b, pos[2] + right[2]*b + up[2]*b];
+        let p3 = [pos[0] - right[0]*b + up[0]*b, pos[1] - right[1]*b + up[1]*b, pos[2] - right[2]*b + up[2]*b];
+        add_flat_quad(&mut vertices, &mut indices, p0, p1, p2, p3, white);
+
+        let q0 = [pos[0] - right[0]*half_w - up[0]*b, pos[1] - right[1]*half_w - up[1]*b, pos[2] - right[2]*half_w - up[2]*b];
+        let q1 = [pos[0] + right[0]*half_w - up[0]*b, pos[1] + right[1]*half_w - up[1]*b, pos[2] + right[2]*half_w - up[2]*b];
+        let q2 = [pos[0] + right[0]*half_w + up[0]*b, pos[1] + right[1]*half_w + up[1]*b, pos[2] + right[2]*half_w + up[2]*b];
+        let q3 = [pos[0] - right[0]*half_w + up[0]*b, pos[1] - right[1]*half_w + up[1]*b, pos[2] - right[2]*half_w + up[2]*b];
+
+        add_flat_quad(&mut vertices, &mut indices, p1, q1, q2, p2, white);
+        add_flat_quad(&mut vertices, &mut indices, p3, q3, q0, p0, white);
+    }
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Sci-Fi Crate Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Sci-Fi Crate Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
     MeshGpu {
         vertex_buffer,
         index_buffer,
