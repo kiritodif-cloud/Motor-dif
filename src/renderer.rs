@@ -227,13 +227,19 @@ impl TextureGpu {
         );
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let is_nearest = label.contains("voxel") || label.contains("pixel") || label.contains("atlas") || label.ends_with("_nearest");
+        let filter_mode = if is_nearest {
+            wgpu::FilterMode::Nearest
+        } else {
+            wgpu::FilterMode::Linear
+        };
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some(&format!("{}_sampler", label)),
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
             address_mode_w: wgpu::AddressMode::Repeat,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: filter_mode,
+            min_filter: filter_mode,
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
@@ -281,6 +287,7 @@ pub struct GpuContext {
     pub size: winit::dpi::PhysicalSize<u32>,
     pub depth_texture: DepthTexture,
     pub render_pipeline: wgpu::RenderPipeline,
+    pub translucent_render_pipeline: wgpu::RenderPipeline,
     pub additive_render_pipeline: wgpu::RenderPipeline,
     pub line_pipeline: wgpu::RenderPipeline,
     pub skybox_pipeline: wgpu::RenderPipeline,
@@ -316,6 +323,11 @@ struct ShadowUniform {
 @group(0) @binding(0)
 var<uniform> shadow_uniform: ShadowUniform;
 
+@group(1) @binding(0)
+var t_diffuse: texture_2d<f32>;
+@group(1) @binding(1)
+var s_diffuse: sampler;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -335,11 +347,17 @@ struct InstanceInput {
     @location(12) fresnel: vec4<f32>,
 };
 
+struct VertexOutputShadow {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) color: vec4<f32>,
+};
+
 @vertex
 fn vs_shadow(
     vertex: VertexInput,
     instance: InstanceInput,
-) -> @builtin(position) vec4<f32> {
+) -> VertexOutputShadow {
     let model_matrix = mat4x4<f32>(
         instance.model_matrix_0,
         instance.model_matrix_1,
@@ -347,7 +365,20 @@ fn vs_shadow(
         instance.model_matrix_3,
     );
     let world_pos = model_matrix * vec4<f32>(vertex.position, 1.0);
-    return shadow_uniform.light_view_proj * world_pos;
+    var out: VertexOutputShadow;
+    out.clip_position = shadow_uniform.light_view_proj * world_pos;
+    out.uv = vertex.uv * instance.uv_scale + instance.uv_offset;
+    out.color = vertex.vert_color * instance.inst_color;
+    return out;
+}
+
+@fragment
+fn fs_shadow(in: VertexOutputShadow) {
+    let tex_color = textureSample(t_diffuse, s_diffuse, in.uv);
+    let alpha = in.color.a * tex_color.a;
+    if (alpha < 0.5) {
+        discard;
+    }
 }
 "#;
 
@@ -509,7 +540,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let tex_color = textureSample(t_diffuse, s_diffuse, scrolled_uv);
     let base_color = in.color * tex_color;
 
-    if (base_color.a < 0.01) {
+    if (base_color.a < 0.5) {
         discard;
     }
 
@@ -586,6 +617,65 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let lit_color = surface_color * (ambient + diffuse + point_diffuse) + specular + point_specular + emissive + fresnel_contrib;
 
     // 7. FogExp2 Exponential Fog
+    let dist = length(camera.camera_pos.xyz - in.world_pos);
+    let fog_density = camera.fog_color.a;
+    var final_color = lit_color;
+    if (fog_density > 0.0001) {
+        let fog_factor = clamp(1.0 - exp(-dist * fog_density), 0.0, 1.0);
+        final_color = mix(lit_color, camera.fog_color.rgb, fog_factor);
+    }
+
+    return vec4<f32>(final_color, base_color.a);
+}
+
+@fragment
+fn fs_translucent(in: VertexOutput) -> @location(0) vec4<f32> {
+    let scrolled_uv = in.uv + in.uv_scroll * camera.camera_pos.w;
+    let tex_color = textureSample(t_diffuse, s_diffuse, scrolled_uv);
+    let base_color = in.color * tex_color;
+
+    if (base_color.a < 0.01) {
+        discard;
+    }
+
+    let emissive = base_color.rgb * in.emissive * 2.0;
+
+    // View Modes: 0.0 = Lit, 1.0 = Unlit, 2.0 = Wireframe
+    if (in.view_mode > 1.5) {
+        let grid = abs(fract(in.uv * 8.0 - 0.5) - 0.5) / fwidth(in.uv * 8.0);
+        let line = 1.0 - clamp(min(grid.x, grid.y), 0.0, 1.0);
+        let wire_col = mix(vec3<f32>(0.07, 0.09, 0.13), vec3<f32>(0.22, 0.75, 0.98), line);
+        return vec4<f32>(wire_col, base_color.a);
+    } else if (in.view_mode > 0.5) {
+        return vec4<f32>(base_color.rgb + emissive, base_color.a);
+    }
+
+    let hemi_factor = clamp(in.world_normal.y * 0.5 + 0.5, 0.0, 1.0);
+    let sky_ambient = mix(vec3<f32>(0.26, 0.30, 0.38), camera.zenith_color.rgb * 0.45, 0.5);
+    let ground_ambient = mix(vec3<f32>(0.11, 0.12, 0.14), camera.horizon_color.rgb * 0.25, 0.5);
+    let ambient = mix(ground_ambient, sky_ambient, hemi_factor);
+
+    let light_dir = normalize(vec3<f32>(0.5, 0.8, 0.4));
+    let n_dot_l = max(dot(in.world_normal, light_dir), 0.0);
+    let light_color = vec3<f32>(1.0, 0.98, 0.92);
+    let shadow_factor = fetch_shadow(in.shadow_pos, n_dot_l);
+    let diffuse = light_color * n_dot_l * 0.70 * shadow_factor;
+
+    let view_dir = normalize(camera.camera_pos.xyz - in.world_pos);
+    let half_dir = normalize(light_dir + view_dir);
+    let n_dot_h = max(dot(in.world_normal, half_dir), 0.0);
+    let spec_factor = pow(n_dot_h, 32.0) * step(0.001, n_dot_l) * 0.40 * shadow_factor;
+    let specular = vec3<f32>(1.0, 1.0, 1.0) * spec_factor;
+
+    var fresnel_contrib = vec3<f32>(0.0);
+    if (in.fresnel.w > 0.0) {
+        let n_dot_v = max(dot(in.world_normal, view_dir), 0.0);
+        let rim = pow(1.0 - n_dot_v, in.fresnel.w);
+        fresnel_contrib = in.fresnel.rgb * rim;
+    }
+
+    let lit_color = base_color.rgb * (ambient + diffuse) + specular + emissive + fresnel_contrib;
+
     let dist = length(camera.camera_pos.xyz - in.world_pos);
     let fog_density = camera.fog_color.a;
     var final_color = lit_color;
@@ -1299,7 +1389,10 @@ impl GpuContext {
 
         let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Shadow Pipeline Layout"),
-            bind_group_layouts: &[Some(&shadow_camera_bind_group_layout)],
+            bind_group_layouts: &[
+                Some(&shadow_camera_bind_group_layout),
+                Some(&texture_bind_group_layout),
+            ],
             immediate_size: 0,
         });
 
@@ -1312,7 +1405,12 @@ impl GpuContext {
                 buffers: &[Some(Vertex::desc()), Some(InstanceRaw::desc())],
                 compilation_options: Default::default(),
             },
-            fragment: None,
+            fragment: Some(wgpu::FragmentState {
+                module: &shadow_shader,
+                entry_point: Some("fs_shadow"),
+                targets: &[],
+                compilation_options: Default::default(),
+            }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
@@ -1383,6 +1481,50 @@ impl GpuContext {
                 format: DepthTexture::DEPTH_FORMAT,
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let translucent_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("3D Translucent Render Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[Some(Vertex::desc()), Some(InstanceRaw::desc())],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_translucent"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DepthTexture::DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -1605,6 +1747,7 @@ impl GpuContext {
             size,
             depth_texture,
             render_pipeline,
+            translucent_render_pipeline,
             additive_render_pipeline,
             line_pipeline,
             skybox_pipeline,

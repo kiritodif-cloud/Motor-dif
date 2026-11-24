@@ -7219,11 +7219,18 @@ impl EngineState {
             shadow_pass.set_pipeline(&self.gpu.shadow_pipeline);
             shadow_pass.set_bind_group(0, &self.gpu.shadow_camera_bind_group, &[]);
 
-            for ((mesh_id, _tex_opt, blend_mode), instances) in &instances_by_batch {
-                if blend_mode == "additive" || instances.is_empty() {
+            for ((mesh_id, tex_opt, blend_mode), instances) in &instances_by_batch {
+                if blend_mode == "additive" || blend_mode == "translucent" || blend_mode == "transparent" || instances.is_empty() {
                     continue;
                 }
                 if let Some(mesh_gpu) = self.gpu.meshes.get(mesh_id) {
+                    let tex_bind = if let Some(tex) = tex_opt {
+                        &self.gpu.get_texture(tex).bind_group
+                    } else {
+                        &self.gpu.default_white_texture.bind_group
+                    };
+                    shadow_pass.set_bind_group(1, tex_bind, &[]);
+
                     let instance_buffer = create_instance_buffer(&self.gpu.device, instances);
                     shadow_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
                     shadow_pass.set_vertex_buffer(1, instance_buffer.slice(..));
@@ -7276,14 +7283,14 @@ impl EngineState {
             render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
             render_pass.draw(0..3, 0..1);
 
-            // 1a. Render Opaque & Alpha Batches
+            // 1a. Render Opaque & Cutout Batches
             render_pass.set_pipeline(&self.gpu.render_pipeline);
             render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
             render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
             render_pass.set_bind_group(3, &self.gpu.shadow_bind_group, &[]);
 
             for ((mesh_id, tex_opt, blend_mode), instances) in &instances_by_batch {
-                if blend_mode == "additive" || instances.is_empty() {
+                if blend_mode == "additive" || blend_mode == "translucent" || blend_mode == "transparent" || instances.is_empty() {
                     continue;
                 }
                 if let Some(mesh_gpu) = self.gpu.meshes.get(mesh_id) {
@@ -7309,7 +7316,40 @@ impl EngineState {
                 }
             }
 
-            // 1b. Render Additive Batches
+            // 1b. Render Translucent Batches (Water, Glass)
+            render_pass.set_pipeline(&self.gpu.translucent_render_pipeline);
+            render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
+            render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
+            render_pass.set_bind_group(3, &self.gpu.shadow_bind_group, &[]);
+
+            for ((mesh_id, tex_opt, blend_mode), instances) in &instances_by_batch {
+                if (blend_mode != "translucent" && blend_mode != "transparent") || instances.is_empty() {
+                    continue;
+                }
+                if let Some(mesh_gpu) = self.gpu.meshes.get(mesh_id) {
+                    let tex_bind = if let Some(tex) = tex_opt {
+                        &self.gpu.get_texture(tex).bind_group
+                    } else {
+                        &self.gpu.default_white_texture.bind_group
+                    };
+                    render_pass.set_bind_group(1, tex_bind, &[]);
+
+                    let instance_buffer = create_instance_buffer(&self.gpu.device, instances);
+                    render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
+                    render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
+                    render_pass.set_index_buffer(
+                        mesh_gpu.index_buffer.slice(..),
+                        mesh_gpu.index_format,
+                    );
+                    render_pass.draw_indexed(
+                        0..mesh_gpu.num_indices,
+                        0,
+                        0..instances.len() as u32,
+                    );
+                }
+            }
+
+            // 1c. Render Additive Batches
             render_pass.set_pipeline(&self.gpu.additive_render_pipeline);
             render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
             render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
