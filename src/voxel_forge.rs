@@ -110,9 +110,16 @@ impl Chunk {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct VoxelWorld {
     pub chunks: HashMap<(i32, i32), Chunk>,
+    pub min_chunk: [i32; 2],
+    pub max_chunk: [i32; 2],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VoxelWorldData {
+    pub chunks: Vec<Chunk>,
     pub min_chunk: [i32; 2],
     pub max_chunk: [i32; 2],
 }
@@ -192,7 +199,12 @@ impl VoxelWorld {
     }
 
     pub fn save_to_json(&self, path: impl AsRef<Path>) -> Result<(), std::io::Error> {
-        let json = serde_json::to_string(self)
+        let data = VoxelWorldData {
+            chunks: self.chunks.values().cloned().collect(),
+            min_chunk: self.min_chunk,
+            max_chunk: self.max_chunk,
+        };
+        let json = serde_json::to_string(&data)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         if let Some(parent) = path.as_ref().parent() {
             fs::create_dir_all(parent)?;
@@ -201,9 +213,18 @@ impl VoxelWorld {
     }
 
     pub fn load_from_json(path: impl AsRef<Path>) -> Result<Self, std::io::Error> {
-        let data = fs::read_to_string(path)?;
-        serde_json::from_str(&data)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        let text = fs::read_to_string(path)?;
+        let data: VoxelWorldData = serde_json::from_str(&text)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let mut chunks = HashMap::new();
+        for chunk in data.chunks {
+            chunks.insert((chunk.chunk_x, chunk.chunk_z), chunk);
+        }
+        Ok(Self {
+            chunks,
+            min_chunk: data.min_chunk,
+            max_chunk: data.max_chunk,
+        })
     }
 }
 
@@ -1152,5 +1173,166 @@ pub fn sync_active_voxel_world_from_scene(
                 *lock = Some(w);
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_voxel_chunk_indexing_and_block_types() {
+        let mut chunk = Chunk::new(0, 0);
+        assert_eq!(chunk.get(0, 0, 0), BlockId::Air);
+
+        chunk.set(0, 0, 0, BlockId::Bedrock);
+        chunk.set(15, 31, 15, BlockId::Glass);
+        chunk.set(7, 8, 7, BlockId::Water);
+
+        assert_eq!(chunk.get(0, 0, 0), BlockId::Bedrock);
+        assert_eq!(chunk.get(15, 31, 15), BlockId::Glass);
+        assert_eq!(chunk.get(7, 8, 7), BlockId::Water);
+        assert_eq!(chunk.get(8, 8, 8), BlockId::Air);
+
+        assert!(BlockId::Grass.is_solid());
+        assert!(BlockId::Stone.is_opaque());
+        assert!(!BlockId::Air.is_solid());
+        assert!(!BlockId::Water.is_solid());
+        assert!(BlockId::Water.is_translucent());
+        assert!(BlockId::Glass.is_translucent());
+        assert!(BlockId::Leaves.is_cutout());
+    }
+
+    #[test]
+    fn test_voxel_world_multi_chunk() {
+        let mut world = VoxelWorld::new();
+        // Point in chunk (0, 0)
+        world.set_block(15, 5, 15, BlockId::Stone);
+        // Point in neighbor chunk (1, 0)
+        world.set_block(16, 5, 15, BlockId::Dirt);
+        // Point in negative chunk (-1, -1)
+        world.set_block(-1, 5, -1, BlockId::Cobblestone);
+
+        assert_eq!(world.get_block(15, 5, 15), BlockId::Stone);
+        assert_eq!(world.get_block(16, 5, 15), BlockId::Dirt);
+        assert_eq!(world.get_block(-1, 5, -1), BlockId::Cobblestone);
+        assert_eq!(world.get_block(0, 0, 0), BlockId::Air);
+        assert_eq!(world.total_blocks(), 3);
+    }
+
+    #[test]
+    fn test_hidden_face_culling() {
+        let mut world = VoxelWorld::new();
+        // A single isolated block has 6 faces * 2 triangles = 12 triangles (4 indices per quad * 2 = 6 indices * 6 = 36 indices)
+        world.set_block(5, 5, 5, BlockId::Stone);
+        let (opaque1, _) = mesh_voxel_world(&world);
+        assert_eq!(opaque1.positions.len(), 24); // 4 verts * 6 faces
+        assert_eq!(opaque1.indices.len(), 36);   // 6 indices * 6 faces
+
+        // Add 2x2x2 cube (8 blocks): 6 outer faces of 2x2 = 24 quads = 96 verts, 144 indices.
+        // Without culling, 8 * 6 = 48 faces (192 verts, 288 indices).
+        let mut world_cube = VoxelWorld::new();
+        for x in 0..2 {
+            for y in 0..2 {
+                for z in 0..2 {
+                    world_cube.set_block(x, y, z, BlockId::Stone);
+                }
+            }
+        }
+        let (opaque_cube, _) = mesh_voxel_world(&world_cube);
+        // Each of the 6 sides of a 2x2x2 cube has 4 exposed faces = 24 faces
+        assert_eq!(opaque_cube.positions.len(), 96);
+        assert_eq!(opaque_cube.indices.len(), 144);
+    }
+
+    #[test]
+    fn test_vertex_ambient_occlusion() {
+        // Flat face: no side blocks => ao = 1.0
+        let ao_flat = compute_vertex_ao(false, false, false);
+        assert!((ao_flat - 1.0).abs() < 1e-4);
+
+        // One side block => ao = 0.82
+        let ao_one = compute_vertex_ao(true, false, false);
+        assert!((ao_one - 0.82).abs() < 1e-4);
+
+        // Corner block => ao = 0.82
+        let ao_corner = compute_vertex_ao(false, false, true);
+        assert!((ao_corner - 0.82).abs() < 1e-4);
+
+        // Fully enclosed corner: both side1 and side2 solid => ao = 0.46
+        let ao_enclosed = compute_vertex_ao(true, true, true);
+        assert!((ao_enclosed - 0.46).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_dda_raycast() {
+        let mut world = VoxelWorld::new();
+        world.set_block(5, 10, 5, BlockId::Wood);
+
+        // Raycast hitting from -Z direction
+        let hit = voxel_raycast(&world, 5.5, 10.5, 0.0, 0.0, 0.0, 1.0, 20.0);
+        assert!(hit.is_some());
+        let h = hit.unwrap();
+        assert_eq!(h.block_pos, [5, 10, 5]);
+        assert_eq!(h.normal, [0, 0, -1]);
+        assert_eq!(h.block_id, BlockId::Wood as u8);
+        assert!((h.distance - 5.0).abs() < 0.1);
+
+        // Raycast missing target
+        let miss = voxel_raycast(&world, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 20.0);
+        assert!(miss.is_none());
+    }
+
+    #[test]
+    fn test_procedural_generation() {
+        let world = generate_voxel_world(2, 2, 12345, "hills");
+        assert!(world.total_blocks() > 100);
+
+        // Check bedrock at y=0
+        assert_eq!(world.get_block(0, 0, 0), BlockId::Bedrock);
+        assert_eq!(world.get_block(15, 0, 15), BlockId::Bedrock);
+
+        // Meshing world produces valid opaque vertices and indices
+        let (opaque, translucent) = mesh_voxel_world(&world);
+        assert!(opaque.positions.len() > 0);
+        assert!(opaque.indices.len() > 0);
+        assert!(opaque.indices.len() % 3 == 0);
+        let _ = translucent;
+    }
+
+    #[test]
+    fn test_voxel_world_json_persistence() {
+        let mut world = VoxelWorld::new();
+        world.set_block(2, 3, 4, BlockId::Planks);
+        world.set_block(5, 6, 7, BlockId::Glass);
+
+        let temp_path = std::env::temp_dir().join("motor_test_world.voxels.json");
+        world.save_to_json(&temp_path).expect("Failed to save voxels JSON");
+
+        let loaded = VoxelWorld::load_from_json(&temp_path).expect("Failed to load voxels JSON");
+        assert_eq!(loaded.get_block(2, 3, 4), BlockId::Planks);
+        assert_eq!(loaded.get_block(5, 6, 7), BlockId::Glass);
+        assert_eq!(loaded.get_block(0, 0, 0), BlockId::Air);
+
+        let _ = std::fs::remove_file(temp_path);
+    }
+
+    #[test]
+    fn test_atlas_generation() {
+        let temp_atlas = std::env::temp_dir().join("motor_test_atlas.png");
+        let _ = std::fs::remove_file(&temp_atlas);
+
+        ensure_voxel_atlas(&temp_atlas).expect("Atlas generation failed");
+        assert!(temp_atlas.exists());
+
+        let img = image::open(&temp_atlas).expect("Failed to open generated atlas");
+        assert_eq!(img.width(), 64);
+        assert_eq!(img.height(), 64);
+
+        let _ = std::fs::remove_file(temp_atlas);
     }
 }

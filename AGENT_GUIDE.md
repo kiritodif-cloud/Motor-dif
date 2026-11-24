@@ -50,7 +50,7 @@ end
 ```
 Meshes: `"cube"`, `"sphere"`, `"cylinder"`, `"quad"`, `"plane"`, `"torus"`, `"ring"`, `"cone"`, `"icosphere"`, `"basalt_pillar"`, `"jagged_rock"`, `"crystal_cluster"`, `"sci_fi_crate"`, or `"assets/models/*.glb"`.
 Rotation units: Euler angles in RADIANS `[rx, ry, rz]` (e.g. `[0, 1.57, 0]` for 90° yaw).
-Blend modes: `"opaque"`, `"additive"`.
+Blend modes: `"opaque"`, `"translucent"`, `"additive"`.
 Sky modes: `"gradient"`, `"space"`, `"solid"`.
 Physics bodies: `"dynamic"`, `"fixed"`. Colliders: `"cuboid"`, `"ball"`.
 Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
@@ -74,6 +74,7 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `camera_shake(intensity, duration)`, `camera_lerp_to(ex,ey,ez, tx,ty,tz, duration)`
   - `camera_orbit_target(id, distance, pitch_deg, yaw_speed)`
   - `get_mouse_world_pos([plane_y]) -> { x, y, z }`, `get_mouse_delta() -> { dx, dy }`
+  - `set_pointer_lock(enabled: bool)`, `is_pointer_locked() -> bool`
   - `is_key_down(key) -> bool`, `is_key_just_pressed(key) -> bool` (e.g. `"W"`, `"SPACE"`, `"LSHIFT"`)
   - `is_action_down(act) -> bool`, `is_action_just_pressed(act) -> bool`, `bind_action(act, key)`
 - Physics & Raycast:
@@ -124,6 +125,10 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `nav_set_blocked(wx, wz, is_blocked)`, `nav_is_blocked(wx, wz) -> bool`
 - Level Forge:
   - `get_terrain_height(x, z) -> f32`: Evaluates procedural heightmap elevation at world coordinates.
+- Voxel Forge:
+  - `voxel_get_block(x, y, z) -> id: int`, `voxel_set_block(x, y, z, id: int)`: Reads/writes blocks in active voxel world.
+  - `voxel_is_solid(x, y, z) -> bool`: Fast collision check for voxel physics/navigation.
+  - `voxel_raycast(ox, oy, oz, dx, dy, dz, max_dist) -> { hit=bool, x, y, z, nx, ny, nz, id, dist }`: DDA grid raycast for block break/place.
 - AnimationPlayer:
   - `play_anim(entity_id, clip_name, [loop])`: Plays clip from `AnimationPlayer`.
   - `play_preset_anim(entity_id, preset_name, [loop])`: Presets: `"idle_breathe"`, `"walk_bob"`, `"spin_continuous"`.
@@ -173,3 +178,4 @@ MCP Tools Directory:
 - `forge_scatter_props({ recipe, positions })`: Poisson-disc prop scattering (presets: `"basalt_pillar"`, `"jagged_rock"`, `"crystal_cluster"`, `"sci_fi_crate"`, or custom `.glb`).
 - `forge_create_rigged_character({ preset, id_prefix, position })`: Spawns modular rigged character.
 - `forge_spawn_vfx({ preset, recipe, position, attach_to_entity })`: Spawns or attaches procedural VFX emitter.
+- `forge_create_voxel_world({ width_chunks, depth_chunks, seed, terrain_type, name })`: Generates procedural voxel world (16x32x16 chunks) with culling, AO, and pixel atlas.

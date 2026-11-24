@@ -8092,4 +8092,53 @@ mod tests {
         let render_in_edit = !is_playing_edit && debug_colliders;
         assert!(render_in_edit, "Colliders must be visible when returning to edit mode");
     }
+
+    #[test]
+    fn test_pointer_lock_state_management() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = scripting::LuaEngineContext::new(pressed_keys, audio);
+
+        assert!(!ctx.pointer_locked.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(ctx.pointer_lock_command.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // Command lock from Lua
+        ctx.pointer_lock_command.store(1, std::sync::atomic::Ordering::SeqCst);
+        let cmd = ctx.pointer_lock_command.swap(0, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(cmd, 1);
+
+        // Simulating locked state
+        ctx.pointer_locked.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(ctx.pointer_locked.load(std::sync::atomic::Ordering::SeqCst));
+
+        // Command unlock from Lua
+        ctx.pointer_lock_command.store(-1, std::sync::atomic::Ordering::SeqCst);
+        let cmd_unlock = ctx.pointer_lock_command.swap(0, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(cmd_unlock, -1);
+    }
+
+    #[test]
+    fn test_sync_active_voxel_world_from_scene() {
+        let active_world = Arc::new(RwLock::new(None));
+        let scene_json = r#"{
+            "camera": { "mode": "3d", "position": [0, 5, 10], "target": [0, 0, 0], "ortho_size": 10.0 },
+            "entities": [
+                { "id": "voxels", "mesh": "assets/models/test_voxel_model.glb", "position": [0, 0, 0], "color": [1, 1, 1, 1] }
+            ]
+        }"#;
+        let scene: assets::SceneDef = serde_json::from_str(scene_json).unwrap();
+
+        let temp_voxels = Path::new("assets/models/test_voxel_model.voxels.json");
+        let mut world = voxel_forge::VoxelWorld::new();
+        world.set_block(1, 2, 3, voxel_forge::BlockId::Planks);
+        let _ = world.save_to_json(temp_voxels);
+
+        voxel_forge::sync_active_voxel_world_from_scene(&scene, &active_world);
+        let guard = active_world.read().unwrap();
+        assert!(guard.is_some());
+        assert_eq!(guard.as_ref().unwrap().get_block(1, 2, 3), voxel_forge::BlockId::Planks);
+
+        let _ = std::fs::remove_file(temp_voxels);
+    }
 }
