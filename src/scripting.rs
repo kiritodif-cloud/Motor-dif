@@ -138,7 +138,7 @@ pub struct LuaEngineContext {
     pub active_camera: Arc<RwLock<crate::camera::Camera>>,
     pub nav_grid: Arc<RwLock<crate::nav::NavGrid>>,
     pub pending_nav_bake: Arc<Mutex<Option<(f32, f32)>>>,
-    pub active_terrain: Arc<RwLock<Option<crate::level_forge::TerrainRecipe>>>,
+    pub active_terrain: Arc<RwLock<Option<crate::level_forge::TerrainHeightmap>>>,
     pub pending_rig_commands: Arc<Mutex<Vec<RigCommand>>>,
     pub pending_vfx_commands: Arc<Mutex<Vec<VfxCommand>>>,
 }
@@ -1989,8 +1989,8 @@ impl ScriptComponent {
         let get_terrain_height = lua
             .create_function(move |_, (x, z): (f32, f32)| {
                 if let Ok(guard) = terrain_ref.read() {
-                    if let Some(recipe) = guard.as_ref() {
-                        return Ok(crate::level_forge::sample_terrain_height(recipe, x, z));
+                    if let Some(heightmap) = guard.as_ref() {
+                        return Ok(heightmap.sample_world_height(x, z));
                     }
                 }
                 Ok(0.0)
@@ -2863,7 +2863,8 @@ mod tests {
         let mut recipe = crate::level_forge::TerrainRecipe::default();
         recipe.max_height = 8.0;
         recipe.noise_scale = 0.05;
-        *ctx.active_terrain.write().unwrap() = Some(recipe.clone());
+        let heightmap = recipe.to_heightmap();
+        *ctx.active_terrain.write().unwrap() = Some(heightmap.clone());
 
         let test_script_path = "assets/scripts/temp_terrain_test.lua";
         let script_code = r#"
@@ -2878,7 +2879,7 @@ mod tests {
         if let Some(lua_arc) = &comp.lua {
             let lua = lua_arc.lock().unwrap();
             let h: f32 = lua.globals().get("h").unwrap();
-            let expected = crate::level_forge::sample_terrain_height(&recipe, 0.0, 0.0);
+            let expected = heightmap.sample_world_height(0.0, 0.0);
             assert!((h - expected).abs() < 1e-4, "Height mismatch: {} vs {}", h, expected);
         }
 
@@ -2895,7 +2896,7 @@ mod tests {
         let mut recipe = crate::level_forge::TerrainRecipe::default();
         recipe.max_height = 14.0;
         recipe.noise_scale = 0.035;
-        *ctx.active_terrain.write().unwrap() = Some(recipe);
+        *ctx.active_terrain.write().unwrap() = Some(recipe.to_heightmap());
 
         let mut comp = ScriptComponent::new("assets/scripts/terrain_scout.lua".to_string());
         let res = comp.init_or_reload(ctx.clone());

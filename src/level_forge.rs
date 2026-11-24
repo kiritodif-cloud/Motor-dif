@@ -1,4 +1,6 @@
 use std::f32::consts::PI;
+use std::path::Path;
+use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 use crate::modeler::ForgeMesh;
 use crate::texture_forge::fbm_2d;
@@ -285,12 +287,383 @@ impl TerrainRecipe {
         mesh
     }
 
-    /// Exports the terrain mesh to binary glTF 2.0 (.glb)
+    /// Converts this recipe into a regular sampled TerrainHeightmap
+    pub fn to_heightmap(&self) -> TerrainHeightmap {
+        let res = self.resolution.clamp(8, 128);
+        let w = self.width;
+        let d = self.depth;
+        let dx = w / res as f32;
+        let dz = d / res as f32;
+        let num_verts = (res + 1) * (res + 1);
+        let mut heights = Vec::with_capacity(num_verts);
+        let mut min_h = f32::MAX;
+        let mut max_h = f32::MIN;
+
+        for rz in 0..=res {
+            let z = -d * 0.5 + rz as f32 * dz;
+            for rx in 0..=res {
+                let x = -w * 0.5 + rx as f32 * dx;
+                let h = sample_terrain_height(self, x, z);
+                if h < min_h { min_h = h; }
+                if h > max_h { max_h = h; }
+                heights.push(h);
+            }
+        }
+
+        if min_h == f32::MAX { min_h = 0.0; }
+        if max_h == f32::MIN { max_h = 0.0; }
+
+        TerrainHeightmap {
+            width: w,
+            depth: d,
+            resolution: res as u32,
+            heights,
+            min_height: min_h,
+            max_height: max_h,
+            offset: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+            rotation_y: 0.0,
+        }
+    }
+
+    /// Exports the terrain mesh to binary glTF 2.0 (.glb) and saves a .heightmap.json sidecar
     pub fn bake_to_glb(&self, output_path: &str) -> Result<String, String> {
         let mesh = self.build_mesh();
         crate::glb_exporter::export_glb_to_file(&mesh, &self.name, output_path)
             .map_err(|e| e.to_string())?;
+
+        // Automatically write sidecar .heightmap.json
+        let hm = self.to_heightmap();
+        let hm_path = heightmap_path_for_glb(output_path);
+        let _ = hm.save_to_file(&hm_path);
+
         Ok(output_path.to_string())
+    }
+}
+
+/// Helper returning the companion .heightmap.json path for any .glb model
+pub fn heightmap_path_for_glb(glb_path: &str) -> String {
+    let lower = glb_path.to_lowercase();
+    if lower.ends_with(".glb") {
+        let prefix = &glb_path[..glb_path.len() - 4];
+        format!("{}.heightmap.json", prefix)
+    } else {
+        format!("{}.heightmap.json", glb_path)
+    }
+}
+
+fn default_heightmap_scale() -> [f32; 3] {
+    [1.0, 1.0, 1.0]
+}
+
+/// Heightmap data structure providing persistent terrain height sampling
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerrainHeightmap {
+    pub width: f32,
+    pub depth: f32,
+    pub resolution: u32,
+    pub heights: Vec<f32>,
+    #[serde(default)]
+    pub min_height: f32,
+    #[serde(default)]
+    pub max_height: f32,
+    #[serde(default)]
+    pub offset: [f32; 3],
+    #[serde(default = "default_heightmap_scale")]
+    pub scale: [f32; 3],
+    #[serde(default)]
+    pub rotation_y: f32,
+}
+
+impl TerrainHeightmap {
+    /// Bilinearly interpolates terrain height in local space (centered at origin)
+    pub fn sample_local_height(&self, lx: f32, lz: f32) -> f32 {
+        if self.width <= 0.0 || self.depth <= 0.0 || self.resolution == 0 || self.heights.is_empty() {
+            return 0.0;
+        }
+
+        let half_w = self.width * 0.5;
+        let half_d = self.depth * 0.5;
+
+        // Check if outside horizontal terrain bounds
+        if lx < -half_w || lx > half_w || lz < -half_d || lz > half_d {
+            return 0.0;
+        }
+
+        let u = (lx + half_w) / self.width;
+        let v = (lz + half_d) / self.depth;
+
+        let res = self.resolution as f32;
+        let gx = (u * res).clamp(0.0, res);
+        let gz = (v * res).clamp(0.0, res);
+
+        let x0 = (gx.floor() as usize).min(self.resolution as usize);
+        let z0 = (gz.floor() as usize).min(self.resolution as usize);
+        let x1 = (x0 + 1).min(self.resolution as usize);
+        let z1 = (z0 + 1).min(self.resolution as usize);
+
+        let fx = gx - (x0 as f32);
+        let fz = gz - (z0 as f32);
+
+        let row_stride = (self.resolution + 1) as usize;
+
+        let idx00 = z0 * row_stride + x0;
+        let idx10 = z0 * row_stride + x1;
+        let idx01 = z1 * row_stride + x0;
+        let idx11 = z1 * row_stride + x1;
+
+        if idx11 >= self.heights.len() {
+            return 0.0;
+        }
+
+        let h00 = self.heights[idx00];
+        let h10 = self.heights[idx10];
+        let h01 = self.heights[idx01];
+        let h11 = self.heights[idx11];
+
+        let h_top = h00 * (1.0 - fx) + h10 * fx;
+        let h_bot = h01 * (1.0 - fx) + h11 * fx;
+
+        h_top * (1.0 - fz) + h_bot * fz
+    }
+
+    /// Evaluates world height accounting for entity world position, scale, and yaw rotation
+    pub fn sample_world_height(&self, wx: f32, wz: f32) -> f32 {
+        let sx = if self.scale[0].abs() < 1e-5 { 1.0 } else { self.scale[0] };
+        let sy = self.scale[1];
+        let sz = if self.scale[2].abs() < 1e-5 { 1.0 } else { self.scale[2] };
+
+        let mut lx = (wx - self.offset[0]) / sx;
+        let mut lz = (wz - self.offset[2]) / sz;
+
+        if self.rotation_y.abs() > 1e-4 {
+            let rad = -self.rotation_y.to_radians();
+            let cos_r = rad.cos();
+            let sin_r = rad.sin();
+            let rx = lx * cos_r - lz * sin_r;
+            let rz = lx * sin_r + lz * cos_r;
+            lx = rx;
+            lz = rz;
+        }
+
+        let local_h = self.sample_local_height(lx, lz);
+        self.offset[1] + local_h * sy
+    }
+
+    /// Evaluates world surface normal using central differences
+    pub fn sample_world_normal(&self, wx: f32, wz: f32) -> [f32; 3] {
+        let delta = 0.25;
+        let hl = self.sample_world_height(wx - delta, wz);
+        let hr = self.sample_world_height(wx + delta, wz);
+        let hd = self.sample_world_height(wx, wz - delta);
+        let hu = self.sample_world_height(wx, wz + delta);
+
+        let dx = (hr - hl) / (2.0 * delta);
+        let dz = (hu - hd) / (2.0 * delta);
+
+        let len = (dx * dx + 1.0 + dz * dz).sqrt();
+        [-dx / len, 1.0 / len, -dz / len]
+    }
+
+    /// Saves the heightmap as JSON to disk
+    pub fn save_to_file(&self, path: &str) -> Result<(), String> {
+        let json_str = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize TerrainHeightmap: {}", e))?;
+        if let Some(parent) = Path::new(path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(path, json_str)
+            .map_err(|e| format!("Failed to write TerrainHeightmap to '{}': {}", path, e))
+    }
+
+    /// Loads the heightmap from a JSON file
+    pub fn load_from_file(path: &str) -> Result<Self, String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read TerrainHeightmap from '{}': {}", path, e))?;
+        serde_json::from_str::<TerrainHeightmap>(&content)
+            .map_err(|e| format!("Failed to deserialize TerrainHeightmap from '{}': {}", path, e))
+    }
+
+    /// Reconstructs a TerrainHeightmap from a 3D binary GLB mesh
+    pub fn from_glb_file(glb_path: &str) -> Result<Self, String> {
+        let p = Path::new(glb_path);
+        let (document, buffers, _) = gltf::import(p)
+            .map_err(|e| format!("Failed to import GLB '{}': {}", glb_path, e))?;
+
+        let mut positions: Vec<[f32; 3]> = Vec::new();
+        for mesh in document.meshes() {
+            for primitive in mesh.primitives() {
+                let reader = primitive.reader(|b| Some(&buffers[b.index()]));
+                if let Some(pos_iter) = reader.read_positions() {
+                    positions.extend(pos_iter);
+                }
+            }
+        }
+
+        if positions.is_empty() {
+            return Err(format!("No vertex positions found in GLB '{}'", glb_path));
+        }
+
+        let mut min_x = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut min_y = f32::MAX;
+        let mut max_y = f32::MIN;
+        let mut min_z = f32::MAX;
+        let mut max_z = f32::MIN;
+
+        for pt in &positions {
+            min_x = min_x.min(pt[0]);
+            max_x = max_x.max(pt[0]);
+            min_y = min_y.min(pt[1]);
+            max_y = max_y.max(pt[1]);
+            min_z = min_z.min(pt[2]);
+            max_z = max_z.max(pt[2]);
+        }
+
+        let width = (max_x - min_x).max(1.0);
+        let depth = (max_z - min_z).max(1.0);
+        let res: u32 = 48;
+        let num_verts = ((res + 1) * (res + 1)) as usize;
+
+        let mut grid_heights: Vec<Option<f32>> = vec![None; num_verts];
+
+        // Bin vertices into grid cells (keeping highest point for terrain surface)
+        for pt in &positions {
+            let u = ((pt[0] - min_x) / width).clamp(0.0, 1.0);
+            let v = ((pt[2] - min_z) / depth).clamp(0.0, 1.0);
+
+            let rx = (u * (res as f32)).round() as usize;
+            let rz = (v * (res as f32)).round() as usize;
+            let idx = rz.min(res as usize) * ((res + 1) as usize) + rx.min(res as usize);
+
+            match grid_heights[idx] {
+                Some(prev_h) => {
+                    if pt[1] > prev_h {
+                        grid_heights[idx] = Some(pt[1]);
+                    }
+                }
+                None => {
+                    grid_heights[idx] = Some(pt[1]);
+                }
+            }
+        }
+
+        // Fill missing cells from nearest populated cell
+        let mut final_heights = Vec::with_capacity(num_verts);
+        let row_stride = (res + 1) as usize;
+
+        for rz in 0..=res as usize {
+            for rx in 0..=res as usize {
+                let idx = rz * row_stride + rx;
+                if let Some(h) = grid_heights[idx] {
+                    final_heights.push(h);
+                } else {
+                    let mut closest_h = 0.0;
+                    let mut min_dist_sq = usize::MAX;
+                    for rad in 1..=16 {
+                        let rz_min = rz.saturating_sub(rad);
+                        let rz_max = (rz + rad).min(res as usize);
+                        let rx_min = rx.saturating_sub(rad);
+                        let rx_max = (rx + rad).min(res as usize);
+
+                        for nz in rz_min..=rz_max {
+                            for nx in rx_min..=rx_max {
+                                let n_idx = nz * row_stride + nx;
+                                if let Some(h) = grid_heights[n_idx] {
+                                    let dz = nz.abs_diff(rz);
+                                    let dx = nx.abs_diff(rx);
+                                    let d_sq = dx * dx + dz * dz;
+                                    if d_sq < min_dist_sq {
+                                        min_dist_sq = d_sq;
+                                        closest_h = h;
+                                    }
+                                }
+                            }
+                        }
+                        if min_dist_sq < usize::MAX {
+                            break;
+                        }
+                    }
+                    final_heights.push(closest_h);
+                }
+            }
+        }
+
+        let hm = TerrainHeightmap {
+            width,
+            depth,
+            resolution: res,
+            heights: final_heights,
+            min_height: min_y,
+            max_height: max_y,
+            offset: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+            rotation_y: 0.0,
+        };
+
+        Ok(hm)
+    }
+
+    /// Loads sidecar .heightmap.json if it exists, or reconstructs from the .glb and caches the sidecar
+    pub fn load_or_reconstruct(glb_path: &str) -> Result<Self, String> {
+        let hm_path = heightmap_path_for_glb(glb_path);
+        if Path::new(&hm_path).exists() {
+            if let Ok(hm) = Self::load_from_file(&hm_path) {
+                return Ok(hm);
+            }
+        }
+
+        if Path::new(glb_path).exists() {
+            let hm = Self::from_glb_file(glb_path)?;
+            let _ = hm.save_to_file(&hm_path);
+            return Ok(hm);
+        }
+
+        Err(format!("Terrain model not found: neither '{}' nor '{}' exist", hm_path, glb_path))
+    }
+}
+
+/// Detects and loads active terrain heightmap from scene entities
+pub fn sync_active_terrain_from_scene(
+    scene: &crate::assets::SceneDef,
+    active_terrain: &Arc<RwLock<Option<TerrainHeightmap>>>,
+) {
+    let mut found_terrain = None;
+
+    for entity in &scene.entities {
+        let mesh = &entity.mesh;
+        let id = &entity.id;
+
+        let hm_path = heightmap_path_for_glb(mesh);
+        let has_sidecar = Path::new(&hm_path).exists();
+        let mesh_lower = mesh.to_lowercase();
+        let id_lower = id.to_lowercase();
+        let is_glb = mesh_lower.ends_with(".glb");
+        let name_match = mesh_lower.contains("terrain") || mesh_lower.contains("arena")
+            || id_lower.contains("terrain") || id_lower.contains("arena");
+
+        if is_glb && (has_sidecar || name_match) {
+            match TerrainHeightmap::load_or_reconstruct(mesh) {
+                Ok(mut hm) => {
+                    hm.offset = entity.position;
+                    hm.scale = entity.scale;
+                    hm.rotation_y = entity.rotation[1];
+                    println!(
+                        "[Level Forge] Loaded active terrain heightmap from '{}' for entity '{}' (pos: {:?}, scale: {:?})",
+                        mesh, id, entity.position, entity.scale
+                    );
+                    found_terrain = Some(hm);
+                    break;
+                }
+                Err(e) => {
+                    eprintln!("[Level Forge] Could not load/reconstruct terrain from '{}': {}", mesh, e);
+                }
+            }
+        }
+    }
+
+    if let Ok(mut guard) = active_terrain.write() {
+        *guard = found_terrain;
     }
 }
 
@@ -627,7 +1000,7 @@ pub struct ScatterInstance {
 
 pub fn generate_scatter_instances(
     recipe: &ScatterRecipe,
-    terrain: Option<&TerrainRecipe>,
+    terrain: Option<&TerrainHeightmap>,
 ) -> Vec<ScatterInstance> {
     let mut rng = SimpleRng::new(recipe.seed);
     let mut instances: Vec<ScatterInstance> = Vec::new();
@@ -662,8 +1035,8 @@ pub fn generate_scatter_instances(
 
         // 2. Terrain height and slope check
         let (y, slope_deg) = if let Some(t) = terrain {
-            let h = sample_terrain_height(t, x, z);
-            let n = sample_terrain_normal(t, x, z);
+            let h = t.sample_world_height(x, z);
+            let n = t.sample_world_normal(x, z);
             // Slope in degrees from vertical (Y=1 is 0 degrees slope)
             let cos_theta = n[1].clamp(0.0, 1.0);
             let s_deg = cos_theta.acos() * (180.0 / PI);
@@ -707,6 +1080,15 @@ pub fn generate_scatter_instances(
     }
 
     instances
+}
+
+/// Convenience helper to generate scatter props directly from a TerrainRecipe
+pub fn generate_scatter_instances_from_recipe(
+    recipe: &ScatterRecipe,
+    terrain: Option<&TerrainRecipe>,
+) -> Vec<ScatterInstance> {
+    let hm = terrain.map(|t| t.to_heightmap());
+    generate_scatter_instances(recipe, hm.as_ref())
 }
 
 
@@ -783,6 +1165,30 @@ pub mod tests {
     }
 
     #[test]
+    fn test_bake_volcanic_terrain_glb() {
+        let recipe = TerrainRecipe {
+            name: "terrain_volcanic".to_string(),
+            width: 80.0,
+            depth: 80.0,
+            resolution: 48,
+            max_height: 10.0,
+            noise_scale: 0.04,
+            octaves: 4,
+            seed: 666,
+            island_falloff: true,
+            flat_shading: false,
+            palette: "volcanic".to_string(),
+        };
+
+        let path = "assets/models/terrain_volcanic.glb";
+        let res = recipe.bake_to_glb(path);
+        assert!(res.is_ok(), "Bake failed: {:?}", res.err());
+        assert!(std::path::Path::new(path).exists());
+        let hm_path = heightmap_path_for_glb(path);
+        assert!(std::path::Path::new(&hm_path).exists());
+    }
+
+    #[test]
     fn test_dungeon_generation_and_connectivity() {
         let recipe = DungeonRecipe {
             name: "test_dungeon".to_string(),
@@ -834,7 +1240,7 @@ pub mod tests {
             seed: 888,
         };
 
-        let instances = generate_scatter_instances(&recipe, Some(&terrain));
+        let instances = generate_scatter_instances_from_recipe(&recipe, Some(&terrain));
         assert!(!instances.is_empty(), "Should generate scatter instances");
         assert!(instances.len() <= recipe.count);
 
@@ -849,10 +1255,13 @@ pub mod tests {
             }
         }
 
-        // Verify y coordinates correspond to terrain
+        // Verify y coordinates correspond to terrain heightmap
+        let hm = terrain.to_heightmap();
         for inst in &instances {
-            let h = sample_terrain_height(&terrain, inst.position[0], inst.position[2]);
-            assert!((inst.position[1] - h).abs() < 1e-4);
+            let h = hm.sample_world_height(inst.position[0], inst.position[2]);
+            assert!((inst.position[1] - h).abs() < 1e-4, "Height mismatch against heightmap: {} vs {}", inst.position[1], h);
+            let h_fbm = sample_terrain_height(&terrain, inst.position[0], inst.position[2]);
+            assert!((inst.position[1] - h_fbm).abs() < 1.0, "Height mismatch against fbm: {} vs {}", inst.position[1], h_fbm);
         }
     }
 
@@ -885,7 +1294,7 @@ pub mod tests {
             seed: 777,
         };
 
-        let instances = generate_scatter_instances(&scatter_recipe, Some(&terrain_recipe));
+        let instances = generate_scatter_instances_from_recipe(&scatter_recipe, Some(&terrain_recipe));
         assert!(!instances.is_empty());
 
         let mut entities = Vec::new();
@@ -1022,5 +1431,104 @@ pub mod tests {
 
         let volcanic_ground = evaluate_terrain_color("volcanic", 0.5, 0.1);
         assert_eq!(volcanic_ground, [0.09, 0.09, 0.11, 1.0]); // Deep basalt ground
+    }
+
+    #[test]
+    fn test_terrain_heightmap_sidecar_serialization_roundtrip() {
+        let mut recipe = TerrainRecipe::default();
+        recipe.width = 80.0;
+        recipe.depth = 80.0;
+        recipe.resolution = 32;
+        recipe.max_height = 12.0;
+        recipe.noise_scale = 0.04;
+        recipe.octaves = 3;
+        recipe.seed = 555;
+
+        let hm = recipe.to_heightmap();
+        let temp_hm_path = "assets/models/temp_test_terrain.heightmap.json";
+
+        let save_res = hm.save_to_file(temp_hm_path);
+        assert!(save_res.is_ok(), "Failed to save heightmap: {:?}", save_res.err());
+        assert!(Path::new(temp_hm_path).exists());
+
+        let loaded = TerrainHeightmap::load_from_file(temp_hm_path).expect("Failed to load heightmap");
+        assert_eq!(loaded.width, hm.width);
+        assert_eq!(loaded.depth, hm.depth);
+        assert_eq!(loaded.resolution, hm.resolution);
+        assert_eq!(loaded.heights.len(), hm.heights.len());
+
+        // Check sampling accuracy
+        let test_points = [(0.0, 0.0), (12.0, -18.0), (-25.0, 15.0), (35.0, 35.0)];
+        for (x, z) in test_points {
+            let h_orig = hm.sample_local_height(x, z);
+            let h_load = loaded.sample_local_height(x, z);
+            assert!((h_orig - h_load).abs() < 1e-5, "Mismatch at ({}, {}): orig={} loaded={}", x, z, h_orig, h_load);
+        }
+
+        let _ = std::fs::remove_file(temp_hm_path);
+    }
+
+    #[test]
+    fn test_terrain_heightmap_glb_fallback_reconstruction() {
+        let mut recipe = TerrainRecipe::default();
+        recipe.name = "test_reconstruction".to_string();
+        recipe.width = 60.0;
+        recipe.depth = 60.0;
+        recipe.resolution = 24;
+        recipe.max_height = 10.0;
+        recipe.seed = 321;
+
+        let temp_glb = "assets/models/temp_reconstruct_test.glb";
+        let temp_hm = "assets/models/temp_reconstruct_test.heightmap.json";
+
+        // 1. Bake terrain GLB (which also writes sidecar)
+        let bake_res = recipe.bake_to_glb(temp_glb);
+        assert!(bake_res.is_ok());
+        assert!(Path::new(temp_glb).exists());
+        assert!(Path::new(temp_hm).exists());
+
+        // 2. Delete sidecar to test GLB fallback reconstruction
+        let _ = std::fs::remove_file(temp_hm);
+        assert!(!Path::new(temp_hm).exists(), "Sidecar should be deleted");
+
+        // 3. Load or reconstruct: must parse GLB and recreate the sidecar
+        let reconstructed = TerrainHeightmap::load_or_reconstruct(temp_glb)
+            .expect("Fallback reconstruction from GLB failed");
+
+        assert!(Path::new(temp_hm).exists(), "Sidecar should be automatically cached upon reconstruction");
+        assert!(reconstructed.heights.len() > 0);
+
+        // Verify height at center is reasonably close to recipe height
+        let h_recipe = sample_terrain_height(&recipe, 0.0, 0.0);
+        let h_recon = reconstructed.sample_local_height(0.0, 0.0);
+        assert!((h_recipe - h_recon).abs() < 1.0, "Reconstructed height mismatch: recipe={} recon={}", h_recipe, h_recon);
+
+        // Cleanup
+        let _ = std::fs::remove_file(temp_glb);
+        let _ = std::fs::remove_file(temp_hm);
+    }
+
+    #[test]
+    fn test_terrain_heightmap_world_transform_and_rotation() {
+        let mut recipe = TerrainRecipe::default();
+        recipe.width = 50.0;
+        recipe.depth = 50.0;
+        recipe.resolution = 20;
+        recipe.max_height = 8.0;
+
+        let mut hm = recipe.to_heightmap();
+        hm.offset = [10.0, 5.0, -20.0];
+        hm.scale = [2.0, 1.5, 2.0];
+
+        // At entity origin (world x=10, z=-20), local coordinates are (0, 0)
+        let local_center_h = hm.sample_local_height(0.0, 0.0);
+        let world_h = hm.sample_world_height(10.0, -20.0);
+        let expected_world_h = 5.0 + local_center_h * 1.5;
+        assert!((world_h - expected_world_h).abs() < 1e-4, "World height at center mismatch: {} vs {}", world_h, expected_world_h);
+
+        // Test normal is normalized
+        let normal = hm.sample_world_normal(10.0, -20.0);
+        let len = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+        assert!((len - 1.0).abs() < 1e-3, "Normal is not normalized: length = {}", len);
     }
 }

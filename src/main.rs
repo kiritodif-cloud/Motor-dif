@@ -408,6 +408,7 @@ impl EngineState {
                 }
                 let ctx_opt = if is_standalone_play { Some(&lua_ctx) } else { None };
                 assets::apply_scene_to_world(&scene, &mut world, &mut camera, &mut physics, ctx_opt);
+                crate::level_forge::sync_active_terrain_from_scene(&scene, &lua_ctx.active_terrain);
                 logs.push(format!("Scene loaded from '{}' ({} entities)", initial_scene_path, world.len()));
             }
             Err(e) => {
@@ -629,6 +630,7 @@ impl EngineState {
         match assets::load_scene_from_file(&path) {
             Ok(scene) => {
                 assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, ctx_opt);
+                crate::level_forge::sync_active_terrain_from_scene(&scene, &self.lua_ctx.active_terrain);
                 if let Some(pp) = &scene.post_process {
                     self.post_process_settings = pp.clone();
                     if let Ok(mut lock) = self.lua_ctx.post_process_settings.write() {
@@ -690,6 +692,7 @@ impl EngineState {
             None
         };
         assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, ctx_opt);
+        crate::level_forge::sync_active_terrain_from_scene(&scene, &self.lua_ctx.active_terrain);
 
         // 5. Apply post-process and environment settings
         if let Some(pp) = &scene.post_process {
@@ -741,6 +744,7 @@ impl EngineState {
     pub fn stop_simulation(&mut self) {
         if let Some(snapshot) = self.play_snapshot.take() {
             assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, None);
+            crate::level_forge::sync_active_terrain_from_scene(&snapshot, &self.lua_ctx.active_terrain);
             self.logs.push("Simulation stopped. Scene restored to initial snapshot.".to_string());
             self.add_toast("Simulation stopped & restored", egui::Color32::from_rgb(239, 68, 68));
         }
@@ -911,7 +915,7 @@ impl EngineState {
 
         // Update active terrain in lua_ctx for runtime queries
         if let Ok(mut guard) = self.lua_ctx.active_terrain.write() {
-            *guard = Some(recipe.clone());
+            *guard = Some(recipe.to_heightmap());
         }
 
         if insert_in_scene {
@@ -1148,9 +1152,9 @@ impl EngineState {
     pub fn generate_and_insert_scatter(
         &mut self,
         recipe: &crate::level_forge::ScatterRecipe,
-        terrain_recipe: Option<&crate::level_forge::TerrainRecipe>,
+        terrain_heightmap: Option<&crate::level_forge::TerrainHeightmap>,
     ) -> Vec<crate::level_forge::ScatterInstance> {
-        let instances = crate::level_forge::generate_scatter_instances(recipe, terrain_recipe);
+        let instances = crate::level_forge::generate_scatter_instances(recipe, terrain_heightmap);
 
         if !instances.is_empty() {
             self.push_history();
@@ -2368,7 +2372,8 @@ impl EngineState {
                 }
                 McpCommand::ForgeScatterProps { recipe, terrain_recipe, respond_to } => {
                     let active_terrain_opt = self.lua_ctx.active_terrain.read().ok().and_then(|g| g.clone());
-                    let resolved_terrain = terrain_recipe.as_ref().or(active_terrain_opt.as_ref());
+                    let hm_from_recipe = terrain_recipe.as_ref().map(|r| r.to_heightmap());
+                    let resolved_terrain = hm_from_recipe.as_ref().or(active_terrain_opt.as_ref());
 
                     let instances = self.generate_and_insert_scatter(&recipe, resolved_terrain);
                     let positions: Vec<[f32; 3]> = instances.iter().map(|i| i.position).collect();
@@ -3160,6 +3165,7 @@ impl EngineState {
                     self.particles.clear();
                     self.selected_entity = None;
                     assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
+                    crate::level_forge::sync_active_terrain_from_scene(&scene, &self.lua_ctx.active_terrain);
                     let msg = format!("Scene transitioned to '{}'", scene_file);
                     self.logs.push(msg);
                 }
@@ -6897,6 +6903,9 @@ impl EngineState {
             self.particles.clear();
             self.selected_entity = None;
             self.lua_ctx.clear_timers_and_events();
+            if let Ok(mut guard) = self.lua_ctx.active_terrain.write() {
+                *guard = None;
+            }
             if let Ok(mut audio) = self.audio.lock() {
                 audio.stop_music();
             }
@@ -6924,6 +6933,7 @@ impl EngineState {
                         None
                     };
                     assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, ctx_opt);
+                    crate::level_forge::sync_active_terrain_from_scene(&scene, &self.lua_ctx.active_terrain);
                     if let Some(env) = &scene.environment {
                         self.environment_settings = env.clone();
                     }
@@ -7682,5 +7692,31 @@ mod tests {
     fn test_resolve_workspace_root() {
         let root = resolve_workspace_root();
         assert!(root.join("assets").is_dir(), "Resolved root must have assets directory");
+    }
+
+    #[test]
+    fn test_sync_active_terrain_from_scene() {
+        let scene_path = Path::new("assets/showcase_v18_terrain.json");
+        if scene_path.exists() {
+            let scene = assets::load_scene_from_file(scene_path).expect("Failed to load showcase_v18_terrain.json");
+            let active_terrain = Arc::new(RwLock::new(None));
+
+            crate::level_forge::sync_active_terrain_from_scene(&scene, &active_terrain);
+
+            let guard = active_terrain.read().unwrap();
+            assert!(guard.is_some(), "Expected active terrain to be populated from showcase_v18_terrain.json");
+
+            let hm = guard.as_ref().unwrap();
+            assert!(hm.width > 0.0);
+            assert!(hm.depth > 0.0);
+            assert!(!hm.heights.is_empty());
+
+            let center_h = hm.sample_world_height(0.0, 0.0);
+            assert!(!center_h.is_nan(), "Height at center must not be NaN");
+
+            // Verify sidecar was created if not previously present
+            let hm_path = crate::level_forge::heightmap_path_for_glb("assets/models/terrain_demo.glb");
+            assert!(Path::new(&hm_path).exists(), "Companion .heightmap.json must exist after sync");
+        }
     }
 }
