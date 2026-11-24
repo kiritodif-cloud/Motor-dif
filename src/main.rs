@@ -3575,13 +3575,26 @@ impl EngineState {
             };
             for cmd in pending_anims {
                 match cmd {
-                    scripting::AnimationCommand::Play { entity_id, clip_name, looping } => {
+                    scripting::AnimationCommand::Play { entity_id, clip_name, looping, blend_duration } => {
                         for entity_ref in self.world.iter() {
                             if let Some(meta) = entity_ref.get::<&EntityMeta>() {
                                 if meta.id == entity_id {
                                     let e = entity_ref.entity();
                                     if let Ok(mut player) = self.world.get::<&mut crate::animation::AnimationPlayer>(e) {
-                                        player.play(&clip_name, looping);
+                                        player.play_with_blend(&clip_name, looping, blend_duration);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    scripting::AnimationCommand::SetSpeed { entity_id, speed } => {
+                        for entity_ref in self.world.iter() {
+                            if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                                if meta.id == entity_id {
+                                    let e = entity_ref.entity();
+                                    if let Ok(mut player) = self.world.get::<&mut crate::animation::AnimationPlayer>(e) {
+                                        player.speed = speed;
                                     }
                                     break;
                                 }

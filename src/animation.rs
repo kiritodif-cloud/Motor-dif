@@ -207,6 +207,16 @@ pub struct AnimationPlayer {
     pub looping: bool,
     #[serde(default = "default_true")]
     pub playing: bool,
+
+    // Crossfade blending state
+    #[serde(skip)]
+    pub previous_clip: Option<String>,
+    #[serde(skip)]
+    pub previous_time: f32,
+    #[serde(skip)]
+    pub blend_duration: f32,
+    #[serde(skip)]
+    pub blend_elapsed: f32,
 }
 
 fn default_speed() -> f32 {
@@ -225,7 +235,71 @@ impl Default for AnimationPlayer {
             speed: 1.0,
             looping: true,
             playing: true,
+            previous_clip: None,
+            previous_time: 0.0,
+            blend_duration: 0.0,
+            blend_elapsed: 0.0,
         }
+    }
+}
+
+pub fn blend_states(a: &InterpolatedState, b: &InterpolatedState, factor: f32) -> InterpolatedState {
+    let f = factor.clamp(0.0, 1.0);
+    let inv_f = 1.0 - f;
+
+    let position = match (a.position, b.position) {
+        (Some(p1), Some(p2)) => Some([
+            p1[0] * inv_f + p2[0] * f,
+            p1[1] * inv_f + p2[1] * f,
+            p1[2] * inv_f + p2[2] * f,
+        ]),
+        (Some(p), None) | (None, Some(p)) => Some(p),
+        (None, None) => None,
+    };
+
+    let rotation = match (a.rotation, b.rotation) {
+        (Some(r1), Some(r2)) => Some([
+            r1[0] * inv_f + r2[0] * f,
+            r1[1] * inv_f + r2[1] * f,
+            r1[2] * inv_f + r2[2] * f,
+        ]),
+        (Some(r), None) | (None, Some(r)) => Some(r),
+        (None, None) => None,
+    };
+
+    let scale = match (a.scale, b.scale) {
+        (Some(s1), Some(s2)) => Some([
+            s1[0] * inv_f + s2[0] * f,
+            s1[1] * inv_f + s2[1] * f,
+            s1[2] * inv_f + s2[2] * f,
+        ]),
+        (Some(s), None) | (None, Some(s)) => Some(s),
+        (None, None) => None,
+    };
+
+    let color = match (a.color, b.color) {
+        (Some(c1), Some(c2)) => Some([
+            c1[0] * inv_f + c2[0] * f,
+            c1[1] * inv_f + c2[1] * f,
+            c1[2] * inv_f + c2[2] * f,
+            c1[3] * inv_f + c2[3] * f,
+        ]),
+        (Some(c), None) | (None, Some(c)) => Some(c),
+        (None, None) => None,
+    };
+
+    let emissive = match (a.emissive, b.emissive) {
+        (Some(e1), Some(e2)) => Some(e1 * inv_f + e2 * f),
+        (Some(e), None) | (None, Some(e)) => Some(e),
+        (None, None) => None,
+    };
+
+    InterpolatedState {
+        position,
+        rotation,
+        scale,
+        color,
+        emissive,
     }
 }
 
@@ -243,7 +317,21 @@ impl AnimationPlayer {
     }
 
     pub fn play(&mut self, clip_name: &str, looping: bool) -> bool {
+        self.play_with_blend(clip_name, looping, 0.0)
+    }
+
+    pub fn play_with_blend(&mut self, clip_name: &str, looping: bool, blend_duration: f32) -> bool {
         if self.animations.contains_key(clip_name) {
+            if blend_duration > 0.0 && self.playing && self.active_clip.is_some() {
+                self.previous_clip = self.active_clip.clone();
+                self.previous_time = self.current_time;
+                self.blend_duration = blend_duration;
+                self.blend_elapsed = 0.0;
+            } else {
+                self.previous_clip = None;
+                self.blend_duration = 0.0;
+                self.blend_elapsed = 0.0;
+            }
             self.active_clip = Some(clip_name.to_string());
             self.looping = looping;
             self.playing = true;
@@ -257,6 +345,7 @@ impl AnimationPlayer {
     pub fn stop(&mut self) {
         self.playing = false;
         self.current_time = 0.0;
+        self.previous_clip = None;
     }
 
     pub fn pause(&mut self) {
@@ -308,7 +397,41 @@ impl AnimationPlayer {
             }
         }
 
-        Some(clip.sample(self.current_time))
+        let mut target_state = clip.sample(self.current_time);
+
+        // Linear crossfade blending if active
+        if self.blend_duration > 0.0 && self.blend_elapsed < self.blend_duration {
+            if let Some(prev_name) = &self.previous_clip {
+                if let Some(prev_clip) = self.animations.get(prev_name) {
+                    let prev_duration = prev_clip.duration.max(0.001);
+                    self.previous_time += dt * self.speed;
+                    if self.previous_time >= prev_duration {
+                        self.previous_time %= prev_duration;
+                    }
+                    let prev_state = prev_clip.sample(self.previous_time);
+                    self.blend_elapsed += dt;
+                    let factor = (self.blend_elapsed / self.blend_duration).clamp(0.0, 1.0);
+
+                    target_state = blend_states(&prev_state, &target_state, factor);
+                    if self.blend_elapsed >= self.blend_duration {
+                        self.previous_clip = None;
+                    }
+                }
+            }
+        } else {
+            self.previous_clip = None;
+        }
+
+        Some(target_state)
+    }
+
+    pub fn attach_gltf_animations(&mut self, path: impl AsRef<std::path::Path>) -> Result<usize, String> {
+        let loaded = load_gltf_clips(path)?;
+        let count = loaded.len();
+        for (_name, clip) in loaded {
+            self.add_clip(clip);
+        }
+        Ok(count)
     }
 
     pub fn capture_keyframe(
@@ -490,6 +613,109 @@ pub fn create_preset_clip(preset_name: &str) -> Option<AnimationClip> {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GltfSkinData {
+    pub name: String,
+    pub joints: Vec<usize>,
+    pub inverse_bind_matrices: Vec<[[f32; 4]; 4]>,
+}
+
+pub fn load_gltf_skins(path: impl AsRef<std::path::Path>) -> Result<Vec<GltfSkinData>, String> {
+    let p = path.as_ref();
+    let (document, buffers, _) = gltf::import(p)
+        .map_err(|e| format!("Failed to import glTF '{}': {}", p.display(), e))?;
+
+    let mut skins = Vec::new();
+    for skin in document.skins() {
+        let name = skin.name().unwrap_or("default_skin").to_string();
+        let reader = skin.reader(|buffer| Some(&buffers[buffer.index()]));
+        let ibms: Vec<[[f32; 4]; 4]> = if let Some(iter) = reader.read_inverse_bind_matrices() {
+            iter.collect()
+        } else {
+            Vec::new()
+        };
+        let joints: Vec<usize> = skin.joints().map(|j| j.index()).collect();
+        skins.push(GltfSkinData {
+            name,
+            joints,
+            inverse_bind_matrices: ibms,
+        });
+    }
+    Ok(skins)
+}
+
+pub fn load_gltf_clips(path: impl AsRef<std::path::Path>) -> Result<HashMap<String, AnimationClip>, String> {
+    let p = path.as_ref();
+    let (document, buffers, _) = gltf::import(p)
+        .map_err(|e| format!("Failed to import glTF '{}': {}", p.display(), e))?;
+
+    let mut clips = HashMap::new();
+    for anim in document.animations() {
+        let anim_name = anim.name().unwrap_or("default").to_string();
+        let mut clip = AnimationClip::new(&anim_name, 0.0);
+
+        for channel in anim.channels() {
+            let reader = channel.reader(|buffer| Some(&buffers[buffer.index()]));
+            let inputs: Vec<f32> = if let Some(inputs) = reader.read_inputs() {
+                inputs.collect()
+            } else {
+                continue;
+            };
+
+            for &t in &inputs {
+                if t > clip.duration {
+                    clip.duration = t;
+                }
+            }
+
+            match reader.read_outputs() {
+                Some(gltf::animation::util::ReadOutputs::Translations(trans)) => {
+                    for (time, pos) in inputs.iter().zip(trans) {
+                        clip.add_keyframe(Keyframe {
+                            time: *time,
+                            position: Some(pos),
+                            rotation: None,
+                            scale: None,
+                            color: None,
+                            emissive: None,
+                        });
+                    }
+                }
+                Some(gltf::animation::util::ReadOutputs::Rotations(rotations)) => {
+                    let quats: Vec<[f32; 4]> = rotations.into_f32().collect();
+                    for (time, q) in inputs.iter().zip(quats) {
+                        let quat = glam::Quat::from_array(q);
+                        let (rx, ry, rz) = quat.to_euler(glam::EulerRot::XYZ);
+                        clip.add_keyframe(Keyframe {
+                            time: *time,
+                            position: None,
+                            rotation: Some([rx, ry, rz]),
+                            scale: None,
+                            color: None,
+                            emissive: None,
+                        });
+                    }
+                }
+                Some(gltf::animation::util::ReadOutputs::Scales(scales)) => {
+                    for (time, s) in inputs.iter().zip(scales) {
+                        clip.add_keyframe(Keyframe {
+                            time: *time,
+                            position: None,
+                            rotation: None,
+                            scale: Some(s),
+                            color: None,
+                            emissive: None,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        clips.insert(anim_name, clip);
+    }
+    Ok(clips)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,5 +815,72 @@ mod tests {
         let s = player.update(0.4).unwrap();
         assert_eq!(s.scale, Some([1.25, 1.25, 1.25]));
         assert_eq!(s.emissive, Some(2.0));
+    }
+
+    #[test]
+    fn test_animation_crossfade_blending() {
+        let mut clip_a = AnimationClip::new("clip_a", 2.0);
+        clip_a.add_keyframe(Keyframe {
+            time: 0.0,
+            position: Some([0.0, 0.0, 0.0]),
+            rotation: None,
+            scale: None,
+            color: None,
+            emissive: None,
+        });
+        clip_a.add_keyframe(Keyframe {
+            time: 2.0,
+            position: Some([0.0, 0.0, 0.0]),
+            rotation: None,
+            scale: None,
+            color: None,
+            emissive: None,
+        });
+
+        let mut clip_b = AnimationClip::new("clip_b", 2.0);
+        clip_b.add_keyframe(Keyframe {
+            time: 0.0,
+            position: Some([10.0, 20.0, 30.0]),
+            rotation: None,
+            scale: None,
+            color: None,
+            emissive: None,
+        });
+        clip_b.add_keyframe(Keyframe {
+            time: 2.0,
+            position: Some([10.0, 20.0, 30.0]),
+            rotation: None,
+            scale: None,
+            color: None,
+            emissive: None,
+        });
+
+        let mut player = AnimationPlayer::new();
+        player.add_clip(clip_a);
+        player.add_clip(clip_b);
+
+        // Start playing A
+        player.play("clip_a", true);
+        let _ = player.update(0.1);
+
+        // Crossfade to B over 1.0s
+        player.play_with_blend("clip_b", true, 1.0);
+        assert_eq!(player.previous_clip.as_deref(), Some("clip_a"));
+        assert_eq!(player.active_clip.as_deref(), Some("clip_b"));
+
+        // Halfway through blend (0.5s): position should be exactly 50% between A and B
+        let mid = player.update(0.5).unwrap();
+        let pos = mid.position.unwrap();
+        assert!((pos[0] - 5.0).abs() < 0.01);
+        assert!((pos[1] - 10.0).abs() < 0.01);
+        assert!((pos[2] - 15.0).abs() < 0.01);
+
+        // Complete the blend (another 0.5s): should be 100% B
+        let end = player.update(0.5).unwrap();
+        let end_pos = end.position.unwrap();
+        assert!((end_pos[0] - 10.0).abs() < 0.01);
+        assert!((end_pos[1] - 20.0).abs() < 0.01);
+        assert!((end_pos[2] - 30.0).abs() < 0.01);
+        assert_eq!(player.previous_clip, None);
     }
 }

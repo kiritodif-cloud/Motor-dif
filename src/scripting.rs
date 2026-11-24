@@ -219,9 +219,14 @@ pub enum AnimationCommand {
         entity_id: String,
         clip_name: String,
         looping: bool,
+        blend_duration: f32,
     },
     Stop {
         entity_id: String,
+    },
+    SetSpeed {
+        entity_id: String,
+        speed: f32,
     },
     PlayPreset {
         entity_id: String,
@@ -803,13 +808,13 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register bake_music: {}", e))?;
         lua.globals().set("bake_music", bake_music).map_err(|e| e.to_string())?;
 
-        // 10b. play_sound_3d(path, x, y, z, max_dist, [volume], [bus])
+        // 10b. play_sound_3d(path, x, y, z, max_dist, [volume], [bus], [curve])
         let audio_3d = ctx.audio.clone();
         let cam_3d = ctx.active_camera.clone();
         let play_sound_3d = lua
             .create_function(
                 move |_,
-                      (path, x, y, z, max_dist, volume, bus): (
+                      (path, x, y, z, max_dist, volume, bus, curve): (
                     String,
                     f32,
                     f32,
@@ -817,20 +822,32 @@ impl ScriptComponent {
                     f32,
                     Option<f32>,
                     Option<String>,
+                    Option<String>,
                 )| {
                     let vol = volume.unwrap_or(1.0);
-                    let listener_eye = {
+                    let (listener_eye, listener_right) = {
                         let cam = cam_3d.read().unwrap();
-                        [cam.eye.x, cam.eye.y, cam.eye.z]
+                        let eye = [cam.eye.x, cam.eye.y, cam.eye.z];
+                        let fwd = (cam.target - cam.eye).normalize_or_zero();
+                        let right = fwd.cross(glam::Vec3::Y).normalize_or_zero();
+                        let r = if right.length_squared() > 0.001 { right } else { glam::Vec3::X };
+                        (eye, [r.x, r.y, r.z])
+                    };
+                    let attenuation_curve = match curve.as_deref() {
+                        Some("exponential") => crate::audio::AttenuationCurve::Exponential,
+                        Some("smoothstep") => crate::audio::AttenuationCurve::Smoothstep,
+                        _ => crate::audio::AttenuationCurve::Linear,
                     };
                     if let Ok(audio) = audio_3d.lock() {
-                        let _ = audio.play_sound_3d(
+                        let _ = audio.play_sound_3d_spatial(
                             &path,
                             [x, y, z],
                             listener_eye,
+                            listener_right,
                             max_dist,
                             vol,
                             bus.as_deref(),
+                            attenuation_curve,
                         );
                     }
                     Ok(())
@@ -2027,21 +2044,53 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register trigger_viewmodel_action: {}", e))?;
         lua.globals().set("trigger_viewmodel_action", trigger_viewmodel_action).map_err(|e| e.to_string())?;
 
-        // 42. play_anim(entity_id, clip_name, [looping])
+        // 42. play_anim(entity_id, clip_name, [blend_duration_or_looping], [looping])
         let anim_play_ref = ctx.pending_anims.clone();
         let play_anim = lua
-            .create_function(
-                move |_, (entity_id, clip_name, looping): (String, String, Option<bool>)| {
-                    if let Ok(mut list) = anim_play_ref.lock() {
-                        list.push(AnimationCommand::Play {
-                            entity_id,
-                            clip_name,
-                            looping: looping.unwrap_or(true),
-                        });
+            .create_function(move |_, args: mlua::MultiValue| {
+                let mut iter = args.into_iter();
+                let entity_id = match iter.next() {
+                    Some(mlua::Value::String(s)) => s.to_str().map(|b| b.to_string()).unwrap_or_default(),
+                    _ => return Err(mlua::Error::runtime("Expected: play_anim(entity_id, clip_name, [blend_duration], [looping])")),
+                };
+                let clip_name = match iter.next() {
+                    Some(mlua::Value::String(s)) => s.to_str().map(|b| b.to_string()).unwrap_or_default(),
+                    _ => return Err(mlua::Error::runtime("Expected: play_anim(entity_id, clip_name, [blend_duration], [looping])")),
+                };
+                let mut blend_duration = 0.0f32;
+                let mut looping = true;
+
+                if let Some(third) = iter.next() {
+                    match third {
+                        mlua::Value::Boolean(b) => {
+                            looping = b;
+                        }
+                        mlua::Value::Number(n) => {
+                            blend_duration = n as f32;
+                            if let Some(mlua::Value::Boolean(b)) = iter.next() {
+                                looping = b;
+                            }
+                        }
+                        mlua::Value::Integer(i) => {
+                            blend_duration = i as f32;
+                            if let Some(mlua::Value::Boolean(b)) = iter.next() {
+                                looping = b;
+                            }
+                        }
+                        _ => {}
                     }
-                    Ok(true)
-                },
-            )
+                }
+
+                if let Ok(mut list) = anim_play_ref.lock() {
+                    list.push(AnimationCommand::Play {
+                        entity_id,
+                        clip_name,
+                        looping,
+                        blend_duration,
+                    });
+                }
+                Ok(true)
+            })
             .map_err(|e| format!("Failed to register play_anim: {}", e))?;
         lua.globals().set("play_anim", play_anim).map_err(|e| e.to_string())?;
 
@@ -2073,6 +2122,18 @@ impl ScriptComponent {
             })
             .map_err(|e| format!("Failed to register stop_anim: {}", e))?;
         lua.globals().set("stop_anim", stop_anim).map_err(|e| e.to_string())?;
+
+        // 43b. set_anim_speed(entity_id, speed)
+        let anim_speed_ref = ctx.pending_anims.clone();
+        let set_anim_speed = lua
+            .create_function(move |_, (entity_id, speed): (String, f32)| {
+                if let Ok(mut list) = anim_speed_ref.lock() {
+                    list.push(AnimationCommand::SetSpeed { entity_id, speed });
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register set_anim_speed: {}", e))?;
+        lua.globals().set("set_anim_speed", set_anim_speed).map_err(|e| e.to_string())?;
 
         // 44. is_anim_playing(entity_id) -> bool
         let anim_states_ref = ctx.anim_playing_states.clone();
@@ -3214,6 +3275,8 @@ mod tests {
         let test_script = r#"
             play_anim("boss_leviathan", "rage_mode", false)
             stop_anim("boss_minion")
+            play_anim("hero", "run", 0.35, true)
+            set_anim_speed("hero", 1.5)
             local is_boss_playing = is_anim_playing("boss_leviathan")
             assert(is_boss_playing == false)
 
@@ -3229,12 +3292,13 @@ mod tests {
         assert!(res.is_ok(), "Init failed: {:?}", res.err());
 
         let anims = ctx.pending_anims.lock().unwrap();
-        assert_eq!(anims.len(), 2);
+        assert_eq!(anims.len(), 4);
         match &anims[0] {
-            AnimationCommand::Play { entity_id, clip_name, looping } => {
+            AnimationCommand::Play { entity_id, clip_name, looping, blend_duration } => {
                 assert_eq!(entity_id, "boss_leviathan");
                 assert_eq!(clip_name, "rage_mode");
                 assert_eq!(*looping, false);
+                assert_eq!(*blend_duration, 0.0);
             }
             _ => panic!("Expected Play command"),
         }
@@ -3243,6 +3307,22 @@ mod tests {
                 assert_eq!(entity_id, "boss_minion");
             }
             _ => panic!("Expected Stop command"),
+        }
+        match &anims[2] {
+            AnimationCommand::Play { entity_id, clip_name, looping, blend_duration } => {
+                assert_eq!(entity_id, "hero");
+                assert_eq!(clip_name, "run");
+                assert_eq!(*looping, true);
+                assert!((*blend_duration - 0.35).abs() < 0.01);
+            }
+            _ => panic!("Expected Play with blend command"),
+        }
+        match &anims[3] {
+            AnimationCommand::SetSpeed { entity_id, speed } => {
+                assert_eq!(entity_id, "hero");
+                assert_eq!(*speed, 1.5);
+            }
+            _ => panic!("Expected SetSpeed command"),
         }
 
         let _ = std::fs::remove_file(script_path);

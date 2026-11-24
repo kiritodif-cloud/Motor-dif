@@ -2,7 +2,47 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, Write};
 use std::path::Path;
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, SpatialSink, Source};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttenuationCurve {
+    Linear,
+    Exponential,
+    Smoothstep,
+}
+
+impl Default for AttenuationCurve {
+    fn default() -> Self {
+        Self::Linear
+    }
+}
+
+pub fn compute_attenuation(dist: f32, max_dist: f32, curve: AttenuationCurve) -> f32 {
+    let d = (dist / max_dist.max(0.1)).clamp(0.0, 1.0);
+    match curve {
+        AttenuationCurve::Linear => 1.0 - d,
+        AttenuationCurve::Exponential => (-3.0 * d).exp(),
+        AttenuationCurve::Smoothstep => {
+            let x = 1.0 - d;
+            x * x * (3.0 - 2.0 * x)
+        }
+    }
+}
+
+pub fn compute_stereo_pan(sound_pos: [f32; 3], listener_pos: [f32; 3], listener_right: [f32; 3]) -> (f32, f32) {
+    let dx = sound_pos[0] - listener_pos[0];
+    let dy = sound_pos[1] - listener_pos[1];
+    let dz = sound_pos[2] - listener_pos[2];
+    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+    if dist < 0.0001 {
+        return (1.0, 1.0);
+    }
+    let dir = [dx / dist, dy / dist, dz / dist];
+    let pan = (dir[0] * listener_right[0] + dir[1] * listener_right[1] + dir[2] * listener_right[2]).clamp(-1.0, 1.0);
+    let left_gain = (1.0 - pan.max(0.0)).clamp(0.0, 1.0);
+    let right_gain = (1.0 + pan.min(0.0)).clamp(0.0, 1.0);
+    (left_gain, right_gain)
+}
 
 pub struct AudioManager {
     stream_handle: Option<OutputStreamHandle>,
@@ -119,6 +159,29 @@ impl AudioManager {
         base_volume: f32,
         bus: Option<&str>,
     ) -> Result<(), String> {
+        self.play_sound_3d_spatial(
+            path,
+            sound_pos,
+            listener_pos,
+            [1.0, 0.0, 0.0],
+            max_dist,
+            base_volume,
+            bus,
+            AttenuationCurve::Linear,
+        )
+    }
+
+    pub fn play_sound_3d_spatial(
+        &self,
+        path: &str,
+        sound_pos: [f32; 3],
+        listener_pos: [f32; 3],
+        listener_right: [f32; 3],
+        max_dist: f32,
+        base_volume: f32,
+        bus: Option<&str>,
+        curve: AttenuationCurve,
+    ) -> Result<(), String> {
         if !self.available {
             return Ok(());
         }
@@ -132,7 +195,7 @@ impl AudioManager {
             return Ok(());
         }
 
-        let attenuation = (1.0 - (dist / max_d)).clamp(0.0, 1.0);
+        let attenuation = compute_attenuation(dist, max_d, curve);
         let bus_name = bus.unwrap_or("sfx");
         let effective_vol = self.compute_effective_volume(base_volume * attenuation, bus_name);
 
@@ -154,10 +217,23 @@ impl AudioManager {
         let reader = BufReader::new(file);
         let source = Decoder::new(reader).map_err(|e| format!("Failed to decode '{}': {}", path, e))?;
 
-        let sink = Sink::try_new(handle).map_err(|e| format!("Failed to create audio sink: {}", e))?;
-        sink.set_volume(effective_vol);
-        sink.append(source);
-        sink.detach();
+        let ear_dist = 0.25;
+        let left_ear = [
+            listener_pos[0] - listener_right[0] * ear_dist,
+            listener_pos[1] - listener_right[1] * ear_dist,
+            listener_pos[2] - listener_right[2] * ear_dist,
+        ];
+        let right_ear = [
+            listener_pos[0] + listener_right[0] * ear_dist,
+            listener_pos[1] + listener_right[1] * ear_dist,
+            listener_pos[2] + listener_right[2] * ear_dist,
+        ];
+
+        let spatial_sink = SpatialSink::try_new(handle, sound_pos, left_ear, right_ear)
+            .map_err(|e| format!("Failed to create SpatialSink: {}", e))?;
+        spatial_sink.set_volume(effective_vol);
+        spatial_sink.append(source);
+        spatial_sink.detach();
 
         Ok(())
     }
@@ -472,6 +548,35 @@ mod tests {
 
         let att_out_of_range = (1.0_f32 - (30.0_f32 / max_dist)).clamp(0.0_f32, 1.0_f32);
         assert_eq!(att_out_of_range, 0.0_f32);
+
+        // Test Attenuation Curves
+        let att_lin = compute_attenuation(10.0, 20.0, AttenuationCurve::Linear);
+        assert!((att_lin - 0.5).abs() < 1e-4);
+
+        let att_exp = compute_attenuation(0.0, 20.0, AttenuationCurve::Exponential);
+        assert!((att_exp - 1.0).abs() < 1e-4);
+
+        let att_smooth = compute_attenuation(10.0, 20.0, AttenuationCurve::Smoothstep);
+        assert!((att_smooth - 0.5).abs() < 1e-4);
+
+        // Test Stereo Panning
+        let listener = [0.0, 0.0, 0.0];
+        let right_axis = [1.0, 0.0, 0.0];
+
+        // Sound directly on the right (x = 5.0)
+        let (left_g, right_g) = compute_stereo_pan([5.0, 0.0, 0.0], listener, right_axis);
+        assert_eq!(left_g, 0.0);
+        assert_eq!(right_g, 1.0);
+
+        // Sound directly on the left (x = -5.0)
+        let (left_g, right_g) = compute_stereo_pan([-5.0, 0.0, 0.0], listener, right_axis);
+        assert_eq!(left_g, 1.0);
+        assert_eq!(right_g, 0.0);
+
+        // Sound straight ahead (z = 5.0)
+        let (left_g, right_g) = compute_stereo_pan([0.0, 0.0, 5.0], listener, right_axis);
+        assert_eq!(left_g, 1.0);
+        assert_eq!(right_g, 1.0);
     }
 }
 

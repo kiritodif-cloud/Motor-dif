@@ -121,7 +121,7 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `spawn_particles(x, y, z, r, g, b, [count], [speed], [lifetime])`: Legacy particle burst.
 - Audio System:
   - `play_sound(path, [vol], [bus])`: Buses: `"master"`, `"sfx"`, `"music"`.
-  - `play_sound_3d(path, x, y, z, max_dist, [vol], [bus])`: Attenuated spatial 3D audio.
+  - `play_sound_3d(path, x, y, z, max_dist, [vol], [bus], [curve])`: Attenuated 3D audio with camera stereo panning (curves: `"linear"`, `"exponential"`, `"smoothstep"`).
   - `play_tone(f_start, f_end, wave_type, duration_secs, vol)`: Wave types: `"sine"`, `"square"`, `"triangle"`, `"sawtooth"`.
   - `set_bus_volume(bus, vol)`, `get_bus_volume(bus) -> vol`
 - Music Forge (Procedural Adaptive Synthesis):
@@ -142,9 +142,9 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `voxel_is_solid(x, y, z) -> bool`: Fast collision check for voxel physics/navigation.
   - `voxel_raycast(ox, oy, oz, dx, dy, dz, max_dist) -> { hit=bool, x, y, z, nx, ny, nz, id, dist }`: DDA grid raycast for block break/place.
 - AnimationPlayer:
-  - `play_anim(entity_id, clip_name, [loop])`: Plays clip from `AnimationPlayer`.
+  - `play_anim(entity_id, clip_name, [blend_sec], [loop])`: Plays clip with linear crossfade blending.
   - `play_preset_anim(entity_id, preset_name, [loop])`: Presets: `"idle_breathe"`, `"walk_bob"`, `"spin_continuous"`.
-  - `stop_anim(entity_id)`, `is_anim_playing(entity_id) -> bool`
+  - `stop_anim(entity_id)`, `set_anim_speed(entity_id, speed)`, `is_anim_playing(entity_id) -> bool`
 - Procedural Rig (Biomechanical Locomotion & Aiming):
   - `rig_set_look_target(entity_id, x, y, z)`: Head/turret look-at tracking.
   - `rig_clear_look_target(entity_id)`
