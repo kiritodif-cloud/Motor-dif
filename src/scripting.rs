@@ -165,6 +165,8 @@ pub struct LuaEngineContext {
     pub time_of_day: Arc<RwLock<Option<f32>>>,
     pub active_viewmodel: Arc<RwLock<Option<ViewModelDef>>>,
     pub pending_viewmodel_action: Arc<Mutex<Option<(String, f32)>>>,
+    pub last_dt: Arc<std::sync::atomic::AtomicU32>,
+    pub pending_entity_transforms: Arc<Mutex<Vec<(String, [f32; 4])>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -395,6 +397,8 @@ impl LuaEngineContext {
             time_of_day: Arc::new(RwLock::new(None)),
             active_viewmodel: Arc::new(RwLock::new(None)),
             pending_viewmodel_action: Arc::new(Mutex::new(None)),
+            last_dt: Arc::new(std::sync::atomic::AtomicU32::new(0.01666667f32.to_bits())),
+            pending_entity_transforms: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -2366,17 +2370,81 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register nav_bake: {}", e))?;
         lua.globals().set("nav_bake", nav_bake).map_err(|e| e.to_string())?;
 
-        // 57. find_path(start_x, start_z, goal_x, goal_z) -> table or nil
+        // 57. find_path(start_x, [start_y], start_z, goal_x, [goal_y], goal_z, [max_steps]) -> table or nil
         let nav_grid_find_ref = ctx.nav_grid.clone();
+        let nav_terrain_ref = ctx.active_terrain.clone();
+        let nav_voxel_ref = ctx.active_voxel_world.clone();
         let find_path = lua
-            .create_function(move |lua, (sx, sz, gx, gz): (f32, f32, f32, f32)| {
+            .create_function(move |lua, args: mlua::MultiValue| {
+                let mut num_args = Vec::new();
+                for v in args {
+                    if let mlua::Value::Number(n) = v {
+                        num_args.push(n as f32);
+                    } else if let mlua::Value::Integer(i) = v {
+                        num_args.push(i as f32);
+                    }
+                }
+
+                let (start, goal, max_steps) = match num_args.len() {
+                    4 => {
+                        let sx = num_args[0];
+                        let sz = num_args[1];
+                        let gx = num_args[2];
+                        let gz = num_args[3];
+                        let sy = if let Ok(guard) = nav_terrain_ref.read() {
+                            guard.as_ref().map(|hm| hm.sample_world_height(sx, sz)).unwrap_or(0.0)
+                        } else { 0.0 };
+                        let gy = if let Ok(guard) = nav_terrain_ref.read() {
+                            guard.as_ref().map(|hm| hm.sample_world_height(gx, gz)).unwrap_or(0.0)
+                        } else { 0.0 };
+                        ([sx, sy, sz], [gx, gy, gz], 2000)
+                    }
+                    5 => {
+                        let sx = num_args[0];
+                        let sz = num_args[1];
+                        let gx = num_args[2];
+                        let gz = num_args[3];
+                        let sy = if let Ok(guard) = nav_terrain_ref.read() {
+                            guard.as_ref().map(|hm| hm.sample_world_height(sx, sz)).unwrap_or(0.0)
+                        } else { 0.0 };
+                        let gy = if let Ok(guard) = nav_terrain_ref.read() {
+                            guard.as_ref().map(|hm| hm.sample_world_height(gx, gz)).unwrap_or(0.0)
+                        } else { 0.0 };
+                        ([sx, sy, sz], [gx, gy, gz], num_args[4] as usize)
+                    }
+                    6 => {
+                        ([num_args[0], num_args[1], num_args[2]], [num_args[3], num_args[4], num_args[5]], 2000)
+                    }
+                    7.. => {
+                        ([num_args[0], num_args[1], num_args[2]], [num_args[3], num_args[4], num_args[5]], num_args[6] as usize)
+                    }
+                    _ => return Ok(None),
+                };
+
                 let grid = nav_grid_find_ref.read().unwrap();
-                if let Some(waypoints) = grid.find_path(sx, sz, gx, gz) {
+                let terrain_guard = nav_terrain_ref.read().unwrap();
+                let voxel_guard = nav_voxel_ref.read().unwrap();
+
+                let height_sampler = terrain_guard.as_ref().map(|hm| {
+                    move |x: f32, z: f32| hm.sample_world_height(x, z)
+                });
+                let obstacle_checker = voxel_guard.as_ref().map(|vw| {
+                    move |x: f32, y: f32, z: f32| vw.is_solid(x.floor() as i32, y.floor() as i32, z.floor() as i32)
+                });
+
+                let height_fn_ref = height_sampler.as_ref().map(|f| f as &dyn Fn(f32, f32) -> f32);
+                let obst_fn_ref = obstacle_checker.as_ref().map(|f| f as &dyn Fn(f32, f32, f32) -> bool);
+
+                if let Some(waypoints) = grid.find_path_3d(start, goal, max_steps, height_fn_ref, obst_fn_ref) {
                     let tbl = lua.create_table()?;
                     for (i, pt) in waypoints.iter().enumerate() {
                         let pt_tbl = lua.create_table()?;
                         pt_tbl.set("x", pt[0])?;
-                        pt_tbl.set("z", pt[1])?;
+                        pt_tbl.set("y", pt[1])?;
+                        pt_tbl.set("z", pt[2])?;
+                        pt_tbl.set(1, pt[0])?;
+                        pt_tbl.set(2, pt[1])?;
+                        pt_tbl.set(3, pt[2])?;
                         tbl.set(i + 1, pt_tbl)?;
                     }
                     Ok(Some(tbl))
@@ -2386,6 +2454,171 @@ impl ScriptComponent {
             })
             .map_err(|e| format!("Failed to register find_path: {}", e))?;
         lua.globals().set("find_path", find_path).map_err(|e| e.to_string())?;
+
+        // 57b. draw_path(waypoints, [r, g, b, a]) -> ()
+        let draw_path_debug_lines = ctx.debug_lines.clone();
+        let draw_path = lua
+            .create_function(
+                move |_, (path_val, r_opt, g_opt, b_opt, a_opt): (
+                    mlua::Table, Option<f32>, Option<f32>, Option<f32>, Option<f32>
+                )| {
+                    let color = [
+                        r_opt.unwrap_or(0.2),
+                        g_opt.unwrap_or(1.0),
+                        b_opt.unwrap_or(0.4),
+                        a_opt.unwrap_or(0.9),
+                    ];
+                    let len = path_val.raw_len();
+                    if len >= 2 {
+                        if let Ok(mut lines) = draw_path_debug_lines.lock() {
+                            for i in 1..len {
+                                if let (Ok(p1), Ok(p2)) = (path_val.get::<mlua::Table>(i), path_val.get::<mlua::Table>(i + 1)) {
+                                    let x1: f32 = p1.get("x").or_else(|_| p1.get(1)).unwrap_or(0.0);
+                                    let y1: f32 = p1.get("y").or_else(|_| p1.get(2)).unwrap_or(0.0);
+                                    let z1: f32 = p1.get("z").or_else(|_| p1.get(3)).unwrap_or(0.0);
+                                    let x2: f32 = p2.get("x").or_else(|_| p2.get(1)).unwrap_or(0.0);
+                                    let y2: f32 = p2.get("y").or_else(|_| p2.get(2)).unwrap_or(0.0);
+                                    let z2: f32 = p2.get("z").or_else(|_| p2.get(3)).unwrap_or(0.0);
+                                    lines.push(DebugLine3D {
+                                        start: [x1, y1, z1],
+                                        end: [x2, y2, z2],
+                                        color,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(|e| format!("Failed to register draw_path: {}", e))?;
+        lua.globals().set("draw_path", draw_path).map_err(|e| e.to_string())?;
+
+        // 57c. steer_towards(entity_or_id, target_x, target_y, target_z, speed, [turn_speed], [dt]) -> bool
+        let steer_world_entities = ctx.world_entities.clone();
+        let steer_pending_transforms = ctx.pending_entity_transforms.clone();
+        let steer_last_dt = ctx.last_dt.clone();
+        let steer_towards = lua
+            .create_function(
+                move |_, (entity_val, tx, ty, tz, speed, turn_speed_opt, dt_opt): (
+                    mlua::Value, f32, f32, f32, f32, Option<f32>, Option<f32>
+                )| {
+                    let dt = dt_opt.unwrap_or_else(|| {
+                        f32::from_bits(steer_last_dt.load(std::sync::atomic::Ordering::Relaxed))
+                    }).clamp(0.0001, 0.1);
+                    let turn_speed = turn_speed_opt.unwrap_or(8.0);
+
+                    match entity_val {
+                        mlua::Value::Table(tbl) => {
+                            let cx: f32 = tbl.get("x").unwrap_or(0.0);
+                            let cy: f32 = tbl.get("y").unwrap_or(0.0);
+                            let cz: f32 = tbl.get("z").unwrap_or(0.0);
+                            let cry: f32 = tbl.get("ry").unwrap_or(0.0);
+
+                            let dx = tx - cx;
+                            let dy = ty - cy;
+                            let dz = tz - cz;
+                            let dist = (dx * dx + dz * dz).sqrt();
+
+                            if dist < 0.2 {
+                                return Ok(true);
+                            }
+
+                            let step = (speed * dt).min(dist);
+                            let nx = dx / dist;
+                            let nz = dz / dist;
+                            let new_x = cx + nx * step;
+                            let new_z = cz + nz * step;
+                            let new_y = cy + (dy.signum() * (speed * dt).min(dy.abs()));
+
+                            let target_yaw = dx.atan2(dz);
+                            let mut diff = (target_yaw - cry) % (2.0 * std::f32::consts::PI);
+                            if diff < -std::f32::consts::PI { diff += 2.0 * std::f32::consts::PI; }
+                            if diff > std::f32::consts::PI { diff -= 2.0 * std::f32::consts::PI; }
+                            let t_step = turn_speed * dt;
+                            let new_ry = cry + diff.clamp(-t_step, t_step);
+
+                            let _ = tbl.set("x", new_x);
+                            let _ = tbl.set("y", new_y);
+                            let _ = tbl.set("z", new_z);
+                            let _ = tbl.set("ry", new_ry);
+
+                            if let Ok(id) = tbl.get::<String>("id") {
+                                if let Ok(mut we) = steer_world_entities.write() {
+                                    if let Some(data) = we.get_mut(&id) {
+                                        data[0] = new_x;
+                                        data[1] = new_y;
+                                        data[2] = new_z;
+                                        data[4] = new_ry;
+                                    }
+                                }
+                                if let Ok(mut pt) = steer_pending_transforms.lock() {
+                                    pt.push((id, [new_x, new_y, new_z, new_ry]));
+                                }
+                            }
+
+                            Ok(false)
+                        }
+                        mlua::Value::String(s) => {
+                            let id = s.to_str().ok().map(|b| b.to_string()).unwrap_or_default();
+                            let current = if let Ok(we) = steer_world_entities.read() {
+                                we.get(&id).copied()
+                            } else {
+                                None
+                            };
+
+                            if let Some(data) = current {
+                                let cx = data[0];
+                                let cy = data[1];
+                                let cz = data[2];
+                                let cry = data[4];
+
+                                let dx = tx - cx;
+                                let dy = ty - cy;
+                                let dz = tz - cz;
+                                let dist = (dx * dx + dz * dz).sqrt();
+
+                                if dist < 0.2 {
+                                    return Ok(true);
+                                }
+
+                                let step = (speed * dt).min(dist);
+                                let nx = dx / dist;
+                                let nz = dz / dist;
+                                let new_x = cx + nx * step;
+                                let new_z = cz + nz * step;
+                                let new_y = cy + (dy.signum() * (speed * dt).min(dy.abs()));
+
+                                let target_yaw = dx.atan2(dz);
+                                let mut diff = (target_yaw - cry) % (2.0 * std::f32::consts::PI);
+                                if diff < -std::f32::consts::PI { diff += 2.0 * std::f32::consts::PI; }
+                                if diff > std::f32::consts::PI { diff -= 2.0 * std::f32::consts::PI; }
+                                let t_step = turn_speed * dt;
+                                let new_ry = cry + diff.clamp(-t_step, t_step);
+
+                                if let Ok(mut we) = steer_world_entities.write() {
+                                    if let Some(entry) = we.get_mut(&id) {
+                                        entry[0] = new_x;
+                                        entry[1] = new_y;
+                                        entry[2] = new_z;
+                                        entry[4] = new_ry;
+                                    }
+                                }
+                                if let Ok(mut pt) = steer_pending_transforms.lock() {
+                                    pt.push((id, [new_x, new_y, new_z, new_ry]));
+                                }
+
+                                Ok(false)
+                            } else {
+                                Ok(true)
+                            }
+                        }
+                        _ => Ok(true),
+                    }
+                },
+            )
+            .map_err(|e| format!("Failed to register steer_towards: {}", e))?;
+        lua.globals().set("steer_towards", steer_towards).map_err(|e| e.to_string())?;
 
         // 58. nav_set_blocked(world_x, world_z, is_blocked) -> bool
         let nav_grid_set_ref = ctx.nav_grid.clone();
@@ -3567,6 +3800,65 @@ mod tests {
             let path_len: i32 = lua.globals().get("path_len").unwrap();
             assert!(path_len > 2, "Expected a valid path around the blocked cell");
         }
+
+        let _ = std::fs::remove_file(test_script_path);
+    }
+
+    #[test]
+    fn test_nav_3d_and_steering_lua_bindings() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        let test_script_path = "assets/scripts/temp_nav_3d_test.lua";
+        let script_code = r#"
+            nav_bake(1.0, 10.0)
+            -- 3D pathfinding with step budget
+            path3d = find_path(-3.0, 0.0, 0.0, 3.0, 0.0, 0.0, 500)
+            path3d_count = 0
+            if path3d then
+                path3d_count = #path3d
+                draw_path(path3d, 0.0, 1.0, 0.0, 1.0)
+            end
+
+            -- Test steer_towards on a Lua entity table
+            npc = { id = "guard_1", x = 0.0, y = 0.0, z = 0.0, ry = 0.0 }
+            reached_1 = steer_towards(npc, 5.0, 0.0, 5.0, 2.0, 8.0, 0.1)
+            npc_x = npc.x
+            npc_z = npc.z
+            npc_ry = npc.ry
+
+            -- Test steer_towards arrival
+            npc_close = { id = "guard_2", x = 4.95, y = 0.0, z = 4.95, ry = 0.0 }
+            reached_2 = steer_towards(npc_close, 5.0, 0.0, 5.0, 2.0, 8.0, 0.1)
+        "#;
+        std::fs::write(test_script_path, script_code).unwrap();
+
+        let mut comp = ScriptComponent::new(test_script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Init failed: {:?}", res.err());
+
+        if let Some(lua_arc) = &comp.lua {
+            let lua = lua_arc.lock().unwrap();
+            let count: i32 = lua.globals().get("path3d_count").unwrap();
+            assert!(count >= 2, "Expected 3D path with at least 2 waypoints, got {}", count);
+
+            let reached_1: bool = lua.globals().get("reached_1").unwrap();
+            assert!(!reached_1, "Expected reached_1 to be false while traveling");
+            let npc_x: f32 = lua.globals().get("npc_x").unwrap();
+            let npc_z: f32 = lua.globals().get("npc_z").unwrap();
+            let npc_ry: f32 = lua.globals().get("npc_ry").unwrap();
+            assert!(npc_x > 0.0 && npc_z > 0.0, "Expected NPC to move toward (5, 5)");
+            assert!(npc_ry > 0.0, "Expected NPC yaw to rotate toward motion vector");
+
+            let reached_2: bool = lua.globals().get("reached_2").unwrap();
+            assert!(reached_2, "Expected reached_2 to be true when within 0.2m");
+        }
+
+        // Verify debug lines were created by draw_path
+        let lines = ctx.debug_lines.lock().unwrap();
+        assert!(!lines.is_empty(), "Expected debug lines created by draw_path");
 
         let _ = std::fs::remove_file(test_script_path);
     }

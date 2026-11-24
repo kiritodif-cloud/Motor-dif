@@ -3082,6 +3082,44 @@ impl EngineState {
                         "status": "ready"
                     })));
                 }
+                McpCommand::FindPath {
+                    from,
+                    to,
+                    max_steps,
+                    respond_to,
+                } => {
+                    let grid = self.lua_ctx.nav_grid.read().unwrap();
+                    let terrain_guard = self.lua_ctx.active_terrain.read().unwrap();
+                    let voxel_guard = self.lua_ctx.active_voxel_world.read().unwrap();
+
+                    let height_sampler = terrain_guard.as_ref().map(|hm| {
+                        move |x: f32, z: f32| hm.sample_world_height(x, z)
+                    });
+                    let obstacle_checker = voxel_guard.as_ref().map(|vw| {
+                        move |x: f32, y: f32, z: f32| vw.is_solid(x.floor() as i32, y.floor() as i32, z.floor() as i32)
+                    });
+
+                    let height_fn_ref = height_sampler.as_ref().map(|f| f as &dyn Fn(f32, f32) -> f32);
+                    let obst_fn_ref = obstacle_checker.as_ref().map(|f| f as &dyn Fn(f32, f32, f32) -> bool);
+
+                    let budget = max_steps.unwrap_or(2000);
+                    let path_opt = grid.find_path_3d(from, to, budget, height_fn_ref, obst_fn_ref);
+
+                    let res = if let Some(waypoints) = path_opt {
+                        serde_json::json!({
+                            "found": true,
+                            "count": waypoints.len(),
+                            "waypoints": waypoints
+                        })
+                    } else {
+                        serde_json::json!({
+                            "found": false,
+                            "count": 0,
+                            "waypoints": []
+                        })
+                    };
+                    let _ = respond_to.send(Ok(res));
+                }
             }
         }
     }
@@ -3176,6 +3214,7 @@ impl EngineState {
         let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
         self.last_frame_time = now;
         self.total_time += dt;
+        self.lua_ctx.last_dt.store(dt.to_bits(), std::sync::atomic::Ordering::Relaxed);
 
         // Drain pending post process updates from Lua
         if let Ok(mut pending_pp) = self.lua_ctx.pending_post_process.lock() {
@@ -3532,6 +3571,24 @@ impl EngineState {
                         burst_fired: false,
                     };
                     let _ = self.world.insert_one(e, comp);
+                }
+            }
+
+            // Drain pending entity transform mutations from Lua steering
+            let pending_transforms = if let Ok(mut pt) = self.lua_ctx.pending_entity_transforms.lock() {
+                std::mem::take(&mut *pt)
+            } else {
+                Vec::new()
+            };
+            for (target_id, [x, y, z, ry]) in pending_transforms {
+                for (meta, transform) in self.world.query_mut::<(&EntityMeta, &mut Transform)>() {
+                    if meta.id == target_id {
+                        transform.position.x = x;
+                        transform.position.y = y;
+                        transform.position.z = z;
+                        transform.rotation.y = ry;
+                        break;
+                    }
                 }
             }
 

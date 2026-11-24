@@ -199,6 +199,12 @@ pub enum McpCommand {
         overwrite: bool,
         respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
     },
+    FindPath {
+        from: [f32; 3],
+        to: [f32; 3],
+        max_steps: Option<usize>,
+        respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -795,6 +801,34 @@ pub async fn handle_jsonrpc(
                                     "overwrite": { "type": "boolean", "description": "Sobreescribir el script Lua si ya existe en assets/scripts/ (por defecto false)" }
                                 },
                                 "required": ["controller_type"]
+                            }
+                        },
+                        {
+                            "name": "find_path",
+                            "description": "Computes a 3D terrain- and voxel-aware A* path between two 3D coordinates with step budgeting.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "from": {
+                                        "type": "array",
+                                        "items": { "type": "number" },
+                                        "minItems": 3,
+                                        "maxItems": 3,
+                                        "description": "Start position [x, y, z]"
+                                    },
+                                    "to": {
+                                        "type": "array",
+                                        "items": { "type": "number" },
+                                        "minItems": 3,
+                                        "maxItems": 3,
+                                        "description": "Goal position [x, y, z]"
+                                    },
+                                    "max_steps": {
+                                        "type": "integer",
+                                        "description": "Max A* expansion budget (default: 2000)"
+                                    }
+                                },
+                                "required": ["from", "to"]
                             }
                         }
                     ]
@@ -1694,6 +1728,65 @@ pub async fn handle_jsonrpc(
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al instanciar controlador de jugador")),
                     }
                 }
+                "find_path" => {
+                    let from_arr = match args.get("from").and_then(|v| v.as_array()) {
+                        Some(arr) if arr.len() == 3 => [
+                            arr[0].as_f64().unwrap_or(0.0) as f32,
+                            arr[1].as_f64().unwrap_or(0.0) as f32,
+                            arr[2].as_f64().unwrap_or(0.0) as f32,
+                        ],
+                        _ => {
+                            return Some(JsonRpcResponse::error(
+                                id,
+                                -32602,
+                                mcp_param_error(
+                                    "find_path",
+                                    "from",
+                                    "{\n  \"from\": [0.0, 0.0, 0.0],\n  \"to\": [10.0, 0.0, 10.0]\n}",
+                                ),
+                            ));
+                        }
+                    };
+                    let to_arr = match args.get("to").and_then(|v| v.as_array()) {
+                        Some(arr) if arr.len() == 3 => [
+                            arr[0].as_f64().unwrap_or(0.0) as f32,
+                            arr[1].as_f64().unwrap_or(0.0) as f32,
+                            arr[2].as_f64().unwrap_or(0.0) as f32,
+                        ],
+                        _ => {
+                            return Some(JsonRpcResponse::error(
+                                id,
+                                -32602,
+                                mcp_param_error(
+                                    "find_path",
+                                    "to",
+                                    "{\n  \"from\": [0.0, 0.0, 0.0],\n  \"to\": [10.0, 0.0, 10.0]\n}",
+                                ),
+                            ));
+                        }
+                    };
+                    let max_steps = args.get("max_steps").and_then(|v| v.as_u64()).map(|s| s as usize);
+
+                    let (resp_tx, resp_rx) = oneshot::channel();
+                    let send_res = cmd_tx
+                        .send(McpCommand::FindPath {
+                            from: from_arr,
+                            to: to_arr,
+                            max_steps,
+                            respond_to: resp_tx,
+                        })
+                        .await;
+
+                    if send_res.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Engine channel closed"));
+                    }
+
+                    match resp_rx.await {
+                        Ok(Ok(val)) => Some(JsonRpcResponse::success(id, val)),
+                        Ok(Err(e)) => Some(JsonRpcResponse::error(id, -32000, e)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Engine dropped response")),
+                    }
+                }
                 _ => Some(JsonRpcResponse::error(id, -32601, format!("Herramienta desconocida: {}", tool_name))),
             }
         }
@@ -2285,5 +2378,52 @@ mod tests {
         assert!(!verify_mcp_auth("Authorization: Bearer wrong\r\n", Some("secret123")));
         assert!(verify_mcp_auth("Host: localhost\r\nAuthorization: Bearer secret123\r\n", Some("secret123")));
         assert!(verify_mcp_auth("authorization: Bearer secret123\r\n", Some("secret123")));
+    }
+
+    #[test]
+    fn test_mcp_find_path_dispatch() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(42)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "find_path",
+                "arguments": {
+                    "from": [1.0, 0.0, 2.0],
+                    "to": [5.0, 0.0, 6.0],
+                    "max_steps": 1000
+                }
+            })),
+        };
+
+        let handle = rt.spawn(async move {
+            if let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    McpCommand::FindPath { from, to, max_steps, respond_to } => {
+                        assert_eq!(from, [1.0, 0.0, 2.0]);
+                        assert_eq!(to, [5.0, 0.0, 6.0]);
+                        assert_eq!(max_steps, Some(1000));
+                        let _ = respond_to.send(Ok(json!({
+                            "found": true,
+                            "count": 2,
+                            "waypoints": [[1.0, 0.0, 2.0], [5.0, 0.0, 6.0]]
+                        })));
+                    }
+                    _ => panic!("Expected FindPath command"),
+                }
+            }
+        });
+
+        let resp = rt.block_on(async {
+            handle_jsonrpc(&cmd_tx, req).await
+        }).expect("Response expected");
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["result"]["found"], true);
+        assert_eq!(val["result"]["count"], 2);
+
+        rt.block_on(handle).unwrap();
     }
 }

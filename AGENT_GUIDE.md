@@ -133,7 +133,9 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
 ## lua_ai_rig
 - Navigation & Pathfinding:
   - `nav_bake([cell_size], [extent])`: Bakes 2D collision grid over colliders.
-  - `find_path(start_x, start_z, goal_x, goal_z) -> { {x, z}, ... }|nil`: A* path.
+  - `find_path(sx, [sy], sz, gx, [gy], gz, [budget]) -> { {x, y, z}, ... }|nil`: 2D/3D voxel & terrain-aware A* path with step budget.
+  - `steer_towards(entity_or_id, tx, ty, tz, speed, [turn_speed], [dt]) -> bool`: Moves entity towards target at `speed*dt` with smooth yaw rotation. Returns `true` if arrived (<0.2m).
+  - `draw_path(waypoints, [r, g, b, a])`: Renders 3D path debug lines in viewport.
   - `nav_set_blocked(wx, wz, is_blocked)`, `nav_is_blocked(wx, wz) -> bool`
 - Level Forge:
   - `get_terrain_height(x, z) -> f32`: Evaluates procedural heightmap elevation at world coordinates.
@@ -205,5 +207,6 @@ MCP Tools Directory:
 - `export_game({ title, scene_path, output_dir, fullscreen })`: 1-Click standalone exporter with smart asset dependency harvesting, `game_config.json`, and executable bundle.
 - `spawn_prefab({ name, position })`: Instantiates `.prefab.json` or `.json` prefab hierarchy with root and children.
 - `save_prefab({ entity_id, path })`: Exports entity hierarchy to `assets/prefabs/<name>.prefab.json`.
+- `find_path({ from, to, max_steps })`: Computes 3D A* path between coordinates.
 - Editor Shortcuts: `Ctrl+Z` (Undo), `Ctrl+Y`/`Ctrl+Shift+Z` (Redo), `Ctrl+S` (Save), `W`/`E`/`R` (Gizmo), `🧲 Snap` (0.25-2.0m, 15°-90°).
 - Auth: Optional `--mcp-token <TOKEN>` (or `MOTOR_MCP_TOKEN`), requires `Authorization: Bearer <TOKEN>` header.

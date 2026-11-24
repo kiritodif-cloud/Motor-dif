@@ -217,6 +217,17 @@ impl NavGrid {
     }
 
     pub fn find_path(&self, start_x: f32, start_z: f32, goal_x: f32, goal_z: f32) -> Option<Vec<[f32; 2]>> {
+        self.find_path_budgeted(start_x, start_z, goal_x, goal_z, 2000)
+    }
+
+    pub fn find_path_budgeted(
+        &self,
+        start_x: f32,
+        start_z: f32,
+        goal_x: f32,
+        goal_z: f32,
+        max_iterations: usize,
+    ) -> Option<Vec<[f32; 2]>> {
         let (start_gx, start_gz) = self.world_to_grid(start_x, start_z)?;
         let (goal_gx, goal_gz) = self.world_to_grid(goal_x, goal_z)?;
 
@@ -253,6 +264,7 @@ impl NavGrid {
         });
 
         let mut reached = false;
+        let mut iterations = 0usize;
 
         // 8 directions: dx, dz, cost
         let neighbors: [(isize, isize, f32); 8] = [
@@ -267,6 +279,12 @@ impl NavGrid {
         ];
 
         while let Some(NodeState { cost, gx, gz, .. }) = heap.pop() {
+            iterations += 1;
+            if iterations > max_iterations {
+                // Iteration budget exhausted to prevent frame drop
+                return None;
+            }
+
             let u_idx = self.index(gx, gz);
             if gx == goal_gx && gz == goal_gz {
                 reached = true;
@@ -351,6 +369,173 @@ impl NavGrid {
 
         Some(waypoints)
     }
+
+    /// 3D / Voxel & Terrain aware A* pathfinding with step budget
+    pub fn find_path_3d(
+        &self,
+        start: [f32; 3],
+        goal: [f32; 3],
+        max_iterations: usize,
+        height_sampler: Option<&dyn Fn(f32, f32) -> f32>,
+        obstacle_checker: Option<&dyn Fn(f32, f32, f32) -> bool>,
+    ) -> Option<Vec<[f32; 3]>> {
+        let (start_gx, start_gz) = self.world_to_grid(start[0], start[2])?;
+        let (goal_gx, goal_gz) = self.world_to_grid(goal[0], goal[2])?;
+
+        if self.is_blocked(goal_gx, goal_gz) && (start_gx != goal_gx || start_gz != goal_gz) {
+            return None;
+        }
+
+        if start_gx == goal_gx && start_gz == goal_gz {
+            return Some(vec![start, goal]);
+        }
+
+        let total_cells = self.width * self.height;
+        let mut dist = vec![f32::INFINITY; total_cells];
+        let mut parent = vec![usize::MAX; total_cells];
+        let mut heap = BinaryHeap::new();
+
+        let start_idx = self.index(start_gx, start_gz);
+        dist[start_idx] = 0.0;
+
+        let octile_heuristic = |x1: usize, z1: usize, x2: usize, z2: usize| -> f32 {
+            let dx = (x1 as isize - x2 as isize).abs() as f32;
+            let dz = (z1 as isize - z2 as isize).abs() as f32;
+            let min_d = dx.min(dz);
+            let max_d = dx.max(dz);
+            (max_d - min_d) + 1.41421356 * min_d
+        };
+
+        heap.push(NodeState {
+            cost: 0.0,
+            heuristic: octile_heuristic(start_gx, start_gz, goal_gx, goal_gz),
+            gx: start_gx,
+            gz: start_gz,
+        });
+
+        let mut reached = false;
+        let mut iterations = 0usize;
+
+        let neighbors: [(isize, isize, f32); 8] = [
+            (0, 1, 1.0),
+            (0, -1, 1.0),
+            (1, 0, 1.0),
+            (-1, 0, 1.0),
+            (1, 1, 1.41421356),
+            (1, -1, 1.41421356),
+            (-1, 1, 1.41421356),
+            (-1, -1, 1.41421356),
+        ];
+
+        while let Some(NodeState { cost, gx, gz, .. }) = heap.pop() {
+            iterations += 1;
+            if iterations > max_iterations {
+                return None;
+            }
+
+            let u_idx = self.index(gx, gz);
+            if gx == goal_gx && gz == goal_gz {
+                reached = true;
+                break;
+            }
+
+            if cost > dist[u_idx] {
+                continue;
+            }
+
+            let (cur_wx, cur_wz) = self.grid_to_world(gx, gz);
+            let cur_y = height_sampler.map(|f| f(cur_wx, cur_wz)).unwrap_or(start[1]);
+
+            for &(ndx, ndz, move_cost) in &neighbors {
+                let ngx = gx as isize + ndx;
+                let ngz = gz as isize + ndz;
+
+                if ngx < 0 || ngx >= self.width as isize || ngz < 0 || ngz >= self.height as isize {
+                    continue;
+                }
+
+                let ngx = ngx as usize;
+                let ngz = ngz as usize;
+
+                if self.is_blocked(ngx, ngz) {
+                    continue;
+                }
+
+                let (next_wx, next_wz) = self.grid_to_world(ngx, ngz);
+                let next_y = height_sampler.map(|f| f(next_wx, next_wz)).unwrap_or(goal[1]);
+
+                // Slope / step height check (max climb height 1.25m per grid step)
+                if (next_y - cur_y).abs() > 1.25 {
+                    continue;
+                }
+
+                // 3D obstacle / voxel collision check
+                if let Some(checker) = obstacle_checker {
+                    if checker(next_wx, next_y, next_wz) || checker(next_wx, next_y + 1.0, next_wz) {
+                        continue;
+                    }
+                }
+
+                // Diagonal corner cutting check
+                if ndx != 0 && ndz != 0 {
+                    let side1_x = (gx as isize + ndx) as usize;
+                    let side1_z = gz;
+                    let side2_x = gx;
+                    let side2_z = (gz as isize + ndz) as usize;
+                    if self.is_blocked(side1_x, side1_z) && self.is_blocked(side2_x, side2_z) {
+                        continue;
+                    }
+                }
+
+                let v_idx = self.index(ngx, ngz);
+                let dy = next_y - cur_y;
+                let step_dist = (move_cost * move_cost * self.cell_size * self.cell_size + dy * dy).sqrt();
+                let next_cost = cost + step_dist;
+
+                if next_cost < dist[v_idx] {
+                    dist[v_idx] = next_cost;
+                    parent[v_idx] = u_idx;
+                    heap.push(NodeState {
+                        cost: next_cost,
+                        heuristic: octile_heuristic(ngx, ngz, goal_gx, goal_gz),
+                        gx: ngx,
+                        gz: ngz,
+                    });
+                }
+            }
+        }
+
+        if !reached {
+            return None;
+        }
+
+        let mut path_cells = Vec::new();
+        let mut curr = self.index(goal_gx, goal_gz);
+        while curr != usize::MAX {
+            let cgx = curr % self.width;
+            let cgz = curr / self.width;
+            path_cells.push((cgx, cgz));
+            if curr == start_idx {
+                break;
+            }
+            curr = parent[curr];
+        }
+        path_cells.reverse();
+
+        let mut waypoints = Vec::new();
+        waypoints.push(start);
+        for (cgx, cgz) in path_cells.into_iter().skip(1) {
+            if cgx == goal_gx && cgz == goal_gz {
+                waypoints.push(goal);
+            } else {
+                let (wx, wz) = self.grid_to_world(cgx, cgz);
+                let y = height_sampler.map(|f| f(wx, wz)).unwrap_or(start[1]);
+                waypoints.push([wx, y, wz]);
+            }
+        }
+
+        Some(waypoints)
+    }
 }
 
 #[cfg(test)]
@@ -401,5 +586,49 @@ mod tests {
 
         let path = grid.find_path(-4.0, -4.0, 0.0, 0.0);
         assert!(path.is_none(), "Enclosed goal should be unreachable");
+    }
+
+    #[test]
+    fn test_a_star_step_budget_exhausted() {
+        let mut grid = NavGrid::new(1.0, 20.0);
+        grid.add_obstacle_box(-0.4, -15.0, 0.4, 15.0);
+
+        // A very tiny step budget of 2 iterations cannot solve a 40x40 maze
+        let path = grid.find_path_budgeted(-15.0, 0.0, 15.0, 0.0, 2);
+        assert!(path.is_none(), "Expected budget exhaustion to return None");
+    }
+
+    #[test]
+    fn test_a_star_3d_terrain_and_voxels() {
+        let mut grid = NavGrid::new(1.0, 10.0);
+        // Add a wall obstacle
+        grid.add_obstacle_box(-0.4, -4.0, 0.4, 4.0);
+
+        // Height sampler: a gentle hill y = 0.5 * (x + 10)
+        let height_fn = |x: f32, _z: f32| -> f32 { (x * 0.1).max(0.0) };
+
+        let path = grid.find_path_3d(
+            [-5.0, 0.0, 0.0],
+            [5.0, 0.5, 0.0],
+            1000,
+            Some(&height_fn),
+            None,
+        );
+
+        assert!(path.is_some(), "Expected valid 3D path");
+        let waypoints = path.unwrap();
+        assert!(waypoints.len() >= 2);
+        assert_eq!(waypoints.first().unwrap()[0], -5.0);
+        assert_eq!(waypoints.last().unwrap()[0], 5.0);
+
+        // Verify obstacle checker blocks paths through voxels
+        let blocked_by_voxel = grid.find_path_3d(
+            [-5.0, 0.0, 0.0],
+            [5.0, 0.5, 0.0],
+            1000,
+            Some(&height_fn),
+            Some(&|_x, _y, _z| true), // Everything solid
+        );
+        assert!(blocked_by_voxel.is_none(), "Expected path to be blocked by voxels");
     }
 }
