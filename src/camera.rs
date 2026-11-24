@@ -245,7 +245,7 @@ impl Camera {
         let mut yaw = offset.z.atan2(offset.x);
         let mut pitch = (offset.y / radius).clamp(-0.9999, 0.9999).asin();
 
-        yaw -= delta_x * 0.006;
+        yaw += delta_x * 0.006;
         pitch = (pitch + delta_y * 0.006).clamp(-1.52, 1.52);
 
         let cos_pitch = pitch.cos();
@@ -483,5 +483,21 @@ mod tests {
         // After 90 deg rotation, eye should be near (0, 0, 5)
         assert!(cam.eye.x.abs() < 0.1);
         assert!((cam.eye.z - 5.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_camera_manual_orbit_yaw_direction() {
+        let mut cam = Camera::new_3d(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, 1.77);
+
+        // Move mouse to the right (dx > 0) -> camera view turns right (forward x > 0)
+        cam.orbit(50.0, 0.0);
+        let forward_after_right = (cam.target - cam.eye).normalize();
+        assert!(forward_after_right.x > 0.0, "Expected forward vector x > 0 when turning right, got {}", forward_after_right.x);
+
+        // Reset and move mouse to the left (dx < 0) -> camera view turns left (forward x < 0)
+        let mut cam_left = Camera::new_3d(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, 1.77);
+        cam_left.orbit(-50.0, 0.0);
+        let forward_after_left = (cam_left.target - cam_left.eye).normalize();
+        assert!(forward_after_left.x < 0.0, "Expected forward vector x < 0 when turning left, got {}", forward_after_left.x);
     }
 }
