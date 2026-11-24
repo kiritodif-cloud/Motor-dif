@@ -73,9 +73,11 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `load_scene(path)`: Queues scene transition on frame boundary.
   - `save_data(key, val)`, `load_data(key) -> val`: Legacy JSON persistence to `assets/save_data.json`.
   - `save_game(slot, data) -> bool`, `load_game(slot) -> table|nil`, `delete_save(slot) -> bool`, `list_saves() -> table`: Slotted JSON save/load in `saves/<slot>.json` with path traversal defense.
-- Camera & Input:
+- Camera & Input & Game Feel:
   - `set_camera(x,y,z, tx,ty,tz)`, `follow_entity(id, ox,oy,oz, smoothness)`
-  - `camera_shake(intensity, duration)`, `camera_lerp_to(ex,ey,ez, tx,ty,tz, duration)`
+  - `camera_shake(intensity, duration, [frequency])`, `camera_lerp_to(ex,ey,ez, tx,ty,tz, duration)`
+  - `set_time_scale(scale)`, `get_time_scale() -> f32`, `hitstop(duration)`: Slow-mo / micro-freezes.
+  - `set_vignette(intensity)`, `set_chromatic_aberration(intensity)`: Real-time WGSL Post-FX.
   - `camera_orbit_target(id, distance, pitch_deg, yaw_speed)`
   - `get_mouse_world_pos([plane_y]) -> { x, y, z }`, `get_mouse_delta() -> { dx, dy }`
   - `set_pointer_lock(enabled: bool)`, `is_pointer_locked() -> bool`
@@ -117,7 +119,8 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `spawn_vfx(preset_or_json, x, y, z)`: Spawns one-shot or burst particle effect at world position.
   - `attach_vfx(entity_id, preset_or_json, [ox, oy, oz])`: Attaches continuous emitter to entity.
   - `stop_vfx(entity_id)`: Detaches and removes emitter from entity.
-  - Built-in presets: `"explosion"`, `"fire"`, `"magic_portal"`, `"hit_spark"`, `"level_up"`.
+  - `spawn_particle_preset(preset, x, y, z, [count])`: Spawns GPU instanced preset particles.
+  - Built-in presets: `"explosion"`, `"fire"`, `"smoke"`, `"sparks"`, `"rain"`, `"magic_portal"`, `"level_up"`.
   - `spawn_particles(x, y, z, r, g, b, [count], [speed], [lifetime])`: Legacy particle burst.
 - Audio System:
   - `play_sound(path, [vol], [bus])`: Buses: `"master"`, `"sfx"`, `"music"`.

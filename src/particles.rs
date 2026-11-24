@@ -27,6 +27,67 @@ pub struct ParticleSpawnRequest {
     pub lifetime: f32,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ParticleEmitter {
+    pub preset: String,
+    pub position: [f32; 3],
+    pub rate: f32,
+    pub enabled: bool,
+    pub looping: bool,
+    pub burst_count: usize,
+    #[serde(skip)]
+    pub accumulator: f32,
+}
+
+impl Default for ParticleEmitter {
+    fn default() -> Self {
+        Self {
+            preset: "sparks".to_string(),
+            position: [0.0, 0.0, 0.0],
+            rate: 25.0,
+            enabled: true,
+            looping: true,
+            burst_count: 35,
+            accumulator: 0.0,
+        }
+    }
+}
+
+impl ParticleEmitter {
+    pub fn new(preset: impl Into<String>, position: [f32; 3], rate: f32) -> Self {
+        Self {
+            preset: preset.into(),
+            position,
+            rate,
+            enabled: true,
+            looping: true,
+            burst_count: 35,
+            accumulator: 0.0,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32, ps: &mut ParticleSystem) {
+        if !self.enabled {
+            return;
+        }
+        if self.rate > 0.0 {
+            self.accumulator += self.rate * dt;
+            let to_spawn = self.accumulator.floor() as usize;
+            if to_spawn > 0 {
+                self.accumulator -= to_spawn as f32;
+                ps.spawn_preset(Vec3::from(self.position), &self.preset, Some(to_spawn));
+            }
+        }
+    }
+
+    pub fn burst(&mut self, ps: &mut ParticleSystem) {
+        if self.enabled {
+            let count = if self.burst_count > 0 { self.burst_count } else { 35 };
+            ps.spawn_preset(Vec3::from(self.position), &self.preset, Some(count));
+        }
+    }
+}
+
 pub struct ParticleSystem {
     particles: Vec<Particle>,
     max_particles: usize,
@@ -128,6 +189,17 @@ impl ParticleSystem {
                 vortex_strength: recipe.vortex_strength,
                 emitter_center: origin,
             });
+        }
+    }
+
+    /// Spawns particles using one of the built-in presets: "explosion", "fire", "smoke", "sparks", "rain"
+    pub fn spawn_preset(&mut self, origin: Vec3, preset: &str, count: Option<usize>) -> bool {
+        if let Some(recipe) = crate::vfx_forge::get_vfx_preset(preset) {
+            let n = count.unwrap_or(recipe.burst_count.max(25));
+            self.spawn_vfx(origin, &recipe, n);
+            true
+        } else {
+            false
         }
     }
 
@@ -248,5 +320,30 @@ mod tests {
             assert!(!p.position.is_nan());
             assert!(!p.velocity.is_nan());
         }
+    }
+
+    #[test]
+    fn test_particle_emitter_and_all_presets() {
+        let mut ps = ParticleSystem::new();
+
+        // Test all required presets
+        for preset in &["explosion", "fire", "smoke", "sparks", "rain"] {
+            let ok = ps.spawn_preset(Vec3::new(1.0, 2.0, 3.0), preset, Some(20));
+            assert!(ok, "Expected preset '{}' to spawn successfully", preset);
+        }
+        assert!(ps.active_count() >= 100);
+
+        // Test ParticleEmitter continuous update
+        let mut emitter = ParticleEmitter::new("fire", [0.0, 1.0, 0.0], 50.0);
+        ps.clear();
+        assert_eq!(ps.active_count(), 0);
+
+        // Advance 0.1s at 50 particles/sec -> 5 particles
+        emitter.update(0.1, &mut ps);
+        assert!(ps.active_count() >= 5);
+
+        // Test ParticleEmitter burst
+        emitter.burst(&mut ps);
+        assert!(ps.active_count() >= 35);
     }
 }

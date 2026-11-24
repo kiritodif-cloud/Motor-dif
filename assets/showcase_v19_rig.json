@@ -18,7 +18,8 @@
     "bloom_intensity": 0.4,
     "bloom_threshold": 0.75,
     "vignette_intensity": 0.32,
-    "exposure": 1.05
+    "exposure": 1.05,
+    "chromatic_aberration": 0.0
   },
   "environment": {
     "sky_mode": "gradient",

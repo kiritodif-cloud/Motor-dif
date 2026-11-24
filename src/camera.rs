@@ -31,6 +31,8 @@ pub struct Camera {
     #[serde(skip)]
     pub shake_offset: Vec3,
     #[serde(skip)]
+    pub shake_frequency: f32,
+    #[serde(skip)]
     pub follow_target: Option<(String, Vec3, f32)>,
     #[serde(skip)]
     pub lerp_cinematic: Option<CameraLerpState>,
@@ -73,6 +75,7 @@ impl Camera {
             shake_duration: 0.0,
             shake_timer: 0.0,
             shake_offset: Vec3::ZERO,
+            shake_frequency: 25.0,
             follow_target: None,
             lerp_cinematic: None,
             orbit_cinematic: None,
@@ -94,6 +97,7 @@ impl Camera {
             shake_duration: 0.0,
             shake_timer: 0.0,
             shake_offset: Vec3::ZERO,
+            shake_frequency: 25.0,
             follow_target: None,
             lerp_cinematic: None,
             orbit_cinematic: None,
@@ -159,20 +163,29 @@ impl Camera {
     }
 
     pub fn shake(&mut self, intensity: f32, duration: f32) {
+        self.shake_with_freq(intensity, duration, 25.0);
+    }
+
+    pub fn shake_with_freq(&mut self, intensity: f32, duration: f32, frequency: f32) {
         self.shake_intensity = intensity;
         self.shake_duration = duration.max(0.01);
         self.shake_timer = self.shake_duration;
+        self.shake_frequency = frequency.max(1.0);
     }
 
     pub fn update_shake(&mut self, dt: f32) {
         if self.shake_timer > 0.0 {
             self.shake_timer -= dt;
             let progress = (self.shake_timer / self.shake_duration).clamp(0.0, 1.0);
-            let current_amp = self.shake_intensity * progress * progress;
-            let t = self.shake_timer * 60.0;
-            let r1 = ((t * 1.37).sin() * 4375.85).fract() * 2.0 - 1.0;
-            let r2 = ((t * 2.71).cos() * 2342.16).fract() * 2.0 - 1.0;
-            let r3 = ((t * 3.89).sin() * 3123.48).fract() * 2.0 - 1.0;
+            // Exponential ease-out decay curve
+            let decay = progress * progress * (3.0 - 2.0 * progress);
+            let current_amp = self.shake_intensity * decay;
+            let t = (self.shake_duration - self.shake_timer) * self.shake_frequency;
+
+            // Multi-harmonic smooth pseudo-noise
+            let r1 = (t * 1.11).sin() * 0.65 + (t * 2.37).sin() * 0.35;
+            let r2 = (t * 1.43 + 1.2).cos() * 0.65 + (t * 2.81 + 0.8).sin() * 0.35;
+            let r3 = (t * 1.79 + 2.1).sin() * 0.6 + (t * 3.19 + 1.5).cos() * 0.4;
             self.shake_offset = Vec3::new(r1, r2, r3) * current_amp;
         } else {
             self.shake_timer = 0.0;

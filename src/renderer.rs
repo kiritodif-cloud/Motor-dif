@@ -1079,6 +1079,10 @@ pub struct PostProcessUniform {
     pub time: f32,
     pub screen_width: f32,
     pub screen_height: f32,
+    pub chromatic_aberration: f32,
+    pub _pad0: f32,
+    pub _pad1: f32,
+    pub _pad2: f32,
 }
 
 impl Default for PostProcessUniform {
@@ -1092,6 +1096,10 @@ impl Default for PostProcessUniform {
             time: 0.0,
             screen_width: 1280.0,
             screen_height: 720.0,
+            chromatic_aberration: 0.0,
+            _pad0: 0.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
         }
     }
 }
@@ -1116,6 +1124,10 @@ struct PostProcessUniform {
     time: f32,
     screen_width: f32,
     screen_height: f32,
+    chromatic_aberration: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 };
 
 @group(0) @binding(0)
@@ -1161,7 +1173,18 @@ fn aces_filmic_saturated(color: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_post_process(in: VertexOutput) -> @location(0) vec4<f32> {
-    let base_color = textureSample(hdr_texture, hdr_sampler, in.uv).rgb;
+    var base_color = textureSample(hdr_texture, hdr_sampler, in.uv).rgb;
+
+    // Dynamic Chromatic Aberration
+    if (pp.chromatic_aberration > 0.0) {
+        let dir = in.uv - vec2<f32>(0.5, 0.5);
+        let dist = length(dir);
+        let ca_offset = dir * (dist * pp.chromatic_aberration * 0.05);
+        let col_r = textureSample(hdr_texture, hdr_sampler, in.uv - ca_offset).r;
+        let col_b = textureSample(hdr_texture, hdr_sampler, in.uv + ca_offset).b;
+        base_color = vec3<f32>(col_r, base_color.g, col_b);
+    }
+
     var final_color = base_color * pp.exposure;
 
     if (pp.bloom_enabled != 0u && pp.bloom_intensity > 0.0) {
@@ -3891,7 +3914,7 @@ mod tests {
         assert_eq!(size_of::<PointLightRaw>(), 64);
         assert_eq!(size_of::<LightsUniform>(), 1040);
         assert_eq!(size_of::<LightsUniform>() % 16, 0);
-        assert_eq!(size_of::<PostProcessUniform>(), 32);
+        assert_eq!(size_of::<PostProcessUniform>(), 48);
         assert_eq!(size_of::<PostProcessUniform>() % 16, 0);
         assert_eq!(size_of::<ShadowUniform>(), 96);
         assert_eq!(size_of::<ShadowUniform>() % 16, 0);

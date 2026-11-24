@@ -180,6 +180,8 @@ pub struct EngineState {
     pub active_viewmodel_action: Option<(String, f32, f32, f32)>,
     pub viewmodel_bob_phase: f32,
     pub total_time: f32,
+    pub time_scale: f32,
+    pub hitstop_timer: f32,
 
     // Editor State
     pub workspace: EditorWorkspace,
@@ -536,6 +538,8 @@ impl EngineState {
             active_viewmodel_action: None,
             viewmodel_bob_phase: 0.0,
             total_time: 0.0,
+            time_scale: 1.0,
+            hitstop_timer: 0.0,
 
             workspace: EditorWorkspace::Scene,
             scene_path: initial_scene_path.clone(),
@@ -2204,8 +2208,8 @@ impl EngineState {
                     if let Ok(f) = follow_entity { let _ = lua.globals().set("follow_entity", f); }
 
                     let cam_shake_s = self.lua_ctx.pending_camera_shakes.clone();
-                    let camera_shake = lua.create_function(move |_, (intensity, duration): (f32, f32)| {
-                        if let Ok(mut list) = cam_shake_s.lock() { list.push((intensity, duration)); }
+                    let camera_shake = lua.create_function(move |_, (intensity, duration, freq): (f32, f32, Option<f32>)| {
+                        if let Ok(mut list) = cam_shake_s.lock() { list.push((intensity, duration, freq.unwrap_or(25.0))); }
                         Ok(true)
                     });
                     if let Ok(f) = camera_shake { let _ = lua.globals().set("camera_shake", f); }
@@ -3214,7 +3218,27 @@ impl EngineState {
         let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
         self.last_frame_time = now;
         self.total_time += dt;
-        self.lua_ctx.last_dt.store(dt.to_bits(), std::sync::atomic::Ordering::Relaxed);
+
+        // Sync time scale from Lua
+        let lua_ts = f32::from_bits(self.lua_ctx.time_scale.load(std::sync::atomic::Ordering::Relaxed));
+        if lua_ts >= 0.0 {
+            self.time_scale = lua_ts;
+        }
+
+        // Sync hitstop from Lua
+        let lua_hitstop = f32::from_bits(self.lua_ctx.hitstop_timer.swap(0, std::sync::atomic::Ordering::Relaxed));
+        if lua_hitstop > 0.0 {
+            self.hitstop_timer = self.hitstop_timer.max(lua_hitstop);
+        }
+
+        let sim_dt = if self.hitstop_timer > 0.0 {
+            self.hitstop_timer = (self.hitstop_timer - dt).max(0.0);
+            0.0
+        } else {
+            dt * self.time_scale
+        };
+
+        self.lua_ctx.last_dt.store(sim_dt.to_bits(), std::sync::atomic::Ordering::Relaxed);
 
         // Drain pending post process updates from Lua
         if let Ok(mut pending_pp) = self.lua_ctx.pending_post_process.lock() {
@@ -3412,7 +3436,7 @@ impl EngineState {
 
             // 2. Run Lua scripts update
             for (meta, transform, script) in self.world.query_mut::<(&EntityMeta, &mut Transform, &mut ScriptComponent)>() {
-                if let Err(e) = script.update(transform, dt) {
+                if let Err(e) = script.update(transform, sim_dt) {
                     let err_msg = format!("Lua runtime error on '{}': {}", meta.id, e);
                     if self.last_lua_error.as_ref() != Some(&err_msg) {
                         self.logs.push(err_msg.clone());
@@ -3420,7 +3444,7 @@ impl EngineState {
                     }
                 }
             }
-            scripting::process_timers_and_events(&mut self.world, &self.lua_ctx, dt, &mut self.logs);
+            scripting::process_timers_and_events(&mut self.world, &self.lua_ctx, sim_dt, &mut self.logs);
 
             // 3. Apply forces & impulses
             for (rb, script) in self.world.query_mut::<(&RigidBodyComponent, &mut ScriptComponent)>() {
@@ -3437,7 +3461,7 @@ impl EngineState {
             }
 
             // 4. Step Physics
-            self.physics.step(dt);
+            self.physics.step(sim_dt);
             self.physics.sync_to_ecs(&mut self.world);
 
             // 5. Handle Collision Events & dispatch on_collision to Lua
@@ -3870,7 +3894,7 @@ impl EngineState {
 
                     // 2. Continuous emission (rate_per_sec)
                     if emitter.recipe.rate_per_sec > 0.0 {
-                        emitter.accumulator += dt * emitter.recipe.rate_per_sec;
+                        emitter.accumulator += sim_dt * emitter.recipe.rate_per_sec;
                         let count_to_spawn = emitter.accumulator as usize;
                         if count_to_spawn > 0 {
                             emitter.accumulator -= count_to_spawn as f32;
@@ -4093,8 +4117,8 @@ impl EngineState {
         } else {
             Vec::new()
         };
-        for (intensity, duration) in pending_cam_shakes {
-            self.camera.shake(intensity, duration);
+        for (intensity, duration, freq) in pending_cam_shakes {
+            self.camera.shake_with_freq(intensity, duration, freq);
         }
 
         let pending_cam_lerps = if let Ok(mut c) = self.lua_ctx.pending_camera_lerps.lock() {
@@ -4145,7 +4169,7 @@ impl EngineState {
         }
 
         // Update active particles
-        self.particles.update(dt);
+        self.particles.update(sim_dt);
 
         // Clear just_pressed_keys and mouse delta at end of frame
         if let Ok(mut jp) = self.lua_ctx.just_pressed_keys.write() {
@@ -5953,6 +5977,7 @@ impl EngineState {
                             ui.add(egui::Slider::new(&mut self.post_process_settings.bloom_intensity, 0.0..=3.0).text("Bloom Intensity"));
                             ui.add(egui::Slider::new(&mut self.post_process_settings.bloom_threshold, 0.1..=2.5).text("Threshold"));
                             ui.add(egui::Slider::new(&mut self.post_process_settings.vignette_intensity, 0.0..=1.0).text("Vignette"));
+                            ui.add(egui::Slider::new(&mut self.post_process_settings.chromatic_aberration, 0.0..=1.0).text("Chromatic Aberration"));
                             ui.add(egui::Slider::new(&mut self.post_process_settings.exposure, 0.1..=3.0).text("Exposure"));
                         });
 
@@ -8073,6 +8098,10 @@ impl EngineState {
             time: self.total_time,
             screen_width: self.gpu.config.width as f32,
             screen_height: self.gpu.config.height as f32,
+            chromatic_aberration: self.post_process_settings.chromatic_aberration,
+            _pad0: 0.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
         };
         self.gpu.queue.write_buffer(
             &self.gpu.post_process.uniform_buffer,

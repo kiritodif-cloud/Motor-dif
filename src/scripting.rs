@@ -120,7 +120,7 @@ pub struct LuaEngineContext {
     pub pending_particles: Arc<Mutex<Vec<crate::particles::ParticleSpawnRequest>>>,
     pub pending_camera_sets: Arc<Mutex<Vec<([f32; 3], [f32; 3])>>>,
     pub pending_camera_follows: Arc<Mutex<Vec<(Option<String>, [f32; 3], f32)>>>,
-    pub pending_camera_shakes: Arc<Mutex<Vec<(f32, f32)>>>,
+    pub pending_camera_shakes: Arc<Mutex<Vec<(f32, f32, f32)>>>,
     pub pending_camera_lerps: Arc<Mutex<Vec<([f32; 3], [f32; 3], f32)>>>,
     pub pending_camera_orbits: Arc<Mutex<Vec<(Option<String>, f32, f32, f32)>>>,
     pub pending_tweens: Arc<Mutex<Vec<crate::tweens::TweenRequest>>>,
@@ -167,6 +167,8 @@ pub struct LuaEngineContext {
     pub pending_viewmodel_action: Arc<Mutex<Option<(String, f32)>>>,
     pub last_dt: Arc<std::sync::atomic::AtomicU32>,
     pub pending_entity_transforms: Arc<Mutex<Vec<(String, [f32; 4])>>>,
+    pub time_scale: Arc<std::sync::atomic::AtomicU32>,
+    pub hitstop_timer: Arc<std::sync::atomic::AtomicU32>,
 }
 
 #[derive(Debug, Clone)]
@@ -399,6 +401,8 @@ impl LuaEngineContext {
             pending_viewmodel_action: Arc::new(Mutex::new(None)),
             last_dt: Arc::new(std::sync::atomic::AtomicU32::new(0.01666667f32.to_bits())),
             pending_entity_transforms: Arc::new(Mutex::new(Vec::new())),
+            time_scale: Arc::new(std::sync::atomic::AtomicU32::new(1.0f32.to_bits())),
+            hitstop_timer: Arc::new(std::sync::atomic::AtomicU32::new(0.0f32.to_bits())),
         }
     }
 
@@ -1079,13 +1083,13 @@ impl ScriptComponent {
             .set("follow_entity", follow_entity)
             .map_err(|e| e.to_string())?;
 
-        // 17. camera_shake(intensity, duration)
+        // 17. camera_shake(intensity, duration, [frequency])
         let cam_shake_ref = ctx.pending_camera_shakes.clone();
         let camera_shake = lua
             .create_function(
-                move |_, (intensity, duration): (f32, f32)| {
+                move |_, (intensity, duration, freq): (f32, f32, Option<f32>)| {
                     if let Ok(mut list) = cam_shake_ref.lock() {
-                        list.push((intensity, duration));
+                        list.push((intensity, duration, freq.unwrap_or(25.0)));
                     }
                     Ok(true)
                 },
@@ -1297,12 +1301,93 @@ impl ScriptComponent {
                 table.set("bloom_threshold", pp.bloom_threshold)?;
                 table.set("vignette_intensity", pp.vignette_intensity)?;
                 table.set("exposure", pp.exposure)?;
+                table.set("chromatic_aberration", pp.chromatic_aberration)?;
                 Ok(table)
             })
             .map_err(|e| format!("Failed to register get_post_process: {}", e))?;
         lua.globals()
             .set("get_post_process", get_post_process)
             .map_err(|e| e.to_string())?;
+
+        // 26b. set_vignette(intensity)
+        let vig_pp_settings = ctx.post_process_settings.clone();
+        let vig_pending_pp = ctx.pending_post_process.clone();
+        let set_vignette = lua
+            .create_function(move |_, intensity: f32| {
+                let mut pp = vig_pp_settings.read().map(|s| s.clone()).unwrap_or_default();
+                pp.vignette_intensity = intensity.clamp(0.0, 1.0);
+                if let Ok(mut lock) = vig_pp_settings.write() {
+                    *lock = pp.clone();
+                }
+                if let Ok(mut pending) = vig_pending_pp.lock() {
+                    *pending = Some(pp);
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register set_vignette: {}", e))?;
+        lua.globals().set("set_vignette", set_vignette).map_err(|e| e.to_string())?;
+
+        // 26c. set_chromatic_aberration(intensity)
+        let ca_pp_settings = ctx.post_process_settings.clone();
+        let ca_pending_pp = ctx.pending_post_process.clone();
+        let set_chromatic_aberration = lua
+            .create_function(move |_, intensity: f32| {
+                let mut pp = ca_pp_settings.read().map(|s| s.clone()).unwrap_or_default();
+                pp.chromatic_aberration = intensity.clamp(0.0, 1.0);
+                if let Ok(mut lock) = ca_pp_settings.write() {
+                    *lock = pp.clone();
+                }
+                if let Ok(mut pending) = ca_pending_pp.lock() {
+                    *pending = Some(pp);
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register set_chromatic_aberration: {}", e))?;
+        lua.globals().set("set_chromatic_aberration", set_chromatic_aberration).map_err(|e| e.to_string())?;
+
+        // 26d. set_time_scale(scale)
+        let ts_ref = ctx.time_scale.clone();
+        let set_time_scale = lua
+            .create_function(move |_, scale: f32| {
+                ts_ref.store(scale.max(0.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register set_time_scale: {}", e))?;
+        lua.globals().set("set_time_scale", set_time_scale).map_err(|e| e.to_string())?;
+
+        // 26e. get_time_scale() -> f32
+        let ts_get_ref = ctx.time_scale.clone();
+        let get_time_scale = lua
+            .create_function(move |_, ()| {
+                Ok(f32::from_bits(ts_get_ref.load(std::sync::atomic::Ordering::Relaxed)))
+            })
+            .map_err(|e| format!("Failed to register get_time_scale: {}", e))?;
+        lua.globals().set("get_time_scale", get_time_scale).map_err(|e| e.to_string())?;
+
+        // 26f. hitstop(duration)
+        let hitstop_ref = ctx.hitstop_timer.clone();
+        let hitstop = lua
+            .create_function(move |_, duration: f32| {
+                hitstop_ref.store(duration.max(0.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register hitstop: {}", e))?;
+        lua.globals().set("hitstop", hitstop).map_err(|e| e.to_string())?;
+
+        // 26g. spawn_particle_preset(preset, x, y, z, [count])
+        let vfx_preset_cmd_ref = ctx.pending_vfx_commands.clone();
+        let spawn_particle_preset = lua
+            .create_function(move |_, (preset, x, y, z, _count_opt): (String, f32, f32, f32, Option<usize>)| {
+                if let Ok(mut cmds) = vfx_preset_cmd_ref.lock() {
+                    cmds.push(VfxCommand::Spawn {
+                        recipe_or_preset: preset,
+                        position: [x, y, z],
+                    });
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register spawn_particle_preset: {}", e))?;
+        lua.globals().set("spawn_particle_preset", spawn_particle_preset).map_err(|e| e.to_string())?;
 
         // 27. set_material(entity_id, material_table)
         let materials_ref = ctx.pending_materials.clone();
@@ -3927,6 +4012,79 @@ mod tests {
         let baked_path = std::path::Path::new("assets/music/temp_test_menu.wav");
         assert!(baked_path.exists());
         let _ = std::fs::remove_file(baked_path);
+        let _ = std::fs::remove_file(test_script_path);
+    }
+
+    #[test]
+    fn test_game_feel_and_post_fx_lua_bindings() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio.clone());
+
+        let test_script_path = "assets/scripts/temp_game_feel_test.lua";
+        let script_code = r#"
+            -- Test Time Scale
+            set_time_scale(0.5)
+            ts = get_time_scale()
+
+            -- Test Hitstop
+            hitstop(0.08)
+
+            -- Test Camera Shake with Frequency
+            camera_shake(1.5, 0.4, 40.0)
+
+            -- Test Post-FX: Vignette and Chromatic Aberration
+            set_vignette(0.75)
+            set_chromatic_aberration(0.45)
+            pp = get_post_process()
+            vig = pp.vignette_intensity
+            ca = pp.chromatic_aberration
+
+            -- Test Particle Preset Spawn
+            p_res = spawn_particle_preset("explosion", 0.0, 1.0, 0.0, 50)
+        "#;
+        std::fs::write(test_script_path, script_code).unwrap();
+
+        let mut comp = ScriptComponent::new(test_script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Init failed: {:?}", res.err());
+
+        if let Some(lua_arc) = &comp.lua {
+            let lua = lua_arc.lock().unwrap();
+            let ts: f32 = lua.globals().get("ts").unwrap();
+            assert!((ts - 0.5).abs() < 1e-4);
+
+            let vig: f32 = lua.globals().get("vig").unwrap();
+            let ca: f32 = lua.globals().get("ca").unwrap();
+            assert!((vig - 0.75).abs() < 1e-4);
+            assert!((ca - 0.45).abs() < 1e-4);
+
+            let p_res: bool = lua.globals().get("p_res").unwrap();
+            assert!(p_res);
+        }
+
+        // Verify atomic values in context
+        let current_ts = f32::from_bits(ctx.time_scale.load(std::sync::atomic::Ordering::Relaxed));
+        assert!((current_ts - 0.5).abs() < 1e-4);
+
+        let hitstop_val = f32::from_bits(ctx.hitstop_timer.load(std::sync::atomic::Ordering::Relaxed));
+        assert!((hitstop_val - 0.08).abs() < 1e-4);
+
+        // Verify camera shake queued with frequency 40.0
+        let shakes = ctx.pending_camera_shakes.lock().unwrap();
+        assert_eq!(shakes.len(), 1);
+        assert_eq!(shakes[0].2, 40.0);
+
+        // Verify post-process settings updated
+        let pp_lock = ctx.post_process_settings.read().unwrap();
+        assert!((pp_lock.vignette_intensity - 0.75).abs() < 1e-4);
+        assert!((pp_lock.chromatic_aberration - 0.45).abs() < 1e-4);
+
+        // Verify vfx command was queued
+        let vfx_cmds = ctx.pending_vfx_commands.lock().unwrap();
+        assert!(!vfx_cmds.is_empty());
+
         let _ = std::fs::remove_file(test_script_path);
     }
 

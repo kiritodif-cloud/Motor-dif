@@ -232,19 +232,69 @@ pub fn preset_level_up() -> VfxRecipe {
     }
 }
 
+pub fn preset_smoke() -> VfxRecipe {
+    VfxRecipe {
+        name: "smoke".to_string(),
+        emitter_shape: "point".to_string(),
+        shape_radius: 0.25,
+        burst_count: 0,
+        rate_per_sec: 25.0,
+        lifetime_min: 1.5,
+        lifetime_max: 2.8,
+        speed_min: 0.8,
+        speed_max: 2.0,
+        direction: [0.0, 1.0, 0.0],
+        spread_deg: 40.0,
+        size_start: 0.18,
+        size_end: 0.65,
+        color_start: [0.35, 0.35, 0.35, 0.6],
+        color_end: [0.1, 0.1, 0.1, 0.0],
+        emissive_boost: 0.0,
+        gravity: [0.0, 0.4, 0.0], // Gentle buoyant rising
+        drag: 1.8,
+        vortex_strength: 0.5,
+    }
+}
+
+pub fn preset_rain() -> VfxRecipe {
+    VfxRecipe {
+        name: "rain".to_string(),
+        emitter_shape: "box".to_string(),
+        shape_radius: 12.0,
+        burst_count: 0,
+        rate_per_sec: 120.0,
+        lifetime_min: 0.6,
+        lifetime_max: 0.9,
+        speed_min: 22.0,
+        speed_max: 28.0,
+        direction: [0.0, -1.0, 0.0],
+        spread_deg: 3.0,
+        size_start: 0.06,
+        size_end: 0.05,
+        color_start: [0.75, 0.88, 1.0, 0.8],
+        color_end: [0.6, 0.8, 1.0, 0.1],
+        emissive_boost: 0.5,
+        gravity: [0.0, -9.81, 0.0],
+        drag: 0.0,
+        vortex_strength: 0.0,
+    }
+}
+
 pub fn get_vfx_preset(name: &str) -> Option<VfxRecipe> {
     match name.to_lowercase().as_str() {
         "explosion" => Some(preset_explosion()),
         "fire" => Some(preset_fire()),
+        "smoke" => Some(preset_smoke()),
+        "sparks" | "spark" | "hit_spark" => Some(preset_hit_spark()),
+        "rain" => Some(preset_rain()),
         "magic_portal" | "portal" => Some(preset_magic_portal()),
-        "hit_spark" | "spark" => Some(preset_hit_spark()),
         "level_up" | "levelup" => Some(preset_level_up()),
         _ => None,
     }
 }
 
 pub fn list_vfx_presets() -> Vec<&'static str> {
-    vec!["explosion", "fire", "magic_portal", "hit_spark", "level_up"]
+    vec!["explosion", "fire", "magic_portal", "hit_spark", "level_up", "smoke", "rain"]
 }
 
 // ============================================================================
@@ -396,7 +446,7 @@ mod tests {
     #[test]
     fn test_all_vfx_presets_generation() {
         let presets = list_vfx_presets();
-        assert_eq!(presets.len(), 5);
+        assert_eq!(presets.len(), 7);
 
         for name in presets {
             let p = get_vfx_preset(name);
@@ -405,7 +455,7 @@ mod tests {
             assert_eq!(recipe.name, name);
             assert!(recipe.lifetime_max >= recipe.lifetime_min);
             assert!(recipe.speed_max >= recipe.speed_min);
-            assert!(recipe.emissive_boost >= 1.0);
+            assert!(recipe.emissive_boost >= 0.0);
             assert!(recipe.size_start > 0.0);
         }
     }

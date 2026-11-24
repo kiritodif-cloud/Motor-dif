@@ -1513,6 +1513,7 @@ mod tests {
                 bloom_threshold: 0.75,
                 vignette_intensity: 0.32,
                 exposure: 1.05,
+                chromatic_aberration: 0.0,
             }),
             environment: Some(EnvironmentDef {
                 sky_mode: "gradient".to_string(),

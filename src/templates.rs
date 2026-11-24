@@ -409,6 +409,7 @@ fn template_space_arena() -> SceneDef {
             bloom_threshold: 0.9,
             vignette_intensity: 0.35,
             exposure: 1.15,
+            chromatic_aberration: 0.0,
         }),
         environment: Some(EnvironmentDef {
             sky_mode: "space".to_string(),

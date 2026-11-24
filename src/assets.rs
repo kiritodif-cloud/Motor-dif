@@ -138,6 +138,8 @@ pub struct PostProcessDef {
     pub vignette_intensity: f32,
     #[serde(default = "default_exposure")]
     pub exposure: f32,
+    #[serde(default = "default_zero")]
+    pub chromatic_aberration: f32,
 }
 
 fn default_true() -> bool { true }
@@ -145,6 +147,7 @@ fn default_bloom_intensity() -> f32 { 0.8 }
 fn default_bloom_threshold() -> f32 { 0.8 }
 fn default_vignette_intensity() -> f32 { 0.35 }
 fn default_exposure() -> f32 { 1.0 }
+fn default_zero() -> f32 { 0.0 }
 
 impl Default for PostProcessDef {
     fn default() -> Self {
@@ -154,6 +157,7 @@ impl Default for PostProcessDef {
             bloom_threshold: 0.8,
             vignette_intensity: 0.35,
             exposure: 1.0,
+            chromatic_aberration: 0.0,
         }
     }
 }
