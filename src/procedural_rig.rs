@@ -1521,6 +1521,9 @@ mod tests {
                 fog_color: [0.06, 0.08, 0.14],
                 fog_density: 0.005,
                 time_of_day: None,
+                fog_mode: None,
+                fog_start: None,
+                fog_end: None,
             }),
             entities,
         };

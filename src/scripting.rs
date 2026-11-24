@@ -135,6 +135,7 @@ pub struct LuaEngineContext {
     pub pending_post_process: Arc<Mutex<Option<crate::assets::PostProcessDef>>>,
     pub post_process_settings: Arc<RwLock<crate::assets::PostProcessDef>>,
     pub pending_materials: Arc<Mutex<Vec<MaterialUpdate>>>,
+    pub pending_pbr_materials: Arc<Mutex<Vec<PbrMaterialUpdate>>>,
     pub pending_trails: Arc<Mutex<Vec<TrailCommand>>>,
     pub debug_lines: Arc<Mutex<Vec<DebugLine3D>>>,
     pub debug_rings: Arc<Mutex<Vec<DebugRing3D>>>,
@@ -288,6 +289,18 @@ pub struct MaterialUpdate {
     pub uv_scroll: Option<[f32; 2]>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PbrMaterialUpdate {
+    pub entity_id: String,
+    pub normal_map: Option<Option<String>>,
+    pub metallic_roughness_map: Option<Option<String>>,
+    pub emissive_map: Option<Option<String>>,
+    pub metallic: Option<f32>,
+    pub roughness: Option<f32>,
+    pub normal_scale: Option<f32>,
+    pub emissive_intensity: Option<f32>,
+}
+
 pub fn check_key_match(keys: &HashSet<String>, clean: &str) -> bool {
     if keys.contains(clean) {
         return true;
@@ -347,6 +360,7 @@ impl LuaEngineContext {
             pending_post_process: Arc::new(Mutex::new(None)),
             post_process_settings: Arc::new(RwLock::new(crate::assets::PostProcessDef::default())),
             pending_materials: Arc::new(Mutex::new(Vec::new())),
+            pending_pbr_materials: Arc::new(Mutex::new(Vec::new())),
             pending_trails: Arc::new(Mutex::new(Vec::new())),
             debug_lines: Arc::new(Mutex::new(Vec::new())),
             debug_rings: Arc::new(Mutex::new(Vec::new())),
@@ -1330,6 +1344,48 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register set_material: {}", e))?;
         lua.globals()
             .set("set_material", set_material)
+            .map_err(|e| e.to_string())?;
+
+        // 27b. set_pbr_material(entity_id, pbr_table)
+        let pbr_materials_ref = ctx.pending_pbr_materials.clone();
+        let set_pbr_material = lua
+            .create_function(move |_, args: mlua::MultiValue| {
+                let mut iter = args.into_iter();
+                let first = iter.next();
+                let second = iter.next();
+                let (id, mat_table) = match (first, second) {
+                    (Some(mlua::Value::String(s)), Some(mlua::Value::Table(t))) => (s.to_str().map(|b| b.to_string()).unwrap_or_default(), t),
+                    (Some(mlua::Value::Table(t)), Some(mlua::Value::Table(mat))) => {
+                        let id = t.get::<String>("id").unwrap_or_default();
+                        (id, mat)
+                    }
+                    _ => return Err(mlua::Error::runtime("Expected: set_pbr_material(entity_id, { metallic = 0.0, roughness = 0.5, ... })")),
+                };
+                let normal_map: Option<Option<String>> = mat_table.get("normal_map").ok();
+                let metallic_roughness_map: Option<Option<String>> = mat_table.get("metallic_roughness_map").ok();
+                let emissive_map: Option<Option<String>> = mat_table.get("emissive_map").ok();
+                let metallic: Option<f32> = mat_table.get("metallic").ok();
+                let roughness: Option<f32> = mat_table.get("roughness").ok();
+                let normal_scale: Option<f32> = mat_table.get("normal_scale").ok();
+                let emissive_intensity: Option<f32> = mat_table.get("emissive_intensity").ok();
+
+                if let Ok(mut list) = pbr_materials_ref.lock() {
+                    list.push(PbrMaterialUpdate {
+                        entity_id: id,
+                        normal_map,
+                        metallic_roughness_map,
+                        emissive_map,
+                        metallic,
+                        roughness,
+                        normal_scale,
+                        emissive_intensity,
+                    });
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register set_pbr_material: {}", e))?;
+        lua.globals()
+            .set("set_pbr_material", set_pbr_material)
             .map_err(|e| e.to_string())?;
 
         // 28. set_trail(id, r, g, b, [lifetime], [width])
@@ -3762,5 +3818,44 @@ mod tests {
         let _ = std::fs::remove_file(saves_test_file);
 
         assert!(res.is_ok(), "Lua save/load execution failed: {:?}", res.err());
+    }
+
+    #[test]
+    fn test_set_pbr_material_lua_binding() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        let test_script = r#"
+            set_pbr_material("boss_golem", {
+                metallic = 0.9,
+                roughness = 0.25,
+                normal_scale = 1.5,
+                emissive_intensity = 3.0,
+                normal_map = "assets/textures/golem_norm.png",
+                metallic_roughness_map = "assets/textures/golem_mr.png",
+                emissive_map = "assets/textures/golem_emit.png"
+            })
+        "#;
+        let script_path = "assets/scripts/temp_pbr_lua_test.lua";
+        std::fs::write(script_path, test_script).unwrap();
+
+        let mut comp = ScriptComponent::new(script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        let _ = std::fs::remove_file(script_path);
+        assert!(res.is_ok(), "PBR lua execution failed: {:?}", res.err());
+
+        let pending = ctx.pending_pbr_materials.lock().unwrap().clone();
+        assert_eq!(pending.len(), 1);
+        let update = &pending[0];
+        assert_eq!(update.entity_id, "boss_golem");
+        assert_eq!(update.metallic, Some(0.9));
+        assert_eq!(update.roughness, Some(0.25));
+        assert_eq!(update.normal_scale, Some(1.5));
+        assert_eq!(update.emissive_intensity, Some(3.0));
+        assert_eq!(update.normal_map, Some(Some("assets/textures/golem_norm.png".to_string())));
+        assert_eq!(update.metallic_roughness_map, Some(Some("assets/textures/golem_mr.png".to_string())));
+        assert_eq!(update.emissive_map, Some(Some("assets/textures/golem_emit.png".to_string())));
     }
 }

@@ -186,6 +186,7 @@ impl ParticleSystem {
                 fresnel: [0.0, 0.0, 0.0, 0.0],
                 uv_offset: [0.0, 0.0],
                 uv_scale: [1.0, 1.0],
+                pbr_params: [0.0, 1.0, 1.0, emissive],
             });
         }
         instances

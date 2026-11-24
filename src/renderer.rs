@@ -50,11 +50,12 @@ pub struct InstanceRaw {
     pub uv_offset: [f32; 2],
     pub uv_scale: [f32; 2],
     pub fresnel: [f32; 4], // [fresnel_color.r, fresnel_color.g, fresnel_color.b, fresnel_power]
+    pub pbr_params: [f32; 4], // [metallic, roughness, normal_scale, emissive_intensity]
 }
 
 impl InstanceRaw {
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
-        const ATTRIBS: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
+        const ATTRIBS: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_array![
             4 => Float32x4,
             5 => Float32x4,
             6 => Float32x4,
@@ -64,6 +65,7 @@ impl InstanceRaw {
             10 => Float32x2,
             11 => Float32x2,
             12 => Float32x4,
+            13 => Float32x4,
         ];
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<InstanceRaw>() as wgpu::BufferAddress,
@@ -88,30 +90,42 @@ impl Default for ViewMode {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-pub struct PointLightRaw {
+pub struct LightRaw {
     pub position: [f32; 3],
     pub radius: f32,
     pub color: [f32; 3],
     pub intensity: f32,
+    pub direction: [f32; 3],
+    pub inner_cone: f32,
+    pub outer_cone: f32,
+    pub light_type: f32, // 0.0 = point, 1.0 = spot
+    pub _pad: [f32; 2],
 }
 
-impl Default for PointLightRaw {
+impl Default for LightRaw {
     fn default() -> Self {
         Self {
             position: [0.0; 3],
             radius: 0.0,
             color: [0.0; 3],
             intensity: 0.0,
+            direction: [0.0, -1.0, 0.0],
+            inner_cone: 0.0,
+            outer_cone: 0.0,
+            light_type: 0.0,
+            _pad: [0.0; 2],
         }
     }
 }
+
+pub type PointLightRaw = LightRaw;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct LightsUniform {
     pub num_lights: u32,
     pub _pad: [u32; 3],
-    pub lights: [PointLightRaw; 16],
+    pub lights: [LightRaw; 16],
 }
 
 impl Default for LightsUniform {
@@ -119,7 +133,7 @@ impl Default for LightsUniform {
         Self {
             num_lights: 0,
             _pad: [0; 3],
-            lights: [PointLightRaw::default(); 16],
+            lights: [LightRaw::default(); 16],
         }
     }
 }
@@ -166,6 +180,121 @@ impl DepthTexture {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MaterialKey {
+    pub diffuse: Option<String>,
+    pub normal: Option<String>,
+    pub metallic_roughness: Option<String>,
+    pub emissive: Option<String>,
+}
+
+impl MaterialKey {
+    pub fn simple(diffuse: Option<String>) -> Self {
+        Self {
+            diffuse,
+            normal: None,
+            metallic_roughness: None,
+            emissive: None,
+        }
+    }
+}
+
+pub struct GpuTextureRaw {
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    pub sampler: wgpu::Sampler,
+}
+
+impl GpuTextureRaw {
+    pub fn create_1x1(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pixel: [u8; 4],
+        label: &str,
+    ) -> Self {
+        let size = wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &pixel,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            size,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some(&format!("{}_sampler", label)),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        Self { texture, view, sampler }
+    }
+}
+
+pub fn create_material_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    diffuse_view: &wgpu::TextureView,
+    diffuse_sampler: &wgpu::Sampler,
+    normal_view: &wgpu::TextureView,
+    mr_view: &wgpu::TextureView,
+    emissive_view: &wgpu::TextureView,
+    label: &str,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(diffuse_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(diffuse_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(normal_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(mr_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(emissive_view),
+            },
+        ],
+        label: Some(label),
+    })
+}
+
 pub struct TextureGpu {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -181,10 +310,30 @@ impl TextureGpu {
         bytes: &[u8],
         label: &str,
     ) -> Result<Self, String> {
+        let dummy_normal = GpuTextureRaw::create_1x1(device, queue, [128, 128, 255, 255], "temp_normal");
+        let dummy_mr = GpuTextureRaw::create_1x1(device, queue, [255, 128, 0, 255], "temp_mr");
+        let dummy_black = GpuTextureRaw::create_1x1(device, queue, [0, 0, 0, 255], "temp_black");
+        Self::from_bytes_pbr(
+            device, queue, layout, bytes, &dummy_normal.view, &dummy_mr.view, &dummy_black.view, label,
+        )
+    }
+
+    pub fn from_bytes_pbr(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &wgpu::BindGroupLayout,
+        bytes: &[u8],
+        normal_view: &wgpu::TextureView,
+        mr_view: &wgpu::TextureView,
+        emissive_view: &wgpu::TextureView,
+        label: &str,
+    ) -> Result<Self, String> {
         let img = image::load_from_memory(bytes).map_err(|e| format!("Image decode error: {}", e))?;
         let rgba = img.to_rgba8();
         let (width, height) = rgba.dimensions();
-        Self::from_rgba(device, queue, layout, &rgba, width, height, label)
+        Self::from_rgba_pbr(
+            device, queue, layout, &rgba, width, height, normal_view, mr_view, emissive_view, label,
+        )
     }
 
     pub fn from_rgba(
@@ -194,6 +343,26 @@ impl TextureGpu {
         rgba: &[u8],
         width: u32,
         height: u32,
+        label: &str,
+    ) -> Result<Self, String> {
+        let dummy_normal = GpuTextureRaw::create_1x1(device, queue, [128, 128, 255, 255], "temp_normal");
+        let dummy_mr = GpuTextureRaw::create_1x1(device, queue, [255, 128, 0, 255], "temp_mr");
+        let dummy_black = GpuTextureRaw::create_1x1(device, queue, [0, 0, 0, 255], "temp_black");
+        Self::from_rgba_pbr(
+            device, queue, layout, rgba, width, height, &dummy_normal.view, &dummy_mr.view, &dummy_black.view, label,
+        )
+    }
+
+    pub fn from_rgba_pbr(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &wgpu::BindGroupLayout,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        normal_view: &wgpu::TextureView,
+        mr_view: &wgpu::TextureView,
+        emissive_view: &wgpu::TextureView,
         label: &str,
     ) -> Result<Self, String> {
         let size = wgpu::Extent3d {
@@ -246,20 +415,16 @@ impl TextureGpu {
             ..Default::default()
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = create_material_bind_group(
+            device,
             layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-            label: Some(&format!("{}_bind_group", label)),
-        });
+            &view,
+            &sampler,
+            normal_view,
+            mr_view,
+            emissive_view,
+            &format!("{}_bind_group", label),
+        );
 
         Ok(Self {
             texture,
@@ -273,10 +438,14 @@ impl TextureGpu {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         layout: &wgpu::BindGroupLayout,
+        normal_view: &wgpu::TextureView,
+        mr_view: &wgpu::TextureView,
+        emissive_view: &wgpu::TextureView,
     ) -> Self {
         let white_pixel = [255u8, 255u8, 255u8, 255u8];
-        Self::from_rgba(device, queue, layout, &white_pixel, 1, 1, "default_white_1x1")
-            .expect("Failed to create default 1x1 white texture")
+        Self::from_rgba_pbr(
+            device, queue, layout, &white_pixel, 1, 1, normal_view, mr_view, emissive_view, "default_white_1x1",
+        ).expect("Failed to create default 1x1 white texture")
     }
 }
 
@@ -299,6 +468,11 @@ pub struct GpuContext {
     pub camera_bind_group: wgpu::BindGroup,
     pub texture_bind_group_layout: wgpu::BindGroupLayout,
     pub default_white_texture: TextureGpu,
+    pub dummy_normal: GpuTextureRaw,
+    pub dummy_mr: GpuTextureRaw,
+    pub dummy_black: GpuTextureRaw,
+    pub dummy_white: GpuTextureRaw,
+    pub material_cache: HashMap<MaterialKey, wgpu::BindGroup>,
     pub lights_buffer: wgpu::Buffer,
     pub lights_bind_group_layout: wgpu::BindGroupLayout,
     pub lights_bind_group: wgpu::BindGroup,
@@ -349,6 +523,7 @@ struct InstanceInput {
     @location(10) uv_offset: vec2<f32>,
     @location(11) uv_scale: vec2<f32>,
     @location(12) fresnel: vec4<f32>,
+    @location(13) pbr_params: vec4<f32>,
 };
 
 struct VertexOutputShadow {
@@ -396,6 +571,7 @@ struct CameraUniform {
     horizon_color: vec4<f32>,
     sun_dir: vec4<f32>,
     sun_color: vec4<f32>,
+    fog_params: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -405,12 +581,24 @@ var<uniform> camera: CameraUniform;
 var t_diffuse: texture_2d<f32>;
 @group(1) @binding(1)
 var s_diffuse: sampler;
+@group(1) @binding(2)
+var t_normal: texture_2d<f32>;
+@group(1) @binding(3)
+var t_metallic_roughness: texture_2d<f32>;
+@group(1) @binding(4)
+var t_emissive: texture_2d<f32>;
 
-struct PointLightGpu {
+struct LightGpu {
     position: vec3<f32>,
     radius: f32,
     color: vec3<f32>,
     intensity: f32,
+    direction: vec3<f32>,
+    inner_cone: f32,
+    outer_cone: f32,
+    light_type: f32,
+    _pad0: f32,
+    _pad1: f32,
 };
 
 struct LightsUniform {
@@ -418,7 +606,7 @@ struct LightsUniform {
     _pad0: u32,
     _pad1: u32,
     _pad2: u32,
-    lights: array<PointLightGpu, 16>,
+    lights: array<LightGpu, 16>,
 };
 
 @group(2) @binding(0)
@@ -454,6 +642,7 @@ struct InstanceInput {
     @location(10) uv_offset: vec2<f32>,
     @location(11) uv_scale: vec2<f32>,
     @location(12) fresnel: vec4<f32>,
+    @location(13) pbr_params: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -467,6 +656,7 @@ struct VertexOutput {
     @location(6) uv_scroll: vec2<f32>,
     @location(7) view_mode: f32,
     @location(8) shadow_pos: vec4<f32>,
+    @location(9) pbr_params: vec4<f32>,
 };
 
 @vertex
@@ -500,6 +690,7 @@ fn vs_main(
     out.uv_scroll = vec2<f32>(instance.inst_extra.y, instance.inst_extra.z);
     out.view_mode = instance.inst_extra.w;
     out.shadow_pos = shadow_uniform.light_view_proj * world_pos;
+    out.pbr_params = instance.pbr_params;
     return out;
 }
 
@@ -528,18 +719,73 @@ fn fetch_shadow(shadow_pos: vec4<f32>, n_dot_l: f32) -> f32 {
         return 1.0;
     }
 
-    let bias = max(0.004 * (1.0 - n_dot_l), 0.001);
+    let bias = max(0.0035 * (1.0 - n_dot_l), 0.0008);
     let biased_depth = current_depth - bias;
 
     let texel_size = 1.0 / 2048.0;
     var shadow = 0.0;
+    let weights = array<f32, 3>(1.0, 2.0, 1.0);
+    var total_weight = 0.0;
     for (var x = -1; x <= 1; x = x + 1) {
         for (var y = -1; y <= 1; y = y + 1) {
+            let w = weights[x + 1] * weights[y + 1];
             let offset = vec2<f32>(f32(x), f32(y)) * texel_size;
-            shadow += textureSampleCompare(t_shadow, s_shadow, uv + offset, biased_depth);
+            shadow += textureSampleCompare(t_shadow, s_shadow, uv + offset, biased_depth) * w;
+            total_weight += w;
         }
     }
-    return shadow / 9.0;
+    return shadow / total_weight;
+}
+
+fn cotangent_frame(N: vec3<f32>, p: vec3<f32>, uv: vec2<f32>) -> mat3x3<f32> {
+    let dp1 = dpdx(p);
+    let dp2 = dpdy(p);
+    let duv1 = dpdx(uv);
+    let duv2 = dpdy(uv);
+
+    let dp2perp = cross(dp2, N);
+    let dp1perp = cross(N, dp1);
+
+    let T = dp2perp * duv1.x + dp1perp * duv2.x;
+    let B = dp2perp * duv1.y + dp1perp * duv2.y;
+
+    let invmax = inverseSqrt(max(dot(T, T), dot(B, B)) + 1e-10);
+    return mat3x3<f32>(T * invmax, B * invmax, N);
+}
+
+fn perturb_normal(N: vec3<f32>, V: vec3<f32>, uv: vec2<f32>, normal_map_sample: vec3<f32>, scale: f32) -> vec3<f32> {
+    var map = normal_map_sample * 2.0 - 1.0;
+    map = vec3<f32>(map.x * scale, map.y * scale, map.z);
+    map = normalize(map);
+    let TBN = cotangent_frame(N, -V, uv);
+    return normalize(TBN * map);
+}
+
+const PI: f32 = 3.14159265359;
+
+fn distribution_ggx(N: vec3<f32>, H: vec3<f32>, roughness: f32) -> f32 {
+    let a = roughness * roughness;
+    let a2 = a * a;
+    let NdotH = max(dot(N, H), 0.0);
+    let NdotH2 = NdotH * NdotH;
+    let denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    return a2 / (PI * denom * denom + 1e-5);
+}
+
+fn geometry_schlick_ggx(NdotV: f32, roughness: f32) -> f32 {
+    let r = roughness + 1.0;
+    let k = (r * r) / 8.0;
+    return NdotV / (NdotV * (1.0 - k) + k + 1e-5);
+}
+
+fn geometry_smith(N: vec3<f32>, V: vec3<f32>, L: vec3<f32>, roughness: f32) -> f32 {
+    let NdotV = max(dot(N, V), 0.0);
+    let NdotL = max(dot(N, L), 0.0);
+    return geometry_schlick_ggx(NdotV, roughness) * geometry_schlick_ggx(NdotL, roughness);
+}
+
+fn fresnel_schlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
 @fragment
@@ -552,8 +798,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
-    let emissive = base_color.rgb * in.emissive * 2.0;
-
     // View Modes: 0.0 = Lit, 1.0 = Unlit, 2.0 = Wireframe
     if (in.view_mode > 1.5) {
         let grid = abs(fract(in.uv * 8.0 - 0.5) - 0.5) / fwidth(in.uv * 8.0);
@@ -561,22 +805,36 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let wire_col = mix(vec3<f32>(0.07, 0.09, 0.13), vec3<f32>(0.22, 0.75, 0.98), line);
         return vec4<f32>(wire_col, 1.0);
     } else if (in.view_mode > 0.5) {
-        return vec4<f32>(base_color.rgb + emissive, base_color.a);
+        return vec4<f32>(base_color.rgb + in.emissive * base_color.rgb * 2.0, base_color.a);
     }
 
-    // Procedural surface micro-detail (breaks plastic look on untextured terrain and props)
+    // Procedural surface micro-detail
     let n1 = micro_noise(in.world_pos.xz * 12.0);
     let n2 = micro_noise(in.world_pos.xz * 32.0);
     let detail_mod = 0.93 + 0.14 * (n1 * 0.7 + n2 * 0.3);
-    let surface_color = base_color.rgb * detail_mod;
+    let albedo = base_color.rgb * detail_mod;
 
-    // 1. Hemispheric Ambient Lighting (Sky/Ground) blended with camera skybox zenith/horizon
-    let hemi_factor = clamp(in.world_normal.y * 0.5 + 0.5, 0.0, 1.0);
+    // Normal mapping
+    let view_dir = normalize(camera.camera_pos.xyz - in.world_pos);
+    let normal_sample = textureSample(t_normal, s_diffuse, scrolled_uv).xyz;
+    let N = perturb_normal(in.world_normal, view_dir, scrolled_uv, normal_sample, in.pbr_params.z);
+
+    // PBR Parameters (Metallic, Roughness, Emissive booster)
+    let mr_sample = textureSample(t_metallic_roughness, s_diffuse, scrolled_uv);
+    let metallic = clamp(mr_sample.b * in.pbr_params.x, 0.0, 1.0);
+    let roughness = clamp(mr_sample.g * in.pbr_params.y, 0.04, 1.0);
+    let emissive_sample = textureSample(t_emissive, s_diffuse, scrolled_uv).rgb;
+    let emissive = base_color.rgb * in.emissive * 2.0 + emissive_sample * in.pbr_params.w;
+
+    let F0 = mix(vec3<f32>(0.04), albedo, metallic);
+
+    // 1. Hemispheric Ambient
+    let hemi_factor = clamp(N.y * 0.5 + 0.5, 0.0, 1.0);
     let sky_ambient = mix(vec3<f32>(0.26, 0.30, 0.38), camera.zenith_color.rgb * 0.45, 0.5);
     let ground_ambient = mix(vec3<f32>(0.11, 0.12, 0.14), camera.horizon_color.rgb * 0.25, 0.5);
-    let ambient = mix(ground_ambient, sky_ambient, hemi_factor);
+    let ambient = mix(ground_ambient, sky_ambient, hemi_factor) * albedo * (1.0 - metallic * 0.6);
 
-    // 2. Directional Diffuse Lighting with PCF Soft Shadows
+    // 2. Directional Sun/Light with PCF 3x3 Shadows & PBR Cook-Torrance
     var light_dir = shadow_uniform.light_dir.xyz;
     if (dot(light_dir, light_dir) < 0.001) {
         light_dir = normalize(vec3<f32>(0.5, 0.8, 0.4));
@@ -585,57 +843,89 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     let light_color = shadow_uniform.light_color.rgb;
     let light_intensity = max(shadow_uniform.light_color.w, 0.01);
-    let n_dot_l = max(dot(in.world_normal, light_dir), 0.0);
-    let shadow_factor = fetch_shadow(in.shadow_pos, n_dot_l);
-    let diffuse = light_color * n_dot_l * (0.70 * light_intensity) * shadow_factor;
+    let NdotL = max(dot(N, light_dir), 0.0);
+    let shadow_factor = fetch_shadow(in.shadow_pos, NdotL);
 
-    // 3. Blinn-Phong Specular
-    let view_dir = normalize(camera.camera_pos.xyz - in.world_pos);
-    let half_dir = normalize(light_dir + view_dir);
-    let n_dot_h = max(dot(in.world_normal, half_dir), 0.0);
-    let spec_factor = pow(n_dot_h, 32.0) * step(0.001, n_dot_l) * (0.35 * light_intensity) * shadow_factor;
-    let specular = light_color * spec_factor;
+    var direct_light = vec3<f32>(0.0);
+    if (NdotL > 0.0) {
+        let H = normalize(light_dir + view_dir);
+        let NdotV = max(dot(N, view_dir), 0.001);
+        let NDF = distribution_ggx(N, H, roughness);
+        let G = geometry_smith(N, view_dir, light_dir, roughness);
+        let F = fresnel_schlick(max(dot(H, view_dir), 0.0), F0);
 
-    // 4. Point Lights Accumulation
-    var point_diffuse = vec3<f32>(0.0);
-    var point_specular = vec3<f32>(0.0);
+        let kS = F;
+        let kD = (vec3<f32>(1.0) - kS) * (1.0 - metallic);
+        let numerator = NDF * G * F;
+        let denominator = 4.0 * NdotV * NdotL + 0.0001;
+        let specular = numerator / denominator;
+
+        direct_light = (kD * albedo / PI + specular) * light_color * (light_intensity * NdotL * shadow_factor);
+    }
+
+    // 3. Dynamic Lights (Point & Spot, up to 16)
+    var point_lights_contrib = vec3<f32>(0.0);
     let count = min(lights.num_lights, 16u);
-
     for (var i = 0u; i < count; i = i + 1u) {
-        let pl = lights.lights[i];
-        let light_vec = pl.position - in.world_pos;
+        let l = lights.lights[i];
+        let light_vec = l.position - in.world_pos;
         let d = length(light_vec);
-        if (d < pl.radius && d > 0.0001) {
+        if (d < l.radius && d > 0.0001) {
             let l_dir = light_vec / d;
-            let norm_d = clamp(d / max(pl.radius, 0.001), 0.0, 1.0);
-            let atten = (1.0 - norm_d * norm_d) * (1.0 - norm_d * norm_d) * pl.intensity;
+            let norm_d = clamp(d / max(l.radius, 0.001), 0.0, 1.0);
+            var atten = (1.0 - norm_d * norm_d) * (1.0 - norm_d * norm_d) * l.intensity;
 
-            let pl_ndotl = max(dot(in.world_normal, l_dir), 0.0);
-            point_diffuse += pl.color * pl_ndotl * atten;
+            // Spot light cone
+            if (l.light_type > 0.5) {
+                let spot_dir = normalize(l.direction);
+                let cos_angle = dot(-l_dir, spot_dir);
+                let spot_atten = clamp((cos_angle - l.outer_cone) / max(l.inner_cone - l.outer_cone, 0.001), 0.0, 1.0);
+                atten *= spot_atten * spot_atten;
+            }
 
-            let pl_half = normalize(l_dir + view_dir);
-            let pl_ndoth = max(dot(in.world_normal, pl_half), 0.0);
-            point_specular += pl.color * pow(pl_ndoth, 24.0) * step(0.001, pl_ndotl) * atten * 0.4;
+            let l_NdotL = max(dot(N, l_dir), 0.0);
+            if (l_NdotL > 0.0 && atten > 0.0001) {
+                let H = normalize(l_dir + view_dir);
+                let NdotV = max(dot(N, view_dir), 0.001);
+                let NDF = distribution_ggx(N, H, roughness);
+                let G = geometry_smith(N, view_dir, l_dir, roughness);
+                let F = fresnel_schlick(max(dot(H, view_dir), 0.0), F0);
+
+                let kS = F;
+                let kD = (vec3<f32>(1.0) - kS) * (1.0 - metallic);
+                let numerator = NDF * G * F;
+                let denominator = 4.0 * NdotV * l_NdotL + 0.0001;
+                let specular = numerator / denominator;
+
+                point_lights_contrib += (kD * albedo / PI + specular) * l.color * (atten * l_NdotL);
+            }
         }
     }
 
-    // Fresnel Rim Glow
+    // 4. Fresnel Rim Glow
     var fresnel_contrib = vec3<f32>(0.0);
     if (in.fresnel.w > 0.0) {
-        let n_dot_v = max(dot(in.world_normal, view_dir), 0.0);
+        let n_dot_v = max(dot(N, view_dir), 0.0);
         let rim = pow(1.0 - n_dot_v, in.fresnel.w);
         fresnel_contrib = in.fresnel.rgb * rim;
     }
 
-    // 6. Combined Lighting
-    let lit_color = surface_color * (ambient + diffuse + point_diffuse) + specular + point_specular + emissive + fresnel_contrib;
+    // 5. Total Lit Color
+    let lit_color = ambient + direct_light + point_lights_contrib + emissive + fresnel_contrib;
 
-    // 7. FogExp2 Exponential Fog
+    // 6. Atmospheric Fog (Exponential or Linear)
     let dist = length(camera.camera_pos.xyz - in.world_pos);
     let fog_density = camera.fog_color.a;
     var final_color = lit_color;
     if (fog_density > 0.0001) {
-        let fog_factor = clamp(1.0 - exp(-dist * fog_density), 0.0, 1.0);
+        var fog_factor = 0.0;
+        if (camera.fog_params.x > 0.5) {
+            let f_start = camera.fog_params.y;
+            let f_end = max(camera.fog_params.z, f_start + 0.1);
+            fog_factor = clamp((dist - f_start) / (f_end - f_start), 0.0, 1.0);
+        } else {
+            fog_factor = clamp(1.0 - exp(-dist * fog_density), 0.0, 1.0);
+        }
         final_color = mix(lit_color, camera.fog_color.rgb, fog_factor);
     }
 
@@ -700,7 +990,14 @@ fn fs_translucent(in: VertexOutput) -> @location(0) vec4<f32> {
     let fog_density = camera.fog_color.a;
     var final_color = lit_color;
     if (fog_density > 0.0001) {
-        let fog_factor = clamp(1.0 - exp(-dist * fog_density), 0.0, 1.0);
+        var fog_factor = 0.0;
+        if (camera.fog_params.x > 0.5) {
+            let f_start = camera.fog_params.y;
+            let f_end = max(camera.fog_params.z, f_start + 0.1);
+            fog_factor = clamp((dist - f_start) / (f_end - f_start), 0.0, 1.0);
+        } else {
+            fog_factor = clamp(1.0 - exp(-dist * fog_density), 0.0, 1.0);
+        }
         final_color = mix(lit_color, camera.fog_color.rgb, fog_factor);
     }
 
@@ -718,6 +1015,7 @@ struct CameraUniform {
     horizon_color: vec4<f32>,
     sun_dir: vec4<f32>,
     sun_color: vec4<f32>,
+    fog_params: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -925,6 +1223,7 @@ struct CameraUniform {
     horizon_color: vec4<f32>,
     sun_dir: vec4<f32>,
     sun_color: vec4<f32>,
+    fog_params: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -1272,7 +1571,7 @@ impl GpuContext {
             label: Some("camera_bind_group"),
         });
 
-        // Texture Bind Group Layout
+        // Texture Bind Group Layout (5 slots: Diffuse, Sampler, Normal, Metallic-Roughness, Emissive)
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("texture_bind_group_layout"),
@@ -1293,11 +1592,52 @@ impl GpuContext {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
                 ],
             });
 
-        let default_white_texture =
-            TextureGpu::create_white_1x1(&device, &queue, &texture_bind_group_layout);
+        let dummy_normal = GpuTextureRaw::create_1x1(&device, &queue, [128, 128, 255, 255], "dummy_normal_1x1");
+        let dummy_mr = GpuTextureRaw::create_1x1(&device, &queue, [255, 128, 0, 255], "dummy_mr_1x1");
+        let dummy_black = GpuTextureRaw::create_1x1(&device, &queue, [0, 0, 0, 255], "dummy_black_1x1");
+        let dummy_white = GpuTextureRaw::create_1x1(&device, &queue, [255, 255, 255, 255], "dummy_white_1x1");
+
+        let default_white_texture = TextureGpu::create_white_1x1(
+            &device,
+            &queue,
+            &texture_bind_group_layout,
+            &dummy_normal.view,
+            &dummy_mr.view,
+            &dummy_black.view,
+        );
 
         // Ensure procedural test textures exist
         let _ = generate_checker_texture(Path::new("assets/textures/checker.png"));
@@ -1815,6 +2155,11 @@ impl GpuContext {
             camera_bind_group,
             texture_bind_group_layout,
             default_white_texture,
+            dummy_normal,
+            dummy_mr,
+            dummy_black,
+            dummy_white,
+            material_cache: HashMap::new(),
             lights_buffer,
             lights_bind_group_layout,
             lights_bind_group,
@@ -1858,11 +2203,14 @@ impl GpuContext {
         if !self.texture_cache.contains_key(path) {
             match std::fs::read(path) {
                 Ok(bytes) => {
-                    match TextureGpu::from_bytes(
+                    match TextureGpu::from_bytes_pbr(
                         &self.device,
                         &self.queue,
                         &self.texture_bind_group_layout,
                         &bytes,
+                        &self.dummy_normal.view,
+                        &self.dummy_mr.view,
+                        &self.dummy_black.view,
                         path,
                     ) {
                         Ok(tex) => {
@@ -1883,6 +2231,81 @@ impl GpuContext {
 
     pub fn get_texture(&self, path: &str) -> &TextureGpu {
         self.texture_cache.get(path).unwrap_or(&self.default_white_texture)
+    }
+
+    pub fn get_or_create_material(&mut self, key: &MaterialKey) -> &wgpu::BindGroup {
+        if key.normal.is_none() && key.metallic_roughness.is_none() && key.emissive.is_none() {
+            if let Some(diffuse) = &key.diffuse {
+                return &self.get_or_load_texture(diffuse).bind_group;
+            } else {
+                return &self.default_white_texture.bind_group;
+            }
+        }
+
+        if !self.material_cache.contains_key(key) {
+            if let Some(diffuse) = &key.diffuse {
+                let _ = self.get_or_load_texture(diffuse);
+            }
+            if let Some(normal) = &key.normal {
+                let _ = self.get_or_load_texture(normal);
+            }
+            if let Some(mr) = &key.metallic_roughness {
+                let _ = self.get_or_load_texture(mr);
+            }
+            if let Some(emissive) = &key.emissive {
+                let _ = self.get_or_load_texture(emissive);
+            }
+
+            let (diffuse_view, diffuse_sampler) = if let Some(diffuse) = &key.diffuse {
+                let tex = self.get_texture(diffuse);
+                (&tex.view, &tex.sampler)
+            } else {
+                (&self.dummy_white.view, &self.dummy_white.sampler)
+            };
+
+            let normal_view = if let Some(normal) = &key.normal {
+                &self.get_texture(normal).view
+            } else {
+                &self.dummy_normal.view
+            };
+
+            let mr_view = if let Some(mr) = &key.metallic_roughness {
+                &self.get_texture(mr).view
+            } else {
+                &self.dummy_mr.view
+            };
+
+            let emissive_view = if let Some(emissive) = &key.emissive {
+                &self.get_texture(emissive).view
+            } else {
+                &self.dummy_black.view
+            };
+
+            let bind_group = create_material_bind_group(
+                &self.device,
+                &self.texture_bind_group_layout,
+                diffuse_view,
+                diffuse_sampler,
+                normal_view,
+                mr_view,
+                emissive_view,
+                "pbr_material_bind_group",
+            );
+            self.material_cache.insert(key.clone(), bind_group);
+        }
+
+        self.material_cache.get(key).unwrap()
+    }
+
+    pub fn get_material(&self, key: &MaterialKey) -> &wgpu::BindGroup {
+        if key.normal.is_none() && key.metallic_roughness.is_none() && key.emissive.is_none() {
+            if let Some(diffuse) = &key.diffuse {
+                return &self.get_texture(diffuse).bind_group;
+            } else {
+                return &self.default_white_texture.bind_group;
+            }
+        }
+        self.material_cache.get(key).unwrap_or(&self.default_white_texture.bind_group)
     }
 
     pub fn ensure_mesh(&mut self, mesh_id: &str) {
@@ -2024,8 +2447,7 @@ impl GpuContext {
         sun_intensity: f32,
         stars_visibility: f32,
     ) {
-        let mut uniform = CameraUniform::new();
-        uniform.update_with_environment(
+        self.update_camera_with_environment_fog(
             camera,
             time,
             sky_mode,
@@ -2033,6 +2455,45 @@ impl GpuContext {
             horizon,
             fog_color,
             fog_density,
+            "exponential",
+            0.0,
+            100.0,
+            sun_dir,
+            sun_color,
+            sun_intensity,
+            stars_visibility,
+        );
+    }
+
+    pub fn update_camera_with_environment_fog(
+        &mut self,
+        camera: &Camera,
+        time: f32,
+        sky_mode: &str,
+        zenith: [f32; 3],
+        horizon: [f32; 3],
+        fog_color: [f32; 3],
+        fog_density: f32,
+        fog_mode: &str,
+        fog_start: f32,
+        fog_end: f32,
+        sun_dir: [f32; 3],
+        sun_color: [f32; 3],
+        sun_intensity: f32,
+        stars_visibility: f32,
+    ) {
+        let mut uniform = CameraUniform::new();
+        uniform.update_with_environment_fog(
+            camera,
+            time,
+            sky_mode,
+            zenith,
+            horizon,
+            fog_color,
+            fog_density,
+            fog_mode,
+            fog_start,
+            fog_end,
             sun_dir,
             sun_color,
             sun_intensity,
@@ -3427,14 +3888,14 @@ mod tests {
     #[test]
     fn test_lights_uniform_layout() {
         use std::mem::size_of;
-        assert_eq!(size_of::<PointLightRaw>(), 32);
-        assert_eq!(size_of::<LightsUniform>(), 528);
+        assert_eq!(size_of::<PointLightRaw>(), 64);
+        assert_eq!(size_of::<LightsUniform>(), 1040);
         assert_eq!(size_of::<LightsUniform>() % 16, 0);
         assert_eq!(size_of::<PostProcessUniform>(), 32);
         assert_eq!(size_of::<PostProcessUniform>() % 16, 0);
         assert_eq!(size_of::<ShadowUniform>(), 96);
         assert_eq!(size_of::<ShadowUniform>() % 16, 0);
-        assert_eq!(size_of::<CameraUniform>(), 224);
+        assert_eq!(size_of::<CameraUniform>(), 240);
         assert_eq!(size_of::<CameraUniform>() % 16, 0);
     }
 }

@@ -43,7 +43,7 @@ use hot_reload::{HotReloadEvent, HotReloadManager};
 use mcp_server::{EngineLogsResponse, McpCommand, WorldInspection};
 use wgpu::util::DeviceExt;
 use physics::{PhysicsEngine, RigidBodyComponent};
-use renderer::{create_instance_buffer, GpuContext, InstanceRaw, LightsUniform, PointLightRaw};
+use renderer::{create_instance_buffer, GpuContext, InstanceRaw, LightsUniform};
 use scripting::ScriptComponent;
 use tweens::TweenManager;
 use tokio::sync::{mpsc, oneshot};
@@ -3935,6 +3935,45 @@ impl EngineState {
             }
         }
 
+        // Drain and apply PBR material updates from Lua
+        let pending_pbr_updates = if let Ok(mut m) = self.lua_ctx.pending_pbr_materials.lock() {
+            std::mem::take(&mut *m)
+        } else {
+            Vec::new()
+        };
+        for update in pending_pbr_updates {
+            let mut target_e = None;
+            for entity_ref in self.world.iter() {
+                if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                    if meta.id == update.entity_id {
+                        target_e = Some(entity_ref.entity());
+                        break;
+                    }
+                }
+            }
+            if let Some(e) = target_e {
+                if let Ok(mut pbr) = self.world.get::<&mut ecs::PbrMaterial>(e) {
+                    if let Some(nm) = update.normal_map { pbr.normal_map = nm; }
+                    if let Some(mr) = update.metallic_roughness_map { pbr.metallic_roughness_map = mr; }
+                    if let Some(em) = update.emissive_map { pbr.emissive_map = em; }
+                    if let Some(m) = update.metallic { pbr.metallic = m; }
+                    if let Some(r) = update.roughness { pbr.roughness = r; }
+                    if let Some(ns) = update.normal_scale { pbr.normal_scale = ns; }
+                    if let Some(ei) = update.emissive_intensity { pbr.emissive_intensity = ei; }
+                } else {
+                    let mut pbr = ecs::PbrMaterial::default();
+                    if let Some(nm) = update.normal_map { pbr.normal_map = nm; }
+                    if let Some(mr) = update.metallic_roughness_map { pbr.metallic_roughness_map = mr; }
+                    if let Some(em) = update.emissive_map { pbr.emissive_map = em; }
+                    if let Some(m) = update.metallic { pbr.metallic = m; }
+                    if let Some(r) = update.roughness { pbr.roughness = r; }
+                    if let Some(ns) = update.normal_scale { pbr.normal_scale = ns; }
+                    if let Some(ei) = update.emissive_intensity { pbr.emissive_intensity = ei; }
+                    let _ = self.world.insert_one(e, pbr);
+                }
+            }
+        }
+
         // Drain and apply sprite frame updates from Lua
         let pending_sprites = if let Ok(mut s) = self.lua_ctx.pending_sprite_frames.lock() {
             std::mem::take(&mut *s)
@@ -4108,7 +4147,11 @@ impl EngineState {
         }
 
         // Update camera in GPU with simulation time and environment settings
-        self.gpu.update_camera_with_environment(
+        let fog_mode = self.environment_settings.fog_mode.as_deref().unwrap_or("exponential");
+        let fog_start = self.environment_settings.fog_start.unwrap_or(0.0);
+        let fog_end = self.environment_settings.fog_end.unwrap_or(100.0);
+
+        self.gpu.update_camera_with_environment_fog(
             &self.camera,
             self.total_time,
             &self.environment_settings.sky_mode,
@@ -4116,13 +4159,16 @@ impl EngineState {
             self.environment_settings.horizon_color,
             self.environment_settings.fog_color,
             self.environment_settings.fog_density,
+            fog_mode,
+            fog_start,
+            fog_end,
             self.active_sun_dir.to_array(),
             self.active_sun_color.to_array(),
             self.active_sun_intensity,
             self.active_stars_vis,
         );
 
-        // Collect active point lights into GPU uniform
+        // Collect active point and spot lights into GPU uniform
         let mut lights_uniform = LightsUniform::default();
         let mut light_count = 0u32;
         for entity_ref in self.world.iter() {
@@ -4130,19 +4176,38 @@ impl EngineState {
                 break;
             }
             let entity = entity_ref.entity();
+            let world_pos = if let Some((_, pos)) = world_transforms.get(&entity) {
+                [pos.x, pos.y, pos.z]
+            } else if let Some(t) = entity_ref.get::<&Transform>() {
+                [t.position.x, t.position.y, t.position.z]
+            } else {
+                [0.0, 0.0, 0.0]
+            };
+
             if let Some(light) = entity_ref.get::<&ecs::PointLight>() {
-                let world_pos = if let Some((_, pos)) = world_transforms.get(&entity) {
-                    [pos.x, pos.y, pos.z]
-                } else if let Some(t) = entity_ref.get::<&Transform>() {
-                    [t.position.x, t.position.y, t.position.z]
-                } else {
-                    [0.0, 0.0, 0.0]
-                };
-                lights_uniform.lights[light_count as usize] = PointLightRaw {
+                lights_uniform.lights[light_count as usize] = renderer::LightRaw {
                     position: world_pos,
                     radius: light.radius,
                     color: light.color,
                     intensity: light.intensity,
+                    direction: [0.0, -1.0, 0.0],
+                    inner_cone: 0.0,
+                    outer_cone: 0.0,
+                    light_type: 0.0,
+                    _pad: [0.0; 2],
+                };
+                light_count += 1;
+            } else if let Some(spot) = entity_ref.get::<&ecs::SpotLight>() {
+                lights_uniform.lights[light_count as usize] = renderer::LightRaw {
+                    position: world_pos,
+                    radius: spot.radius,
+                    color: spot.color,
+                    intensity: spot.intensity,
+                    direction: spot.direction,
+                    inner_cone: spot.inner_angle.cos(),
+                    outer_cone: spot.outer_angle.cos(),
+                    light_type: 1.0,
+                    _pad: [0.0; 2],
                 };
                 light_count += 1;
             }
@@ -4316,8 +4381,8 @@ impl EngineState {
             }
         }
 
-        // Collect instances by mesh type, texture, and blend mode
-        let mut instances_by_batch: HashMap<(String, Option<String>, String), Vec<InstanceRaw>> = HashMap::new();
+        // Collect instances by mesh type, material key, and blend mode
+        let mut instances_by_batch: HashMap<(String, renderer::MaterialKey, String), Vec<InstanceRaw>> = HashMap::new();
         for entity_ref in self.world.iter() {
             let entity = entity_ref.entity();
             if let (Some(transform), Some(mesh)) = (entity_ref.get::<&Transform>(), entity_ref.get::<&MeshRender>()) {
@@ -4344,6 +4409,22 @@ impl EngineState {
                     renderer::ViewMode::Unlit => 1.0,
                     renderer::ViewMode::Wireframe => 2.0,
                 };
+                let (mat_key, pbr_params) = if let Some(pbr) = entity_ref.get::<&ecs::PbrMaterial>() {
+                    (
+                        renderer::MaterialKey {
+                            diffuse: mesh.texture.clone(),
+                            normal: pbr.normal_map.clone(),
+                            metallic_roughness: pbr.metallic_roughness_map.clone(),
+                            emissive: pbr.emissive_map.clone(),
+                        },
+                        [pbr.metallic, pbr.roughness, pbr.normal_scale, pbr.emissive_intensity],
+                    )
+                } else {
+                    (
+                        renderer::MaterialKey::simple(mesh.texture.clone()),
+                        [0.0, 0.5, 1.0, 1.0],
+                    )
+                };
                 let raw = InstanceRaw {
                     model: model_mat,
                     color: mesh.color,
@@ -4351,10 +4432,11 @@ impl EngineState {
                     fresnel,
                     uv_offset,
                     uv_scale,
+                    pbr_params,
                 };
                 let blend_mode = mesh.blend_mode.clone().unwrap_or_else(|| "opaque".to_string());
                 instances_by_batch
-                    .entry((mesh.mesh_type.clone(), mesh.texture.clone(), blend_mode))
+                    .entry((mesh.mesh_type.clone(), mat_key, blend_mode))
                     .or_default()
                     .push(raw);
             }
@@ -4370,20 +4452,19 @@ impl EngineState {
                 fresnel: [0.0, 0.0, 0.0, 0.0],
                 uv_offset: [0.0, 0.0],
                 uv_scale: [1.0, 1.0],
+                pbr_params: [0.0, 0.5, 1.0, 1.0],
             };
             instances_by_batch
-                .entry(("forge_preview".to_string(), None, "opaque".to_string()))
+                .entry(("forge_preview".to_string(), renderer::MaterialKey::simple(None), "opaque".to_string()))
                 .or_default()
                 .push(raw);
         }
 
         self.last_draw_calls = instances_by_batch.len();
 
-        for (mesh_id, tex_opt, _) in instances_by_batch.keys() {
+        for (mesh_id, mat_key, _) in instances_by_batch.keys() {
             self.gpu.ensure_mesh(mesh_id);
-            if let Some(tex) = tex_opt {
-                self.gpu.get_or_load_texture(tex);
-            }
+            self.gpu.get_or_create_material(mat_key);
         }
 
         let output = match self.gpu.surface.get_current_texture() {
@@ -7951,17 +8032,13 @@ impl EngineState {
             shadow_pass.set_pipeline(&self.gpu.shadow_pipeline);
             shadow_pass.set_bind_group(0, &self.gpu.shadow_camera_bind_group, &[]);
 
-            for ((mesh_id, tex_opt, blend_mode), instances) in &instances_by_batch {
+            for ((mesh_id, mat_key, blend_mode), instances) in &instances_by_batch {
                 if blend_mode == "additive" || blend_mode == "translucent" || blend_mode == "transparent" || instances.is_empty() {
                     continue;
                 }
                 if let Some(mesh_gpu) = self.gpu.meshes.get(mesh_id) {
-                    let tex_bind = if let Some(tex) = tex_opt {
-                        &self.gpu.get_texture(tex).bind_group
-                    } else {
-                        &self.gpu.default_white_texture.bind_group
-                    };
-                    shadow_pass.set_bind_group(1, tex_bind, &[]);
+                    let mat_bind = self.gpu.get_material(mat_key);
+                    shadow_pass.set_bind_group(1, mat_bind, &[]);
 
                     let instance_buffer = create_instance_buffer(&self.gpu.device, instances);
                     shadow_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
@@ -8021,17 +8098,13 @@ impl EngineState {
             render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
             render_pass.set_bind_group(3, &self.gpu.shadow_bind_group, &[]);
 
-            for ((mesh_id, tex_opt, blend_mode), instances) in &instances_by_batch {
+            for ((mesh_id, mat_key, blend_mode), instances) in &instances_by_batch {
                 if blend_mode == "additive" || blend_mode == "translucent" || blend_mode == "transparent" || instances.is_empty() {
                     continue;
                 }
                 if let Some(mesh_gpu) = self.gpu.meshes.get(mesh_id) {
-                    let tex_bind = if let Some(tex) = tex_opt {
-                        &self.gpu.get_texture(tex).bind_group
-                    } else {
-                        &self.gpu.default_white_texture.bind_group
-                    };
-                    render_pass.set_bind_group(1, tex_bind, &[]);
+                    let mat_bind = self.gpu.get_material(mat_key);
+                    render_pass.set_bind_group(1, mat_bind, &[]);
 
                     let instance_buffer = create_instance_buffer(&self.gpu.device, instances);
                     render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
@@ -8054,17 +8127,13 @@ impl EngineState {
             render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
             render_pass.set_bind_group(3, &self.gpu.shadow_bind_group, &[]);
 
-            for ((mesh_id, tex_opt, blend_mode), instances) in &instances_by_batch {
+            for ((mesh_id, mat_key, blend_mode), instances) in &instances_by_batch {
                 if (blend_mode != "translucent" && blend_mode != "transparent") || instances.is_empty() {
                     continue;
                 }
                 if let Some(mesh_gpu) = self.gpu.meshes.get(mesh_id) {
-                    let tex_bind = if let Some(tex) = tex_opt {
-                        &self.gpu.get_texture(tex).bind_group
-                    } else {
-                        &self.gpu.default_white_texture.bind_group
-                    };
-                    render_pass.set_bind_group(1, tex_bind, &[]);
+                    let mat_bind = self.gpu.get_material(mat_key);
+                    render_pass.set_bind_group(1, mat_bind, &[]);
 
                     let instance_buffer = create_instance_buffer(&self.gpu.device, instances);
                     render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
@@ -8087,17 +8156,13 @@ impl EngineState {
             render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
             render_pass.set_bind_group(3, &self.gpu.shadow_bind_group, &[]);
 
-            for ((mesh_id, tex_opt, blend_mode), instances) in &instances_by_batch {
+            for ((mesh_id, mat_key, blend_mode), instances) in &instances_by_batch {
                 if blend_mode != "additive" || instances.is_empty() {
                     continue;
                 }
                 if let Some(mesh_gpu) = self.gpu.meshes.get(mesh_id) {
-                    let tex_bind = if let Some(tex) = tex_opt {
-                        &self.gpu.get_texture(tex).bind_group
-                    } else {
-                        &self.gpu.default_white_texture.bind_group
-                    };
-                    render_pass.set_bind_group(1, tex_bind, &[]);
+                    let mat_bind = self.gpu.get_material(mat_key);
+                    render_pass.set_bind_group(1, mat_bind, &[]);
 
                     let instance_buffer = create_instance_buffer(&self.gpu.device, instances);
                     render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
@@ -8154,6 +8219,7 @@ impl EngineState {
                     fresnel: [0.0, 0.0, 0.0, 0.0],
                     uv_offset: [0.0, 0.0],
                     uv_scale: [1.0, 1.0],
+                    pbr_params: [0.0, 1.0, 1.0, 1.0],
                 };
                 let inst_buf = create_instance_buffer(&self.gpu.device, &[id_instance]);
                 render_pass.set_pipeline(&self.gpu.additive_render_pipeline);
@@ -8243,6 +8309,7 @@ impl EngineState {
                     uv_offset: [0.0, 0.0],
                     uv_scale: [1.0, 1.0],
                     fresnel: [0.0, 0.0, 0.0, 0.0],
+                    pbr_params: [0.0, 0.5, 1.0, 1.0],
                 };
                 let vm_inst_buf = renderer::create_instance_buffer(&self.gpu.device, &[vm_instance]);
 

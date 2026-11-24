@@ -87,6 +87,70 @@ impl Default for PointLight {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SpotLight {
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub radius: f32,
+    pub direction: [f32; 3],
+    #[serde(default = "default_inner_cone")]
+    pub inner_angle: f32,
+    #[serde(default = "default_outer_cone")]
+    pub outer_angle: f32,
+}
+
+fn default_inner_cone() -> f32 { 0.4 }
+fn default_outer_cone() -> f32 { 0.65 }
+
+impl Default for SpotLight {
+    fn default() -> Self {
+        Self {
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            radius: 12.0,
+            direction: [0.0, -1.0, 0.0],
+            inner_angle: 0.4,
+            outer_angle: 0.65,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PbrMaterial {
+    #[serde(default)]
+    pub normal_map: Option<String>,
+    #[serde(default)]
+    pub metallic_roughness_map: Option<String>,
+    #[serde(default)]
+    pub emissive_map: Option<String>,
+    #[serde(default = "default_pbr_zero")]
+    pub metallic: f32,
+    #[serde(default = "default_pbr_half")]
+    pub roughness: f32,
+    #[serde(default = "default_pbr_one")]
+    pub normal_scale: f32,
+    #[serde(default = "default_pbr_one")]
+    pub emissive_intensity: f32,
+}
+
+fn default_pbr_zero() -> f32 { 0.0 }
+fn default_pbr_half() -> f32 { 0.5 }
+fn default_pbr_one() -> f32 { 1.0 }
+
+impl Default for PbrMaterial {
+    fn default() -> Self {
+        Self {
+            normal_map: None,
+            metallic_roughness_map: None,
+            emissive_map: None,
+            metallic: 0.0,
+            roughness: 0.5,
+            normal_scale: 1.0,
+            emissive_intensity: 1.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshRender {
     pub mesh_type: String, // "cube", "quad", "sphere", "cylinder", "plane", or path to .glb / .gltf

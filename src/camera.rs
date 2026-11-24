@@ -397,6 +397,7 @@ pub struct CameraUniform {
     pub horizon_color: [f32; 4],
     pub sun_dir: [f32; 4],
     pub sun_color: [f32; 4],
+    pub fog_params: [f32; 4],
 }
 
 impl CameraUniform {
@@ -410,6 +411,7 @@ impl CameraUniform {
             horizon_color: [0.133, 0.153, 0.212, 0.0],
             sun_dir: [0.5, 0.8, 0.4, 1.0],
             sun_color: [1.0, 0.98, 0.92, 0.0],
+            fog_params: [0.0, 0.0, 100.0, 0.5],
         }
     }
 
@@ -439,17 +441,54 @@ impl CameraUniform {
         sun_intensity: f32,
         stars_visibility: f32,
     ) {
+        self.update_with_environment_fog(
+            camera,
+            time,
+            sky_mode,
+            zenith,
+            horizon,
+            fog_color,
+            fog_density,
+            "exponential",
+            0.0,
+            100.0,
+            sun_dir,
+            sun_color,
+            sun_intensity,
+            stars_visibility,
+        );
+    }
+
+    pub fn update_with_environment_fog(
+        &mut self,
+        camera: &Camera,
+        time: f32,
+        sky_mode: &str,
+        zenith: [f32; 3],
+        horizon: [f32; 3],
+        fog_color: [f32; 3],
+        fog_density: f32,
+        fog_mode: &str,
+        fog_start: f32,
+        fog_end: f32,
+        sun_dir: [f32; 3],
+        sun_color: [f32; 3],
+        sun_intensity: f32,
+        stars_visibility: f32,
+    ) {
         self.update_with_time(camera, time);
         let mode_val = match sky_mode.to_lowercase().as_str() {
             "solid" => 0.0,
             "gradient" => 1.0,
             _ => 2.0, // "space"
         };
+        let f_mode = if fog_mode.to_lowercase() == "linear" { 1.0 } else { 0.0 };
         self.fog_color = [fog_color[0], fog_color[1], fog_color[2], fog_density];
         self.zenith_color = [zenith[0], zenith[1], zenith[2], mode_val];
         self.horizon_color = [horizon[0], horizon[1], horizon[2], 0.0];
         self.sun_dir = [sun_dir[0], sun_dir[1], sun_dir[2], sun_intensity];
         self.sun_color = [sun_color[0], sun_color[1], sun_color[2], stars_visibility];
+        self.fog_params = [f_mode, fog_start, fog_end, 0.5];
     }
 }
 

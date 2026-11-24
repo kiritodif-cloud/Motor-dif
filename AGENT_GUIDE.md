@@ -65,6 +65,7 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `get_all_entities() -> table`: Returns `{ [id] = { id, x, y, z, ... } }`.
   - `set_parent(child_id, parent_id_or_nil)`: Hierarchical transform attachment.
   - `set_material(id, { color={r,g,b,a}, emissive=f, fresnel_color={r,g,b}, fresnel_power=f, blend_mode="opaque"|"additive", wireframe=b, uv_scroll={u,v} })`
+  - `set_pbr_material(id, { metallic=f, roughness=f, normal_map=str, metallic_roughness_map=str, emissive_map=str, normal_scale=f, emissive_intensity=f })`
   - `set_light(id, r, g, b, intensity, radius)`: Updates/creates PointLight component.
   - `tween_position(id, x, y, z, duration)`: Smooth linear interpolation of position.
   - `tween_scale(id, sx, sy, sz, duration)`: Smooth scale interpolation.
