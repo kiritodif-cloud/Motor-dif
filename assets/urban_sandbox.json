@@ -1,0 +1,1854 @@
+{
+  "camera": {
+    "mode": "3d",
+    "position": [
+      0.0,
+      24.0,
+      32.0
+    ],
+    "target": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "ortho_size": 25.0
+  },
+  "post_process": {
+    "bloom_enabled": true,
+    "bloom_intensity": 1.6,
+    "bloom_threshold": 0.72,
+    "vignette_intensity": 0.32,
+    "exposure": 1.2
+  },
+  "environment": {
+    "sky_mode": "gradient",
+    "zenith_color": [
+      0.03,
+      0.05,
+      0.12
+    ],
+    "horizon_color": [
+      0.12,
+      0.14,
+      0.24
+    ],
+    "fog_color": [
+      0.05,
+      0.06,
+      0.14
+    ],
+    "fog_density": 0.003
+  },
+  "entities": [
+    {
+      "id": "ground_plane",
+      "mesh": "plane",
+      "position": [
+        0.0,
+        -0.05,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        85.0,
+        1.0,
+        85.0
+      ],
+      "color": [
+        0.07,
+        0.08,
+        0.1,
+        1.0
+      ],
+      "emissive": 0.01,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "road_ns_1",
+      "mesh": "plane",
+      "position": [
+        -12.0,
+        0.01,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        6.0,
+        0.02,
+        75.0
+      ],
+      "color": [
+        0.11,
+        0.12,
+        0.15,
+        1.0
+      ],
+      "emissive": 0.02,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "road_ns_2",
+      "mesh": "plane",
+      "position": [
+        12.0,
+        0.01,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        6.0,
+        0.02,
+        75.0
+      ],
+      "color": [
+        0.11,
+        0.12,
+        0.15,
+        1.0
+      ],
+      "emissive": 0.02,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "road_ew_main",
+      "mesh": "plane",
+      "position": [
+        0.0,
+        0.015,
+        -12.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        75.0,
+        0.02,
+        6.0
+      ],
+      "color": [
+        0.12,
+        0.13,
+        0.16,
+        1.0
+      ],
+      "emissive": 0.03,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "road_ew_2",
+      "mesh": "plane",
+      "position": [
+        0.0,
+        0.015,
+        12.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        75.0,
+        0.02,
+        6.0
+      ],
+      "color": [
+        0.11,
+        0.12,
+        0.15,
+        1.0
+      ],
+      "emissive": 0.02,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "marking_main",
+      "mesh": "plane",
+      "position": [
+        0.0,
+        0.025,
+        -12.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        72.0,
+        0.01,
+        0.3
+      ],
+      "color": [
+        0.95,
+        0.82,
+        0.18,
+        1.0
+      ],
+      "emissive": 0.3,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "marking_ew_2",
+      "mesh": "plane",
+      "position": [
+        0.0,
+        0.025,
+        12.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        72.0,
+        0.01,
+        0.3
+      ],
+      "color": [
+        0.95,
+        0.82,
+        0.18,
+        1.0
+      ],
+      "emissive": 0.3,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "marking_ns_1",
+      "mesh": "plane",
+      "position": [
+        -12.0,
+        0.025,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.3,
+        0.01,
+        72.0
+      ],
+      "color": [
+        0.95,
+        0.82,
+        0.18,
+        1.0
+      ],
+      "emissive": 0.3,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "marking_ns_2",
+      "mesh": "plane",
+      "position": [
+        12.0,
+        0.025,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.3,
+        0.01,
+        72.0
+      ],
+      "color": [
+        0.95,
+        0.82,
+        0.18,
+        1.0
+      ],
+      "emissive": 0.3,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "cw_nw_n",
+      "mesh": "plane",
+      "position": [
+        -12.0,
+        0.026,
+        -9.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        5.0,
+        0.01,
+        1.2
+      ],
+      "color": [
+        0.88,
+        0.9,
+        0.95,
+        1.0
+      ],
+      "emissive": 0.25,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "cw_nw_w",
+      "mesh": "plane",
+      "position": [
+        -9.0,
+        0.026,
+        -12.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.2,
+        0.01,
+        5.0
+      ],
+      "color": [
+        0.88,
+        0.9,
+        0.95,
+        1.0
+      ],
+      "emissive": 0.25,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "cw_ne_n",
+      "mesh": "plane",
+      "position": [
+        12.0,
+        0.026,
+        -9.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        5.0,
+        0.01,
+        1.2
+      ],
+      "color": [
+        0.88,
+        0.9,
+        0.95,
+        1.0
+      ],
+      "emissive": 0.25,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "cw_ne_e",
+      "mesh": "plane",
+      "position": [
+        9.0,
+        0.026,
+        -12.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.2,
+        0.01,
+        5.0
+      ],
+      "color": [
+        0.88,
+        0.9,
+        0.95,
+        1.0
+      ],
+      "emissive": 0.25,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "cw_sw_s",
+      "mesh": "plane",
+      "position": [
+        -12.0,
+        0.026,
+        9.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        5.0,
+        0.01,
+        1.2
+      ],
+      "color": [
+        0.88,
+        0.9,
+        0.95,
+        1.0
+      ],
+      "emissive": 0.25,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "cw_sw_w",
+      "mesh": "plane",
+      "position": [
+        -9.0,
+        0.026,
+        12.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.2,
+        0.01,
+        5.0
+      ],
+      "color": [
+        0.88,
+        0.9,
+        0.95,
+        1.0
+      ],
+      "emissive": 0.25,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "cw_se_s",
+      "mesh": "plane",
+      "position": [
+        12.0,
+        0.026,
+        9.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        5.0,
+        0.01,
+        1.2
+      ],
+      "color": [
+        0.88,
+        0.9,
+        0.95,
+        1.0
+      ],
+      "emissive": 0.25,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "cw_se_e",
+      "mesh": "plane",
+      "position": [
+        9.0,
+        0.026,
+        12.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.2,
+        0.01,
+        5.0
+      ],
+      "color": [
+        0.88,
+        0.9,
+        0.95,
+        1.0
+      ],
+      "emissive": 0.25,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "sidewalk_center",
+      "mesh": "cube",
+      "position": [
+        0.0,
+        0.1,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        17.8,
+        0.2,
+        17.8
+      ],
+      "color": [
+        0.55,
+        0.57,
+        0.6,
+        1.0
+      ],
+      "emissive": 0.04,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "sidewalk_nw",
+      "mesh": "cube",
+      "position": [
+        -22.5,
+        0.1,
+        -22.5
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        14.8,
+        0.2,
+        14.8
+      ],
+      "color": [
+        0.5,
+        0.52,
+        0.55,
+        1.0
+      ],
+      "emissive": 0.03,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "sidewalk_ne",
+      "mesh": "cube",
+      "position": [
+        22.5,
+        0.1,
+        -22.5
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        14.8,
+        0.2,
+        14.8
+      ],
+      "color": [
+        0.5,
+        0.52,
+        0.55,
+        1.0
+      ],
+      "emissive": 0.03,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "sidewalk_sw",
+      "mesh": "cube",
+      "position": [
+        -22.5,
+        0.1,
+        22.5
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        14.8,
+        0.2,
+        14.8
+      ],
+      "color": [
+        0.5,
+        0.52,
+        0.55,
+        1.0
+      ],
+      "emissive": 0.03,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "sidewalk_se",
+      "mesh": "cube",
+      "position": [
+        22.5,
+        0.1,
+        22.5
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        14.8,
+        0.2,
+        14.8
+      ],
+      "color": [
+        0.5,
+        0.52,
+        0.55,
+        1.0
+      ],
+      "emissive": 0.03,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "bldg_c1",
+      "mesh": "cube",
+      "position": [
+        -4.2,
+        6.0,
+        -4.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        6.8,
+        12.0,
+        6.8
+      ],
+      "color": [
+        0.18,
+        0.26,
+        0.38,
+        1.0
+      ],
+      "emissive": 0.14,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "bldg_c2",
+      "mesh": "cube",
+      "position": [
+        4.2,
+        10.0,
+        -4.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        6.8,
+        20.0,
+        6.8
+      ],
+      "color": [
+        0.24,
+        0.28,
+        0.35,
+        1.0
+      ],
+      "emissive": 0.18,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "bldg_c3",
+      "mesh": "cube",
+      "position": [
+        -4.2,
+        13.0,
+        4.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        6.8,
+        26.0,
+        6.8
+      ],
+      "color": [
+        0.34,
+        0.24,
+        0.26,
+        1.0
+      ],
+      "emissive": 0.12,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "bldg_c4",
+      "mesh": "cube",
+      "position": [
+        4.2,
+        8.0,
+        4.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        6.8,
+        16.0,
+        6.8
+      ],
+      "color": [
+        0.15,
+        0.32,
+        0.34,
+        1.0
+      ],
+      "emissive": 0.2,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "bldg_nw",
+      "mesh": "cube",
+      "position": [
+        -22.5,
+        9.0,
+        -22.5
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        12.0,
+        18.0,
+        12.0
+      ],
+      "color": [
+        0.22,
+        0.25,
+        0.3,
+        1.0
+      ],
+      "emissive": 0.08,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "bldg_ne",
+      "mesh": "cube",
+      "position": [
+        22.5,
+        14.0,
+        -22.5
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        12.0,
+        28.0,
+        12.0
+      ],
+      "color": [
+        0.16,
+        0.22,
+        0.34,
+        1.0
+      ],
+      "emissive": 0.15,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "bldg_sw",
+      "mesh": "cube",
+      "position": [
+        -22.5,
+        11.0,
+        22.5
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        12.0,
+        22.0,
+        12.0
+      ],
+      "color": [
+        0.28,
+        0.24,
+        0.22,
+        1.0
+      ],
+      "emissive": 0.09,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "bldg_se",
+      "mesh": "cube",
+      "position": [
+        22.5,
+        7.5,
+        22.5
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        12.0,
+        15.0,
+        12.0
+      ],
+      "color": [
+        0.2,
+        0.28,
+        0.26,
+        1.0
+      ],
+      "emissive": 0.12,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "spire_c3",
+      "mesh": "cylinder",
+      "position": [
+        -4.2,
+        27.0,
+        4.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.4,
+        2.5,
+        0.4
+      ],
+      "color": [
+        1.0,
+        0.2,
+        0.2,
+        1.0
+      ],
+      "emissive": 3.0,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "spire_ne",
+      "mesh": "cylinder",
+      "position": [
+        22.5,
+        29.0,
+        -22.5
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.4,
+        3.0,
+        0.4
+      ],
+      "color": [
+        0.2,
+        0.8,
+        1.0,
+        1.0
+      ],
+      "emissive": 3.0,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "lamp_pole_1",
+      "mesh": "cube",
+      "position": [
+        -8.2,
+        1.75,
+        -8.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.18,
+        3.5,
+        0.18
+      ],
+      "color": [
+        0.22,
+        0.24,
+        0.28,
+        1.0
+      ],
+      "emissive": 0.05,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "lamp_head_1",
+      "mesh": "cube",
+      "position": [
+        -8.2,
+        3.5,
+        -8.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.55,
+        0.25,
+        0.55
+      ],
+      "color": [
+        1.0,
+        0.92,
+        0.65,
+        1.0
+      ],
+      "emissive": 2.4,
+      "blend_mode": "opaque",
+      "point_light": {
+        "color": [
+          1.0,
+          0.88,
+          0.62
+        ],
+        "intensity": 2.6,
+        "radius": 9.5
+      }
+    },
+    {
+      "id": "lamp_pole_2",
+      "mesh": "cube",
+      "position": [
+        0.0,
+        1.75,
+        -8.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.18,
+        3.5,
+        0.18
+      ],
+      "color": [
+        0.22,
+        0.24,
+        0.28,
+        1.0
+      ],
+      "emissive": 0.05,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "lamp_head_2",
+      "mesh": "cube",
+      "position": [
+        0.0,
+        3.5,
+        -8.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.55,
+        0.25,
+        0.55
+      ],
+      "color": [
+        1.0,
+        0.92,
+        0.65,
+        1.0
+      ],
+      "emissive": 2.4,
+      "blend_mode": "opaque",
+      "point_light": {
+        "color": [
+          1.0,
+          0.88,
+          0.62
+        ],
+        "intensity": 2.6,
+        "radius": 9.5
+      }
+    },
+    {
+      "id": "lamp_pole_3",
+      "mesh": "cube",
+      "position": [
+        8.2,
+        1.75,
+        -8.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.18,
+        3.5,
+        0.18
+      ],
+      "color": [
+        0.22,
+        0.24,
+        0.28,
+        1.0
+      ],
+      "emissive": 0.05,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "lamp_head_3",
+      "mesh": "cube",
+      "position": [
+        8.2,
+        3.5,
+        -8.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.55,
+        0.25,
+        0.55
+      ],
+      "color": [
+        1.0,
+        0.92,
+        0.65,
+        1.0
+      ],
+      "emissive": 2.4,
+      "blend_mode": "opaque",
+      "point_light": {
+        "color": [
+          1.0,
+          0.88,
+          0.62
+        ],
+        "intensity": 2.6,
+        "radius": 9.5
+      }
+    },
+    {
+      "id": "lamp_pole_4",
+      "mesh": "cube",
+      "position": [
+        -8.2,
+        1.75,
+        8.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.18,
+        3.5,
+        0.18
+      ],
+      "color": [
+        0.22,
+        0.24,
+        0.28,
+        1.0
+      ],
+      "emissive": 0.05,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "lamp_head_4",
+      "mesh": "cube",
+      "position": [
+        -8.2,
+        3.5,
+        8.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.55,
+        0.25,
+        0.55
+      ],
+      "color": [
+        1.0,
+        0.92,
+        0.65,
+        1.0
+      ],
+      "emissive": 2.4,
+      "blend_mode": "opaque",
+      "point_light": {
+        "color": [
+          1.0,
+          0.88,
+          0.62
+        ],
+        "intensity": 2.6,
+        "radius": 9.5
+      }
+    },
+    {
+      "id": "lamp_pole_5",
+      "mesh": "cube",
+      "position": [
+        0.0,
+        1.75,
+        8.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.18,
+        3.5,
+        0.18
+      ],
+      "color": [
+        0.22,
+        0.24,
+        0.28,
+        1.0
+      ],
+      "emissive": 0.05,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "lamp_head_5",
+      "mesh": "cube",
+      "position": [
+        0.0,
+        3.5,
+        8.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.55,
+        0.25,
+        0.55
+      ],
+      "color": [
+        1.0,
+        0.92,
+        0.65,
+        1.0
+      ],
+      "emissive": 2.4,
+      "blend_mode": "opaque",
+      "point_light": {
+        "color": [
+          1.0,
+          0.88,
+          0.62
+        ],
+        "intensity": 2.6,
+        "radius": 9.5
+      }
+    },
+    {
+      "id": "lamp_pole_6",
+      "mesh": "cube",
+      "position": [
+        8.2,
+        1.75,
+        8.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.18,
+        3.5,
+        0.18
+      ],
+      "color": [
+        0.22,
+        0.24,
+        0.28,
+        1.0
+      ],
+      "emissive": 0.05,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "lamp_head_6",
+      "mesh": "cube",
+      "position": [
+        8.2,
+        3.5,
+        8.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.55,
+        0.25,
+        0.55
+      ],
+      "color": [
+        1.0,
+        0.92,
+        0.65,
+        1.0
+      ],
+      "emissive": 2.4,
+      "blend_mode": "opaque",
+      "point_light": {
+        "color": [
+          1.0,
+          0.88,
+          0.62
+        ],
+        "intensity": 2.6,
+        "radius": 9.5
+      }
+    },
+    {
+      "id": "lamp_pole_7",
+      "mesh": "cube",
+      "position": [
+        -8.2,
+        1.75,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.18,
+        3.5,
+        0.18
+      ],
+      "color": [
+        0.22,
+        0.24,
+        0.28,
+        1.0
+      ],
+      "emissive": 0.05,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "lamp_head_7",
+      "mesh": "cube",
+      "position": [
+        -8.2,
+        3.5,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.55,
+        0.25,
+        0.55
+      ],
+      "color": [
+        1.0,
+        0.92,
+        0.65,
+        1.0
+      ],
+      "emissive": 2.4,
+      "blend_mode": "opaque",
+      "point_light": {
+        "color": [
+          1.0,
+          0.88,
+          0.62
+        ],
+        "intensity": 2.6,
+        "radius": 9.5
+      }
+    },
+    {
+      "id": "lamp_pole_8",
+      "mesh": "cube",
+      "position": [
+        8.2,
+        1.75,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.18,
+        3.5,
+        0.18
+      ],
+      "color": [
+        0.22,
+        0.24,
+        0.28,
+        1.0
+      ],
+      "emissive": 0.05,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "lamp_head_8",
+      "mesh": "cube",
+      "position": [
+        8.2,
+        3.5,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.55,
+        0.25,
+        0.55
+      ],
+      "color": [
+        1.0,
+        0.92,
+        0.65,
+        1.0
+      ],
+      "emissive": 2.4,
+      "blend_mode": "opaque",
+      "point_light": {
+        "color": [
+          1.0,
+          0.88,
+          0.62
+        ],
+        "intensity": 2.6,
+        "radius": 9.5
+      }
+    },
+    {
+      "id": "vehicle",
+      "mesh": "cube",
+      "position": [
+        0.0,
+        0.5,
+        -12.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        2.2,
+        0.7,
+        4.2
+      ],
+      "color": [
+        0.94,
+        0.24,
+        0.15,
+        1.0
+      ],
+      "emissive": 0.2,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "vehicle_cabin",
+      "mesh": "cube",
+      "position": [
+        0.0,
+        0.95,
+        -12.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.8,
+        0.55,
+        2.3
+      ],
+      "color": [
+        0.12,
+        0.16,
+        0.22,
+        1.0
+      ],
+      "emissive": 0.1,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "vehicle_light_l",
+      "mesh": "cube",
+      "position": [
+        -0.7,
+        0.52,
+        -14.15
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.35,
+        0.2,
+        0.1
+      ],
+      "color": [
+        0.95,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissive": 3.2,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "vehicle_light_r",
+      "mesh": "cube",
+      "position": [
+        0.7,
+        0.52,
+        -14.15
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.35,
+        0.2,
+        0.1
+      ],
+      "color": [
+        0.95,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissive": 3.2,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "wheel_fl",
+      "mesh": "cube",
+      "position": [
+        -1.15,
+        0.35,
+        -13.3
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.3,
+        0.65,
+        0.7
+      ],
+      "color": [
+        0.1,
+        0.1,
+        0.12,
+        1.0
+      ],
+      "emissive": 0.02,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "wheel_fr",
+      "mesh": "cube",
+      "position": [
+        1.15,
+        0.35,
+        -13.3
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.3,
+        0.65,
+        0.7
+      ],
+      "color": [
+        0.1,
+        0.1,
+        0.12,
+        1.0
+      ],
+      "emissive": 0.02,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "wheel_rl",
+      "mesh": "cube",
+      "position": [
+        -1.15,
+        0.35,
+        -10.7
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.3,
+        0.65,
+        0.7
+      ],
+      "color": [
+        0.1,
+        0.1,
+        0.12,
+        1.0
+      ],
+      "emissive": 0.02,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "wheel_rr",
+      "mesh": "cube",
+      "position": [
+        1.15,
+        0.35,
+        -10.7
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.3,
+        0.65,
+        0.7
+      ],
+      "color": [
+        0.1,
+        0.1,
+        0.12,
+        1.0
+      ],
+      "emissive": 0.02,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "player",
+      "mesh": "cube",
+      "position": [
+        0.0,
+        0.85,
+        -8.5
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.7,
+        1.5,
+        0.7
+      ],
+      "color": [
+        0.15,
+        0.78,
+        1.0,
+        1.0
+      ],
+      "emissive": 0.45,
+      "blend_mode": "opaque",
+      "script": "assets/scripts/urban_sandbox.lua"
+    },
+    {
+      "id": "ped_1",
+      "mesh": "cube",
+      "position": [
+        -4.5,
+        0.8,
+        -8.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.65,
+        1.45,
+        0.65
+      ],
+      "color": [
+        1.0,
+        0.42,
+        0.18,
+        1.0
+      ],
+      "emissive": 0.4,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "ped_2",
+      "mesh": "cube",
+      "position": [
+        4.5,
+        0.8,
+        -8.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.65,
+        1.45,
+        0.65
+      ],
+      "color": [
+        0.2,
+        0.88,
+        0.45,
+        1.0
+      ],
+      "emissive": 0.4,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "ped_3",
+      "mesh": "cube",
+      "position": [
+        8.2,
+        0.8,
+        1.5
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.65,
+        1.45,
+        0.65
+      ],
+      "color": [
+        0.88,
+        0.32,
+        0.98,
+        1.0
+      ],
+      "emissive": 0.4,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "ped_4",
+      "mesh": "cube",
+      "position": [
+        3.5,
+        0.8,
+        8.2
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.65,
+        1.45,
+        0.65
+      ],
+      "color": [
+        1.0,
+        0.88,
+        0.22,
+        1.0
+      ],
+      "emissive": 0.4,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "ped_5",
+      "mesh": "cube",
+      "position": [
+        -8.2,
+        0.8,
+        3.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        0.65,
+        1.45,
+        0.65
+      ],
+      "color": [
+        0.25,
+        0.58,
+        1.0,
+        1.0
+      ],
+      "emissive": 0.4,
+      "blend_mode": "opaque"
+    },
+    {
+      "id": "target_marker",
+      "mesh": "cylinder",
+      "position": [
+        12.0,
+        0.25,
+        12.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        3.0,
+        0.4,
+        3.0
+      ],
+      "color": [
+        0.2,
+        1.0,
+        0.55,
+        0.9
+      ],
+      "emissive": 2.8,
+      "blend_mode": "additive",
+      "point_light": {
+        "color": [
+          0.25,
+          1.0,
+          0.6
+        ],
+        "intensity": 4.0,
+        "radius": 12.0
+      }
+    },
+    {
+      "id": "target_beacon",
+      "mesh": "cone",
+      "position": [
+        12.0,
+        2.2,
+        12.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.2,
+        2.4,
+        1.2
+      ],
+      "color": [
+        0.35,
+        1.0,
+        0.7,
+        0.95
+      ],
+      "emissive": 3.0,
+      "blend_mode": "additive"
+    }
+  ]
+}
