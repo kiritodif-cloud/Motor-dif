@@ -34,7 +34,7 @@ end
 {
   "camera": { "mode": "3d", "position": [0, 5, 12], "target": [0, 1, 0], "ortho_size": 10.0 },
   "post_process": { "bloom_enabled": true, "bloom_intensity": 0.35, "bloom_threshold": 0.8, "vignette_intensity": 0.35, "exposure": 1.0 },
-  "environment": { "sky_mode": "gradient", "zenith_color": [0.07, 0.08, 0.12], "horizon_color": [0.13, 0.15, 0.21], "fog_color": [0.07, 0.08, 0.12], "fog_density": 0.005 },
+  "environment": { "sky_mode": "gradient", "zenith_color": [0.07, 0.08, 0.12], "horizon_color": [0.13, 0.15, 0.21], "fog_color": [0.07, 0.08, 0.12], "fog_density": 0.005, "time_of_day": 12.0 },
   "entities": [
     {
       "id": "player", "mesh": "cube", "position": [0, 1, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1],
@@ -49,7 +49,7 @@ end
   ]
 }
 ```
-Meshes: `"cube"`, `"sphere"`, `"cylinder"`, `"quad"`, `"plane"`, `"torus"`, `"ring"`, `"cone"`, `"icosphere"`, `"basalt_pillar"`, `"jagged_rock"`, `"crystal_cluster"`, `"sci_fi_crate"`, or `"assets/models/*.glb"`.
+Meshes: `"cube"`, `"sphere"`, `"cylinder"`, `"quad"`, `"plane"`, `"torus"`, `"ring"`, `"cone"`, `"icosphere"`, `"sword"`, `"pickaxe"`, `"basalt_pillar"`, `"jagged_rock"`, `"crystal_cluster"`, `"sci_fi_crate"`, or `"assets/models/*.glb"`.
 Rotation units: Euler angles in RADIANS `[rx, ry, rz]` (e.g. `[0, 1.57, 0]` for 90° yaw).
 Blend modes: `"opaque"`, `"translucent"`, `"additive"`.
 Sky modes: `"gradient"`, `"space"`, `"solid"`.
@@ -85,6 +85,12 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `after(delay_secs, callback_name) -> timer_id`, `every(interval_secs, callback_name) -> timer_id`
   - `cancel_timer(timer_id)`, `clear_timers()`
   - `on_event(name, callback_name)`, `emit_event(name, payload)`, `clear_events()`
+- Atmosphere & View-Model:
+  - `set_time_of_day(hour)`: Sets celestial time (0.0..24.0), updating sun/moon directional lighting, shadows, sky gradient, stars.
+  - `get_time_of_day() -> f32`: Returns current celestial hour.
+  - `set_viewmodel(mesh, [texture], [offset_xyz], [scale_xyz])`: Binds 1st-person viewmodel to camera with anti-clipping depth clear (presets: `"sword"`, `"pickaxe"`, `"cube"`, or `.glb`).
+  - `clear_viewmodel()`: Clears active viewmodel.
+  - `trigger_viewmodel_action(action_type, [intensity])`: Triggers procedural animation (`"swing"`, `"recoil"`, `"bob"`).
 
 ## lua_ui
 - Declarative In-Game HUD:
@@ -94,6 +100,8 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `ui_bar(id, anchor, x, y, w, h, value_0_to_1, r, g, b, a)`: Dynamic progress/health bar.
   - `ui_label(id, anchor, x, y, text, size, r, g, b, a)`: Text label (re-call with same ID to update text).
   - `ui_button(id, anchor, x, y, w, h, text, callback_name)`: Interactive button triggering global Lua function.
+  - `ui_image(path, x, y, w, h, [uv_rect])`: Draws 2D texture/sprite from `assets/`. `uv_rect` optional `{u0,v0,u1,v1}` for atlas slicing.
+  - `ui_slot(x, y, size, [texture_path], [uv_rect], [count_text], [selected], [hotkey_label])`: Styled inventory/hotbar slot with gold highlight, icon, count, and hotkey.
 - 3D Overlays & Visual Debug:
   - `set_world_label(entity_id, text, r, g, b, [a])`: Floating 3D billboarded text above entity.
   - `spawn_floating_text(x, y, z, text, r, g, b, [duration])`: Floating combat damage/status text.
