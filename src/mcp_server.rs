@@ -238,6 +238,13 @@ impl JsonRpcResponse {
     }
 }
 
+pub fn mcp_param_error(tool: &str, field: &str, expected_json: &str) -> String {
+    format!(
+        "Invalid or missing parameter '{}' for tool '{}'. Expected minimal valid JSON:\n{}",
+        field, tool, expected_json
+    )
+}
+
 pub const ENGINE_DOCS: &str = include_str!("../AGENT_GUIDE.md");
 
 pub fn extract_doc_topic(full_docs: &str, topic: &str) -> String {
@@ -819,7 +826,20 @@ pub async fn handle_jsonrpc(
                                 Err(_) => Some(JsonRpcResponse::error(id, -32000, "Fallo al procesar entidad")),
                             }
                         }
-                        Err(err) => Some(JsonRpcResponse::error(id, -32602, format!("Argumentos invalidos: {}", err))),
+                        Err(err) => {
+                            let example = json!({
+                                "id": "player",
+                                "transform": { "position": [0.0, 1.0, 0.0] },
+                                "mesh": { "primitive": "Cube" },
+                                "material": { "color": [0.2, 0.8, 0.4, 1.0] }
+                            });
+                            let msg = mcp_param_error(
+                                "upsert_entity",
+                                &format!("entity_def ({})", err),
+                                &serde_json::to_string_pretty(&example).unwrap_or_default(),
+                            );
+                            Some(JsonRpcResponse::error(id, -32602, msg))
+                        }
                     }
                 }
                 "get_engine_logs" => {
@@ -963,7 +983,10 @@ pub async fn handle_jsonrpc(
                 "delete_entity" => {
                     let entity_id = match args.get("id").and_then(|v| v.as_str()) {
                         Some(s) => s.to_string(),
-                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'id'")),
+                        None => {
+                            let msg = mcp_param_error("delete_entity", "id", "{\n  \"id\": \"entity_name\"\n}");
+                            return Some(JsonRpcResponse::error(id, -32602, msg));
+                        }
                     };
                     let (tx, rx) = oneshot::channel();
                     if cmd_tx.send(McpCommand::DeleteEntity { id: entity_id, respond_to: tx }).await.is_err() {
@@ -1014,7 +1037,10 @@ pub async fn handle_jsonrpc(
                 "load_scene" => {
                     let raw_path = match args.get("path").and_then(|v| v.as_str()) {
                         Some(p) => p.to_string(),
-                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'path'")),
+                        None => {
+                            let msg = mcp_param_error("load_scene", "path", "{\n  \"path\": \"assets/scene.json\"\n}");
+                            return Some(JsonRpcResponse::error(id, -32602, msg));
+                        }
                     };
                     let norm = raw_path.trim().replace('\\', "/");
                     let path = if norm.starts_with("assets/") {
@@ -1042,7 +1068,8 @@ pub async fn handle_jsonrpc(
                     let playing = args.get("playing").and_then(|v| v.as_bool());
                     let mode = args.get("mode").and_then(|v| v.as_str()).map(|s| s.to_string());
                     if playing.is_none() && mode.is_none() {
-                        return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'playing' (booleano) o 'mode' (string)"));
+                        let msg = mcp_param_error("set_play_mode", "mode | playing", "{\n  \"mode\": \"play\" // or \"playing\": true\n}");
+                        return Some(JsonRpcResponse::error(id, -32602, msg));
                     }
                     let (tx, rx) = oneshot::channel();
                     if cmd_tx.send(McpCommand::SetPlayMode { playing, mode, respond_to: tx }).await.is_err() {
@@ -1075,7 +1102,10 @@ pub async fn handle_jsonrpc(
                 "run_lua_snippet" => {
                     let code = match args.get("code").and_then(|v| v.as_str()) {
                         Some(c) => c.to_string(),
-                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'code'")),
+                        None => {
+                            let msg = mcp_param_error("run_lua_snippet", "code", "{\n  \"code\": \"print('hello world')\"\n}");
+                            return Some(JsonRpcResponse::error(id, -32602, msg));
+                        }
                     };
                     let (tx, rx) = oneshot::channel();
                     if cmd_tx.send(McpCommand::RunLuaSnippet { code, respond_to: tx }).await.is_err() {
@@ -1102,7 +1132,10 @@ pub async fn handle_jsonrpc(
                 "spawn_prefab" => {
                     let name = match args.get("name").and_then(|v| v.as_str()) {
                         Some(n) => n.to_string(),
-                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'name'")),
+                        None => {
+                            let msg = mcp_param_error("spawn_prefab", "name", "{\n  \"name\": \"Coin\",\n  \"x\": 0.0, \"y\": 1.0, \"z\": 0.0\n}");
+                            return Some(JsonRpcResponse::error(id, -32602, msg));
+                        }
                     };
                     let x = args.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
                     let y = args.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
@@ -1120,7 +1153,10 @@ pub async fn handle_jsonrpc(
                 "select_entity" => {
                     let id_str = match args.get("id").and_then(|v| v.as_str()) {
                         Some(s) => s.to_string(),
-                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'id'")),
+                        None => {
+                            let msg = mcp_param_error("select_entity", "id", "{\n  \"id\": \"player\"\n}");
+                            return Some(JsonRpcResponse::error(id, -32602, msg));
+                        }
                     };
                     let (tx, rx) = oneshot::channel();
                     if cmd_tx.send(McpCommand::SelectEntity { id: id_str, respond_to: tx }).await.is_err() {
@@ -1135,7 +1171,10 @@ pub async fn handle_jsonrpc(
                 "new_scene_from_template" => {
                     let template_name = match args.get("template_name").and_then(|v| v.as_str()) {
                         Some(t) => t,
-                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'template_name'")),
+                        None => {
+                            let msg = mcp_param_error("new_scene_from_template", "template_name", "{\n  \"template_name\": \"fps_arena\",\n  \"save_path\": \"assets/scene.json\"\n}");
+                            return Some(JsonRpcResponse::error(id, -32602, msg));
+                        }
                     };
                     let save_path = args.get("save_path").and_then(|v| v.as_str()).unwrap_or("assets/scene.json");
                     match crate::templates::generate_and_save_template(template_name, save_path) {
@@ -1157,11 +1196,17 @@ pub async fn handle_jsonrpc(
                 "forge_create_model" => {
                     let recipe_val = match args.get("recipe") {
                         Some(v) => v.clone(),
-                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'recipe'")),
+                        None => {
+                            let msg = mcp_param_error("forge_create_model", "recipe", "{\n  \"recipe\": {\n    \"name\": \"sword\",\n    \"parts\": [{ \"primitive\": \"Box\", \"dimensions\": [0.2, 1.0, 0.1] }]\n  }\n}");
+                            return Some(JsonRpcResponse::error(id, -32602, msg));
+                        }
                     };
                     let recipe: crate::modeler::ModelRecipe = match serde_json::from_value(recipe_val) {
                         Ok(r) => r,
-                        Err(e) => return Some(JsonRpcResponse::error(id, -32602, format!("Formato de receta invalido: {}", e))),
+                        Err(e) => {
+                            let msg = mcp_param_error("forge_create_model", &format!("recipe ({})", e), "{\n  \"recipe\": {\n    \"name\": \"sword\",\n    \"parts\": [{ \"primitive\": \"Box\", \"dimensions\": [0.2, 1.0, 0.1] }]\n  }\n}");
+                            return Some(JsonRpcResponse::error(id, -32602, msg));
+                        }
                     };
                     let (tx, rx) = oneshot::channel();
                     if cmd_tx.send(McpCommand::ForgeCreateModel { recipe, respond_to: tx }).await.is_err() {
@@ -1176,12 +1221,18 @@ pub async fn handle_jsonrpc(
                 "forge_bake_glb" => {
                     let output_name = match args.get("output_name").and_then(|v| v.as_str()) {
                         Some(s) => s.to_string(),
-                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'output_name'")),
+                        None => {
+                            let msg = mcp_param_error("forge_bake_glb", "output_name", "{\n  \"output_name\": \"spaceship\",\n  \"insert_in_scene\": true\n}");
+                            return Some(JsonRpcResponse::error(id, -32602, msg));
+                        }
                     };
                     let recipe = if let Some(rv) = args.get("recipe") {
                         match serde_json::from_value::<crate::modeler::ModelRecipe>(rv.clone()) {
                             Ok(r) => r,
-                            Err(e) => return Some(JsonRpcResponse::error(id, -32602, format!("Formato de receta invalido: {}", e))),
+                            Err(e) => {
+                                let msg = mcp_param_error("forge_bake_glb", &format!("recipe ({})", e), "{\n  \"output_name\": \"item\",\n  \"recipe\": { \"name\": \"item\", \"parts\": [...] }\n}");
+                                return Some(JsonRpcResponse::error(id, -32602, msg));
+                            }
                         }
                     } else {
                         crate::modeler::preset_spaceship()
@@ -1225,11 +1276,17 @@ pub async fn handle_jsonrpc(
                 "forge_create_texture" => {
                     let style = match args.get("style").and_then(|v| v.as_str()) {
                         Some(s) => s.to_string(),
-                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'style'")),
+                        None => {
+                            let msg = mcp_param_error("forge_create_texture", "style", "{\n  \"style\": \"noise\",\n  \"filename\": \"assets/textures/noise.png\",\n  \"size\": 256\n}");
+                            return Some(JsonRpcResponse::error(id, -32602, msg));
+                        }
                     };
                     let filename = match args.get("filename").and_then(|v| v.as_str()) {
                         Some(f) => f.to_string(),
-                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'filename'")),
+                        None => {
+                            let msg = mcp_param_error("forge_create_texture", "filename", "{\n  \"style\": \"noise\",\n  \"filename\": \"assets/textures/noise.png\",\n  \"size\": 256\n}");
+                            return Some(JsonRpcResponse::error(id, -32602, msg));
+                        }
                     };
                     let size = args.get("size").and_then(|v| v.as_u64()).unwrap_or(256) as u32;
                     let seed = args.get("seed").and_then(|v| v.as_u64()).unwrap_or(42) as u32;
@@ -1270,7 +1327,10 @@ pub async fn handle_jsonrpc(
                     let recipe = if let Some(rv) = args.get("recipe") {
                         match serde_json::from_value::<crate::music_forge::MusicRecipe>(rv.clone()) {
                             Ok(r) => Some(r),
-                            Err(e) => return Some(JsonRpcResponse::error(id, -32602, format!("Error en recipe: {}", e))),
+                            Err(e) => {
+                                let msg = mcp_param_error("forge_create_music", &format!("recipe ({})", e), "{\n  \"preset\": \"action\",\n  \"bake_path\": \"assets/audio/action.wav\",\n  \"play_now\": true\n}");
+                                return Some(JsonRpcResponse::error(id, -32602, msg));
+                            }
                         }
                     } else {
                         None
@@ -1299,7 +1359,10 @@ pub async fn handle_jsonrpc(
                 "set_music_intensity" => {
                     let intensity = match args.get("intensity").and_then(|v| v.as_f64()) {
                         Some(f) => f as f32,
-                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'intensity' (numero)")),
+                        None => {
+                            let msg = mcp_param_error("set_music_intensity", "intensity", "{\n  \"intensity\": 0.75\n}");
+                            return Some(JsonRpcResponse::error(id, -32602, msg));
+                        }
                     };
                     let (tx, rx) = oneshot::channel();
                     if cmd_tx.send(McpCommand::SetMusicIntensity {
@@ -1318,7 +1381,10 @@ pub async fn handle_jsonrpc(
                     let recipe = match args.get("recipe") {
                         Some(v) => match serde_json::from_value::<crate::level_forge::TerrainRecipe>(v.clone()) {
                             Ok(r) => r,
-                            Err(e) => return Some(JsonRpcResponse::error(id, -32602, format!("Error en recipe: {}", e))),
+                            Err(e) => {
+                                let msg = mcp_param_error("forge_generate_terrain", &format!("recipe ({})", e), "{\n  \"recipe\": { \"biome\": \"volcanic\", \"width\": 32, \"depth\": 32 },\n  \"output_name\": \"volcanic_arena\"\n}");
+                                return Some(JsonRpcResponse::error(id, -32602, msg));
+                            }
                         },
                         None => crate::level_forge::TerrainRecipe::default(),
                     };
@@ -1346,7 +1412,10 @@ pub async fn handle_jsonrpc(
                     let recipe = match args.get("recipe") {
                         Some(v) => match serde_json::from_value::<crate::level_forge::DungeonRecipe>(v.clone()) {
                             Ok(r) => r,
-                            Err(e) => return Some(JsonRpcResponse::error(id, -32602, format!("Error en recipe: {}", e))),
+                            Err(e) => {
+                                let msg = mcp_param_error("forge_generate_dungeon", &format!("recipe ({})", e), "{\n  \"recipe\": { \"width\": 5, \"depth\": 5 }\n}");
+                                return Some(JsonRpcResponse::error(id, -32602, msg));
+                            }
                         },
                         None => crate::level_forge::DungeonRecipe::default(),
                     };
@@ -1369,14 +1438,20 @@ pub async fn handle_jsonrpc(
                     let recipe = match args.get("recipe") {
                         Some(v) => match serde_json::from_value::<crate::level_forge::ScatterRecipe>(v.clone()) {
                             Ok(r) => r,
-                            Err(e) => return Some(JsonRpcResponse::error(id, -32602, format!("Error en recipe: {}", e))),
+                            Err(e) => {
+                                let msg = mcp_param_error("forge_scatter_props", &format!("recipe ({})", e), "{\n  \"recipe\": { \"prop_types\": [\"crystal\"], \"count\": 20 }\n}");
+                                return Some(JsonRpcResponse::error(id, -32602, msg));
+                            }
                         },
                         None => crate::level_forge::ScatterRecipe::default(),
                     };
                     let terrain_recipe = if let Some(tv) = args.get("terrain_recipe") {
                         match serde_json::from_value::<crate::level_forge::TerrainRecipe>(tv.clone()) {
                             Ok(tr) => Some(tr),
-                            Err(e) => return Some(JsonRpcResponse::error(id, -32602, format!("Error en terrain_recipe: {}", e))),
+                            Err(e) => {
+                                let msg = mcp_param_error("forge_scatter_props", &format!("terrain_recipe ({})", e), "{\n  \"terrain_recipe\": { \"biome\": \"hills\", \"width\": 32, \"depth\": 32 }\n}");
+                                return Some(JsonRpcResponse::error(id, -32602, msg));
+                            }
                         }
                     } else {
                         None
@@ -1427,11 +1502,18 @@ pub async fn handle_jsonrpc(
                     let recipe = if let Some(rv) = args.get("recipe") {
                         match serde_json::from_value::<crate::vfx_forge::VfxRecipe>(rv.clone()) {
                             Ok(r) => Some(r),
-                            Err(e) => return Some(JsonRpcResponse::error(id, -32602, format!("Error en recipe: {}", e))),
+                            Err(e) => {
+                                let msg = mcp_param_error("forge_spawn_vfx", &format!("recipe ({})", e), "{\n  \"preset\": \"explosion\",\n  \"position\": [0.0, 1.0, 0.0]\n}");
+                                return Some(JsonRpcResponse::error(id, -32602, msg));
+                            }
                         }
                     } else {
                         None
                     };
+                    if preset.is_none() && recipe.is_none() {
+                        let msg = mcp_param_error("forge_spawn_vfx", "preset | recipe", "{\n  \"preset\": \"explosion\",\n  \"position\": [0.0, 1.0, 0.0]\n}");
+                        return Some(JsonRpcResponse::error(id, -32602, msg));
+                    }
                     let position = args.get("position").and_then(|v| v.as_array()).map(|arr| [
                         arr.get(0).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
                         arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
@@ -1910,5 +1992,51 @@ mod tests {
         assert_eq!(resp_play_val["result"]["data"]["playing"], true);
 
         rt.block_on(handle).unwrap();
+    }
+
+    #[test]
+    fn test_mcp_param_error_hints_and_validation() {
+        let err_msg = mcp_param_error("load_scene", "path", "{\n  \"path\": \"assets/scene.json\"\n}");
+        assert!(err_msg.contains("Invalid or missing parameter 'path' for tool 'load_scene'"));
+        assert!(err_msg.contains("\"path\": \"assets/scene.json\""));
+
+        let (cmd_tx, _cmd_rx) = mpsc::channel(2);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // 1. Missing 'path' in load_scene
+        let req_missing = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(301)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "load_scene",
+                "arguments": {}
+            })),
+        };
+        let resp = rt.block_on(async {
+            handle_jsonrpc(&cmd_tx, req_missing).await
+        }).expect("Response expected");
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["error"]["code"], -32602);
+        let msg = val["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("Invalid or missing parameter 'path'"));
+        assert!(msg.contains("Expected minimal valid JSON"));
+
+        // 2. Missing 'id' in delete_entity
+        let req_del = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(302)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "delete_entity",
+                "arguments": {}
+            })),
+        };
+        let resp_del = rt.block_on(async {
+            handle_jsonrpc(&cmd_tx, req_del).await
+        }).expect("Response expected");
+        let val_del = serde_json::to_value(&resp_del).unwrap();
+        assert_eq!(val_del["error"]["code"], -32602);
+        assert!(val_del["error"]["message"].as_str().unwrap().contains("parameter 'id'"));
     }
 }

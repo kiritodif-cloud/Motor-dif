@@ -430,26 +430,54 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register is_key_just_pressed: {}", e))?;
         lua.globals().set("is_key_just_pressed", is_key_just_pressed).map_err(|e| e.to_string())?;
 
-        // 2. apply_force(fx, fy, fz)
+        // 2. apply_force(fx, fy, fz) or entity:apply_force(fx, fy, fz)
         let forces_ref = self.pending_forces.clone();
         let apply_force = lua
-            .create_function(move |_, (fx, fy, fz): (f32, f32, f32)| {
-                if let Ok(mut forces) = forces_ref.lock() {
-                    forces.push(Vec3::new(fx, fy, fz));
+            .create_function(move |_, args: mlua::MultiValue| {
+                let mut nums = Vec::new();
+                for val in args {
+                    match val {
+                        mlua::Value::Number(n) => nums.push(n as f32),
+                        mlua::Value::Integer(i) => nums.push(i as f32),
+                        _ => {}
+                    }
                 }
-                Ok(())
+                if nums.len() >= 3 {
+                    if let Ok(mut forces) = forces_ref.lock() {
+                        forces.push(Vec3::new(nums[0], nums[1], nums[2]));
+                    }
+                    Ok(())
+                } else {
+                    Err(mlua::Error::runtime(
+                        "Expected: apply_force(fx, fy, fz) or entity:apply_force(fx, fy, fz)",
+                    ))
+                }
             })
             .map_err(|e| format!("Failed to register apply_force: {}", e))?;
         lua.globals().set("apply_force", apply_force).map_err(|e| e.to_string())?;
 
-        // 3. apply_impulse(ix, iy, iz)
+        // 3. apply_impulse(ix, iy, iz) or entity:apply_impulse(ix, iy, iz)
         let impulses_ref = self.pending_impulses.clone();
         let apply_impulse = lua
-            .create_function(move |_, (ix, iy, iz): (f32, f32, f32)| {
-                if let Ok(mut impulses) = impulses_ref.lock() {
-                    impulses.push(Vec3::new(ix, iy, iz));
+            .create_function(move |_, args: mlua::MultiValue| {
+                let mut nums = Vec::new();
+                for val in args {
+                    match val {
+                        mlua::Value::Number(n) => nums.push(n as f32),
+                        mlua::Value::Integer(i) => nums.push(i as f32),
+                        _ => {}
+                    }
                 }
-                Ok(())
+                if nums.len() >= 3 {
+                    if let Ok(mut impulses) = impulses_ref.lock() {
+                        impulses.push(Vec3::new(nums[0], nums[1], nums[2]));
+                    }
+                    Ok(())
+                } else {
+                    Err(mlua::Error::runtime(
+                        "Expected: apply_impulse(ix, iy, iz) or entity:apply_impulse(ix, iy, iz)",
+                    ))
+                }
             })
             .map_err(|e| format!("Failed to register apply_impulse: {}", e))?;
         lua.globals().set("apply_impulse", apply_impulse).map_err(|e| e.to_string())?;
@@ -457,7 +485,11 @@ impl ScriptComponent {
         // 4. spawn_entity(def_table)
         let spawns_ref = ctx.pending_spawns.clone();
         let spawn_entity = lua
-            .create_function(move |_, table: mlua::Table| {
+            .create_function(move |_, args: mlua::MultiValue| {
+                let table = match args.into_iter().find_map(|v| match v { mlua::Value::Table(t) => Some(t), _ => None }) {
+                    Some(t) => t,
+                    None => return Err(mlua::Error::runtime("Expected: spawn_entity({ id = \"...\", mesh = \"...\", x = 0, y = 0, z = 0, ... })")),
+                };
                 let id: String = table.get("id").unwrap_or_else(|_| "spawned_entity".to_string());
                 let mesh: String = table.get("mesh").unwrap_or_else(|_| "cube".to_string());
                 let x: f32 = table.get("x").unwrap_or(0.0);
@@ -889,11 +921,29 @@ impl ScriptComponent {
         let lights_ref = ctx.pending_lights.clone();
         let set_light = lua
             .create_function(
-                move |_, (id, r, g, b, intensity, radius): (String, f32, f32, f32, f32, f32)| {
-                    if let Ok(mut list) = lights_ref.lock() {
-                        list.push((id, [r, g, b], intensity, radius));
+                move |_, args: mlua::MultiValue| {
+                    let mut iter = args.into_iter();
+                    let id_val = iter.next();
+                    let id = match id_val {
+                        Some(mlua::Value::String(s)) => s.to_str().map(|b| b.to_string()).unwrap_or_default(),
+                        _ => return Err(mlua::Error::runtime("Expected: set_light(entity_id, r, g, b, intensity, radius)")),
+                    };
+                    let mut nums = Vec::new();
+                    for val in iter {
+                        match val {
+                            mlua::Value::Number(n) => nums.push(n as f32),
+                            mlua::Value::Integer(i) => nums.push(i as f32),
+                            _ => {}
+                        }
                     }
-                    Ok(true)
+                    if nums.len() >= 5 {
+                        if let Ok(mut list) = lights_ref.lock() {
+                            list.push((id, [nums[0], nums[1], nums[2]], nums[3], nums[4]));
+                        }
+                        Ok(true)
+                    } else {
+                        Err(mlua::Error::runtime("Expected: set_light(entity_id, r, g, b, intensity, radius)"))
+                    }
                 },
             )
             .map_err(|e| format!("Failed to register set_light: {}", e))?;
@@ -905,11 +955,23 @@ impl ScriptComponent {
         let cam_set_ref = ctx.pending_camera_sets.clone();
         let set_camera = lua
             .create_function(
-                move |_, (x, y, z, tx, ty, tz): (f32, f32, f32, f32, f32, f32)| {
-                    if let Ok(mut list) = cam_set_ref.lock() {
-                        list.push(([x, y, z], [tx, ty, tz]));
+                move |_, args: mlua::MultiValue| {
+                    let mut nums = Vec::new();
+                    for val in args {
+                        match val {
+                            mlua::Value::Number(n) => nums.push(n as f32),
+                            mlua::Value::Integer(i) => nums.push(i as f32),
+                            _ => {}
+                        }
                     }
-                    Ok(true)
+                    if nums.len() >= 6 {
+                        if let Ok(mut list) = cam_set_ref.lock() {
+                            list.push(([nums[0], nums[1], nums[2]], [nums[3], nums[4], nums[5]]));
+                        }
+                        Ok(true)
+                    } else {
+                        Err(mlua::Error::runtime("Expected: set_camera(x, y, z, tx, ty, tz) with 6 numeric coordinates"))
+                    }
                 },
             )
             .map_err(|e| format!("Failed to register set_camera: {}", e))?;
@@ -1163,7 +1225,18 @@ impl ScriptComponent {
         // 27. set_material(entity_id, material_table)
         let materials_ref = ctx.pending_materials.clone();
         let set_material = lua
-            .create_function(move |_, (id, mat_table): (String, mlua::Table)| {
+            .create_function(move |_, args: mlua::MultiValue| {
+                let mut iter = args.into_iter();
+                let first = iter.next();
+                let second = iter.next();
+                let (id, mat_table) = match (first, second) {
+                    (Some(mlua::Value::String(s)), Some(mlua::Value::Table(t))) => (s.to_str().map(|b| b.to_string()).unwrap_or_default(), t),
+                    (Some(mlua::Value::Table(t)), Some(mlua::Value::Table(mat))) => {
+                        let id = t.get::<String>("id").unwrap_or_default();
+                        (id, mat)
+                    }
+                    _ => return Err(mlua::Error::runtime("Expected: set_material(entity_id, { color = {r, g, b, a}, emissive = 0.0, ... })")),
+                };
                 let color: Option<[f32; 4]> = if let Ok(col) = mat_table.get::<mlua::Table>("color") {
                     let r: f32 = col.get(1).unwrap_or(1.0);
                     let g: f32 = col.get(2).unwrap_or(1.0);
@@ -2149,13 +2222,26 @@ impl ScriptComponent {
         // 71. voxel_set_block(x: integer, y: integer, z: integer, id: integer)
         let voxel_world_ref2 = ctx.active_voxel_world.clone();
         let voxel_set_block = lua
-            .create_function(move |_, (x, y, z, id): (i32, i32, i32, u8)| {
-                if let Ok(mut lock) = voxel_world_ref2.write() {
-                    if let Some(world) = lock.as_mut() {
-                        world.set_block(x, y, z, crate::voxel_forge::BlockId::from_u8(id));
+            .create_function(move |_, args: mlua::MultiValue| {
+                let mut ints = Vec::new();
+                for val in args {
+                    match val {
+                        mlua::Value::Integer(i) => ints.push(i),
+                        mlua::Value::Number(n) => ints.push(n as i64),
+                        _ => {}
                     }
                 }
-                Ok(())
+                if ints.len() >= 4 {
+                    let (x, y, z, id) = (ints[0] as i32, ints[1] as i32, ints[2] as i32, ints[3] as u8);
+                    if let Ok(mut lock) = voxel_world_ref2.write() {
+                        if let Some(world) = lock.as_mut() {
+                            world.set_block(x, y, z, crate::voxel_forge::BlockId::from_u8(id));
+                        }
+                    }
+                    Ok(())
+                } else {
+                    Err(mlua::Error::runtime("Expected: voxel_set_block(x, y, z, block_id)"))
+                }
             })
             .map_err(|e| format!("Failed to register voxel_set_block: {}", e))?;
         lua.globals().set("voxel_set_block", voxel_set_block).map_err(|e| e.to_string())?;
@@ -3107,6 +3193,39 @@ mod tests {
             }
             _ => panic!("Expected VfxCommand::Stop"),
         }
+
+        let _ = std::fs::remove_file(test_script_path);
+    }
+
+    #[test]
+    fn test_lua_explicit_signature_errors() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        let test_script_path = "assets/scripts/temp_sig_err_test.lua";
+
+        // 1. apply_force bad arguments
+        std::fs::write(test_script_path, "apply_force(1.0)").unwrap();
+        let mut comp = ScriptComponent::new(test_script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("Expected: apply_force(fx, fy, fz)"));
+
+        // 2. set_camera bad arguments
+        std::fs::write(test_script_path, "set_camera(1.0, 2.0)").unwrap();
+        let mut comp2 = ScriptComponent::new(test_script_path.to_string());
+        let res2 = comp2.init_or_reload(ctx.clone());
+        assert!(res2.is_err());
+        assert!(res2.unwrap_err().contains("Expected: set_camera(x, y, z, tx, ty, tz)"));
+
+        // 3. voxel_set_block bad arguments
+        std::fs::write(test_script_path, "voxel_set_block(1, 2)").unwrap();
+        let mut comp3 = ScriptComponent::new(test_script_path.to_string());
+        let res3 = comp3.init_or_reload(ctx.clone());
+        assert!(res3.is_err());
+        assert!(res3.unwrap_err().contains("Expected: voxel_set_block(x, y, z, block_id)"));
 
         let _ = std::fs::remove_file(test_script_path);
     }
