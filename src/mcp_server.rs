@@ -184,6 +184,16 @@ pub enum McpCommand {
         name: String,
         respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
     },
+    ForgeSpawnController {
+        controller_type: String,
+        entity_id: String,
+        position: [f32; 3],
+        voxel_collision: bool,
+        speed: Option<f32>,
+        jump_force: Option<f32>,
+        overwrite: bool,
+        respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -748,6 +758,23 @@ pub async fn handle_jsonrpc(
                                     "terrain_type": { "type": "string", "description": "Tipo de terreno (ej. 'hills', 'plains', 'mountains')" },
                                     "name": { "type": "string", "description": "Nombre de guardado del mundo (por defecto 'voxel_world')" }
                                 }
+                            }
+                        },
+                        {
+                            "name": "forge_spawn_controller",
+                            "description": "Genera una plantilla de control de jugador lista para jugar ('fps', 'third_person', 'top_down', 'vehicle'), escribe el script Lua en assets/scripts/<entity_id>_controller.lua y spawnea la entidad con colisionador e inicializacion automatica",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "controller_type": { "type": "string", "enum": ["fps", "third_person", "top_down", "vehicle"], "description": "Tipo de plantilla de control ('fps', 'third_person', 'top_down', 'vehicle')" },
+                                    "entity_id": { "type": "string", "description": "ID de la entidad del jugador en escena (por defecto 'player')" },
+                                    "position": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Posicion inicial [x, y, z] (por defecto [0, 2, 0])" },
+                                    "voxel_collision": { "type": "boolean", "description": "Activar soporte y raycasts para mundos voxel en el script (por defecto false)" },
+                                    "speed": { "type": "number", "description": "Velocidad de movimiento personalizada" },
+                                    "jump_force": { "type": "number", "description": "Fuerza de salto personalizada" },
+                                    "overwrite": { "type": "boolean", "description": "Sobreescribir el script Lua si ya existe en assets/scripts/ (por defecto false)" }
+                                },
+                                "required": ["controller_type"]
                             }
                         }
                     ]
@@ -1561,6 +1588,52 @@ pub async fn handle_jsonrpc(
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al generar mundo voxel")),
                     }
                 }
+                "forge_spawn_controller" => {
+                    let controller_type = match args.get("controller_type").and_then(|v| v.as_str()) {
+                        Some(t) => t.to_string(),
+                        None => {
+                            let msg = mcp_param_error(
+                                "forge_spawn_controller",
+                                "controller_type",
+                                "{\n  \"controller_type\": \"fps\", // 'fps' | 'third_person' | 'top_down' | 'vehicle'\n  \"entity_id\": \"player\",\n  \"position\": [0.0, 2.0, 0.0]\n}",
+                            );
+                            return Some(JsonRpcResponse::error(id, -32602, msg));
+                        }
+                    };
+                    let entity_id = args.get("entity_id").and_then(|v| v.as_str()).unwrap_or("player").to_string();
+                    let position = if let Some(arr) = args.get("position").and_then(|v| v.as_array()) {
+                        [
+                            arr.get(0).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                            arr.get(1).and_then(|v| v.as_f64()).unwrap_or(2.0) as f32,
+                            arr.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                        ]
+                    } else {
+                        [0.0, 2.0, 0.0]
+                    };
+                    let voxel_collision = args.get("voxel_collision").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let speed = args.get("speed").and_then(|v| v.as_f64()).map(|f| f as f32);
+                    let jump_force = args.get("jump_force").and_then(|v| v.as_f64()).map(|f| f as f32);
+                    let overwrite = args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::ForgeSpawnController {
+                        controller_type,
+                        entity_id,
+                        position,
+                        voxel_collision,
+                        speed,
+                        jump_force,
+                        overwrite,
+                        respond_to: tx,
+                    }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(val)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }], "data": val }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al instanciar controlador de jugador")),
+                    }
+                }
                 _ => Some(JsonRpcResponse::error(id, -32601, format!("Herramienta desconocida: {}", tool_name))),
             }
         }
@@ -1798,6 +1871,7 @@ mod tests {
         assert!(resp_str.contains("forge_create_rigged_character"));
         assert!(resp_str.contains("forge_spawn_vfx"));
         assert!(resp_str.contains("forge_create_voxel_world"));
+        assert!(resp_str.contains("forge_spawn_controller"));
         assert!(resp_str.contains("get_engine_docs"));
         assert!(resp_str.contains("load_scene"));
         assert!(resp_str.contains("set_play_mode"));
@@ -2038,5 +2112,72 @@ mod tests {
         let val_del = serde_json::to_value(&resp_del).unwrap();
         assert_eq!(val_del["error"]["code"], -32602);
         assert!(val_del["error"]["message"].as_str().unwrap().contains("parameter 'id'"));
+    }
+
+    #[test]
+    fn test_mcp_forge_spawn_controller_dispatch() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        for ctype in &["fps", "third_person", "top_down", "vehicle"] {
+            let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
+            let req = JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(json!(401)),
+                method: "tools/call".to_string(),
+                params: Some(json!({
+                    "name": "forge_spawn_controller",
+                    "arguments": {
+                        "controller_type": ctype,
+                        "entity_id": format!("{}_hero", ctype),
+                        "position": [0.0, 3.0, 0.0],
+                        "voxel_collision": true,
+                        "speed": 12.5,
+                        "jump_force": 8.0,
+                        "overwrite": true
+                    }
+                })),
+            };
+
+            let ctype_clone = ctype.to_string();
+            let handle = rt.spawn(async move {
+                if let Some(cmd) = cmd_rx.recv().await {
+                    match cmd {
+                        McpCommand::ForgeSpawnController {
+                            controller_type,
+                            entity_id,
+                            position,
+                            voxel_collision,
+                            speed,
+                            jump_force,
+                            overwrite,
+                            respond_to,
+                        } => {
+                            assert_eq!(controller_type, ctype_clone);
+                            assert_eq!(entity_id, format!("{}_hero", ctype_clone));
+                            assert_eq!(position, [0.0, 3.0, 0.0]);
+                            assert_eq!(voxel_collision, true);
+                            assert_eq!(speed, Some(12.5));
+                            assert_eq!(jump_force, Some(8.0));
+                            assert_eq!(overwrite, true);
+                            let _ = respond_to.send(Ok(json!({
+                                "success": true,
+                                "controller_type": controller_type,
+                                "entity_id": entity_id
+                            })));
+                        }
+                        _ => panic!("Expected ForgeSpawnController command"),
+                    }
+                }
+            });
+
+            let resp = rt.block_on(async {
+                handle_jsonrpc(&cmd_tx, req).await
+            }).expect("Response expected");
+            let val = serde_json::to_value(&resp).unwrap();
+            assert_eq!(val["result"]["data"]["success"], true);
+            assert_eq!(val["result"]["data"]["controller_type"], *ctype);
+
+            rt.block_on(handle).unwrap();
+        }
     }
 }

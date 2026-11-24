@@ -2727,6 +2727,170 @@ impl EngineState {
                         "mesh_path": opaque_glb_path,
                     })));
                 }
+                McpCommand::ForgeSpawnController {
+                    controller_type,
+                    entity_id,
+                    position,
+                    voxel_collision,
+                    speed,
+                    jump_force,
+                    overwrite,
+                    respond_to,
+                } => {
+                    self.push_history();
+                    let ctype = controller_type.trim().to_lowercase();
+                    let ent_id = if entity_id.trim().is_empty() { "player".to_string() } else { entity_id.trim().to_string() };
+
+                    let (raw_template, mesh_name, mesh_color, mesh_scale, collider_type) = match ctype.as_str() {
+                        "fps" => (
+                            include_str!("../assets/scripts/templates/fps_controller.lua"),
+                            "Capsule",
+                            [0.2f32, 0.6f32, 1.0f32, 1.0f32],
+                            [0.8f32, 1.8f32, 0.8f32],
+                            "capsule",
+                        ),
+                        "third_person" => (
+                            include_str!("../assets/scripts/templates/third_person_controller.lua"),
+                            "Capsule",
+                            [0.3f32, 0.8f32, 0.4f32, 1.0f32],
+                            [0.8f32, 1.8f32, 0.8f32],
+                            "capsule",
+                        ),
+                        "top_down" => (
+                            include_str!("../assets/scripts/templates/top_down_controller.lua"),
+                            "Cube",
+                            [0.9f32, 0.6f32, 0.2f32, 1.0f32],
+                            [0.8f32, 1.8f32, 0.8f32],
+                            "cuboid",
+                        ),
+                        "vehicle" => (
+                            include_str!("../assets/scripts/templates/vehicle_controller.lua"),
+                            "Cube",
+                            [0.9f32, 0.2f32, 0.3f32, 1.0f32],
+                            [1.8f32, 0.8f32, 3.2f32],
+                            "cuboid",
+                        ),
+                        _ => {
+                            let _ = respond_to.send(Err(format!(
+                                "Unknown controller_type '{}'. Expected one of: 'fps', 'third_person', 'top_down', 'vehicle'",
+                                controller_type
+                            )));
+                            continue;
+                        }
+                    };
+
+                    let mut script_content = raw_template.to_string();
+                    if let Some(spd) = speed {
+                        script_content = script_content.replacen("local speed = 10.0", &format!("local speed = {:.1}", spd), 1);
+                        script_content = script_content.replacen("local speed = 8.0", &format!("local speed = {:.1}", spd), 1);
+                        script_content = script_content.replacen("local speed = 9.0", &format!("local speed = {:.1}", spd), 1);
+                        script_content = script_content.replacen("local max_speed = 22.0", &format!("local max_speed = {:.1}", spd), 1);
+                    }
+                    if let Some(jf) = jump_force {
+                        script_content = script_content.replacen("local jump_force = 7.0", &format!("local jump_force = {:.1}", jf), 1);
+                    }
+                    if voxel_collision {
+                        script_content = script_content.replacen("local voxel_collision = false", "local voxel_collision = true", 1);
+                    }
+
+                    let _ = std::fs::create_dir_all("assets/scripts/templates");
+                    let template_path = format!("assets/scripts/templates/{}_controller.lua", ctype);
+                    let _ = std::fs::write(&template_path, raw_template);
+
+                    let script_path = format!("assets/scripts/{}_controller.lua", ent_id);
+                    let script_exists = std::path::Path::new(&script_path).exists();
+                    let wrote_file = if !script_exists || overwrite {
+                        if let Err(e) = std::fs::write(&script_path, &script_content) {
+                            let _ = respond_to.send(Err(format!("Failed to write controller script '{}': {}", script_path, e)));
+                            continue;
+                        }
+                        true
+                    } else {
+                        false
+                    };
+
+                    let mut found_e = None;
+                    for entity_ref in self.world.iter() {
+                        if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                            if meta.id == ent_id {
+                                found_e = Some(entity_ref.entity());
+                                break;
+                            }
+                        }
+                    }
+
+                    let e = if let Some(existing) = found_e {
+                        if let Ok(mut transform) = self.world.get::<&mut Transform>(existing) {
+                            transform.position = Vec3::from(position);
+                            transform.rotation = Vec3::ZERO;
+                            transform.scale = Vec3::from(mesh_scale);
+                        }
+                        if let Ok(mut mesh) = self.world.get::<&mut MeshRender>(existing) {
+                            mesh.mesh_type = mesh_name.to_string();
+                            mesh.color = mesh_color;
+                        }
+                        existing
+                    } else {
+                        let meta = EntityMeta {
+                            id: ent_id.clone(),
+                            name: ent_id.clone(),
+                            parent: None,
+                        };
+                        let transform = Transform::new(
+                            Vec3::from(position),
+                            Vec3::ZERO,
+                            Vec3::from(mesh_scale),
+                        );
+                        let mesh = MeshRender {
+                            mesh_type: mesh_name.to_string(),
+                            color: mesh_color,
+                            texture: None,
+                            emissive: 0.0,
+                            fresnel_color: None,
+                            fresnel_power: None,
+                            blend_mode: Some("opaque".to_string()),
+                            wireframe: None,
+                            uv_scroll: None,
+                        };
+                        self.world.spawn((meta, transform, mesh))
+                    };
+
+                    let phys_def = crate::assets::PhysicsDef {
+                        body: "dynamic".to_string(),
+                        collider: collider_type.to_string(),
+                        mass: 1.0,
+                        restitution: 0.0,
+                        is_sensor: None,
+                    };
+                    if let Ok(t) = self.world.get::<&Transform>(e).map(|t| *t) {
+                        let handle = self.physics.add_body(&t, &phys_def);
+                        let _ = self.world.insert_one(e, RigidBodyComponent { handle });
+                    }
+
+                    let mut script_comp = ScriptComponent::new(script_path.clone());
+                    if self.play_mode == PlayMode::Play || self.is_standalone_play {
+                        let _ = script_comp.init_or_reload(self.lua_ctx.clone());
+                    }
+                    let _ = self.world.insert_one(e, script_comp);
+
+                    let log_msg = format!(
+                        "Player controller '{}' spawned (type: '{}', script: '{}', position: {:?})",
+                        ent_id, ctype, script_path, position
+                    );
+                    self.logs.push(log_msg.clone());
+                    self.add_toast(format!("Spawned '{}' ({})", ent_id, ctype), egui::Color32::from_rgb(59, 130, 246));
+
+                    let _ = respond_to.send(Ok(serde_json::json!({
+                        "success": true,
+                        "entity_id": ent_id,
+                        "controller_type": ctype,
+                        "script_path": script_path,
+                        "position": position,
+                        "voxel_collision": voxel_collision,
+                        "script_overwritten": wrote_file,
+                        "status": "ready"
+                    })));
+                }
             }
         }
     }
