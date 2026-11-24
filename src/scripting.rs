@@ -92,6 +92,23 @@ pub fn json_to_lua(lua: &mlua::Lua, val: &serde_json::Value) -> mlua::Result<mlu
     }
 }
 
+pub fn sanitize_save_slot_name(slot: &str) -> Option<String> {
+    let trimmed = slot.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Only allow alphanumeric, underscore, and hyphen: [a-zA-Z0-9_-]
+    // Strictly rejects path traversal characters like '..', '/', '\', ':', null bytes, etc.
+    if !trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+pub fn get_saves_dir() -> std::path::PathBuf {
+    crate::resolve_workspace_root().join("saves")
+}
+
 #[derive(Clone)]
 pub struct LuaEngineContext {
     pub pressed_keys: Arc<RwLock<HashSet<String>>>,
@@ -2489,6 +2506,122 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register voxel_is_solid: {}", e))?;
         lua.globals().set("voxel_is_solid", voxel_is_solid).map_err(|e| e.to_string())?;
 
+        // 74. save_game(slot_name, data_table) -> bool
+        let save_game = lua
+            .create_function(move |_, (slot_name, data): (String, mlua::Value)| {
+                let Some(clean_slot) = sanitize_save_slot_name(&slot_name) else {
+                    eprintln!("[SaveGame] Warning: invalid or unsafe slot name '{}'", slot_name);
+                    return Ok(false);
+                };
+                let saves_dir = get_saves_dir();
+                if let Err(e) = std::fs::create_dir_all(&saves_dir) {
+                    eprintln!("[SaveGame] Error creating saves dir '{}': {}", saves_dir.display(), e);
+                    return Ok(false);
+                }
+                let save_file = saves_dir.join(format!("{}.json", clean_slot));
+                let json_val = lua_to_json(&data);
+                match serde_json::to_string_pretty(&json_val) {
+                    Ok(json_str) => {
+                        if let Err(e) = std::fs::write(&save_file, json_str) {
+                            eprintln!("[SaveGame] Failed to write save file '{}': {}", save_file.display(), e);
+                            Ok(false)
+                        } else {
+                            Ok(true)
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[SaveGame] Failed to serialize save data to JSON: {}", e);
+                        Ok(false)
+                    }
+                }
+            })
+            .map_err(|e| format!("Failed to register save_game: {}", e))?;
+        lua.globals().set("save_game", save_game).map_err(|e| e.to_string())?;
+
+        // 75. load_game(slot_name) -> table|nil
+        let load_game = lua
+            .create_function(move |lua, slot_name: String| {
+                let Some(clean_slot) = sanitize_save_slot_name(&slot_name) else {
+                    eprintln!("[LoadGame] Warning: invalid or unsafe slot name '{}'", slot_name);
+                    return Ok(mlua::Value::Nil);
+                };
+                let save_file = get_saves_dir().join(format!("{}.json", clean_slot));
+                if !save_file.is_file() {
+                    return Ok(mlua::Value::Nil);
+                }
+                match std::fs::read_to_string(&save_file) {
+                    Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+                        Ok(json_val) => match json_to_lua(lua, &json_val) {
+                            Ok(lua_val) => Ok(lua_val),
+                            Err(e) => {
+                                eprintln!("[LoadGame] Failed to convert JSON to Lua for '{}': {}", clean_slot, e);
+                                Ok(mlua::Value::Nil)
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("[LoadGame] Corrupt save file '{}': {}", save_file.display(), e);
+                            Ok(mlua::Value::Nil)
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("[LoadGame] Error reading save file '{}': {}", save_file.display(), e);
+                        Ok(mlua::Value::Nil)
+                    }
+                }
+            })
+            .map_err(|e| format!("Failed to register load_game: {}", e))?;
+        lua.globals().set("load_game", load_game).map_err(|e| e.to_string())?;
+
+        // 76. delete_save(slot_name) -> bool
+        let delete_save = lua
+            .create_function(move |_, slot_name: String| {
+                let Some(clean_slot) = sanitize_save_slot_name(&slot_name) else {
+                    eprintln!("[DeleteSave] Warning: invalid or unsafe slot name '{}'", slot_name);
+                    return Ok(false);
+                };
+                let save_file = get_saves_dir().join(format!("{}.json", clean_slot));
+                if save_file.is_file() {
+                    match std::fs::remove_file(&save_file) {
+                        Ok(_) => Ok(true),
+                        Err(e) => {
+                            eprintln!("[DeleteSave] Failed to remove save file '{}': {}", save_file.display(), e);
+                            Ok(false)
+                        }
+                    }
+                } else {
+                    Ok(false)
+                }
+            })
+            .map_err(|e| format!("Failed to register delete_save: {}", e))?;
+        lua.globals().set("delete_save", delete_save).map_err(|e| e.to_string())?;
+
+        // 77. list_saves() -> table
+        let list_saves = lua
+            .create_function(move |lua, ()| {
+                let tbl = lua.create_table()?;
+                let saves_dir = get_saves_dir();
+                if saves_dir.is_dir() {
+                    if let Ok(entries) = std::fs::read_dir(&saves_dir) {
+                        let mut names = Vec::new();
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.is_file() && path.extension().map_or(false, |ext| ext == "json") {
+                                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                                    names.push(stem.to_string());
+                                }
+                            }
+                        }
+                        names.sort();
+                        for (idx, name) in names.into_iter().enumerate() {
+                            tbl.set(idx + 1, name)?;
+                        }
+                    }
+                }
+                Ok(tbl)
+            })
+            .map_err(|e| format!("Failed to register list_saves: {}", e))?;
+        lua.globals().set("list_saves", list_saves).map_err(|e| e.to_string())?;
+
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
             .exec()
@@ -3543,5 +3676,75 @@ mod tests {
         assert!(res3.unwrap_err().contains("Expected: voxel_set_block(x, y, z, block_id)"));
 
         let _ = std::fs::remove_file(test_script_path);
+    }
+
+    #[test]
+    fn test_save_load_game_lua_bindings() {
+        // 1. Test path sanitization
+        assert_eq!(sanitize_save_slot_name("slot1"), Some("slot1".to_string()));
+        assert_eq!(sanitize_save_slot_name("quick_save-01"), Some("quick_save-01".to_string()));
+        assert_eq!(sanitize_save_slot_name("../hack"), None);
+        assert_eq!(sanitize_save_slot_name("folder/save"), None);
+        assert_eq!(sanitize_save_slot_name("folder\\save"), None);
+        assert_eq!(sanitize_save_slot_name("with space"), None);
+        assert_eq!(sanitize_save_slot_name("slot:1"), None);
+        assert_eq!(sanitize_save_slot_name(""), None);
+        assert_eq!(sanitize_save_slot_name("   "), None);
+
+        // 2. Test Lua integration
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        let test_script = r#"
+            local data = {
+                hero = "Arthur",
+                level = 42,
+                alive = true,
+                stats = { str = 18, agi = 14 },
+                items = {"sword", "potion", "map"}
+            }
+            local s1 = save_game("test_fase26_slot", data)
+            assert(s1 == true, "save_game returned false")
+
+            local saves = list_saves()
+            local found = false
+            for i = 1, #saves do
+                if saves[i] == "test_fase26_slot" then
+                    found = true
+                end
+            end
+            assert(found, "list_saves did not contain test_fase26_slot")
+
+            local loaded = load_game("test_fase26_slot")
+            assert(loaded ~= nil, "loaded is nil")
+            assert(loaded.hero == "Arthur", "hero mismatch")
+            assert(loaded.level == 42, "level mismatch")
+            assert(loaded.alive == true, "alive mismatch")
+            assert(loaded.stats.str == 18, "stats.str mismatch")
+            assert(loaded.items[1] == "sword", "items[1] mismatch")
+
+            local evil_save = save_game("../evil_slot", { hack = true })
+            assert(evil_save == false, "evil save should be false")
+            local evil_load = load_game("../evil_slot")
+            assert(evil_load == nil, "evil load should be nil")
+
+            local del1 = delete_save("test_fase26_slot")
+            assert(del1 == true, "delete_save should return true")
+            local del2 = delete_save("test_fase26_slot")
+            assert(del2 == false, "delete_save should return false on second attempt")
+        "#;
+
+        let script_path = "assets/scripts/temp_save_load_test.lua";
+        std::fs::write(script_path, test_script).unwrap();
+
+        let mut comp = ScriptComponent::new(script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        let _ = std::fs::remove_file(script_path);
+        let saves_test_file = get_saves_dir().join("test_fase26_slot.json");
+        let _ = std::fs::remove_file(saves_test_file);
+
+        assert!(res.is_ok(), "Lua save/load execution failed: {:?}", res.err());
     }
 }
