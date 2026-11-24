@@ -145,6 +145,16 @@ pub struct LuaEngineContext {
     pub pointer_lock_command: Arc<std::sync::atomic::AtomicI8>,
     pub active_voxel_world: Arc<RwLock<Option<crate::voxel_forge::VoxelWorld>>>,
     pub time_of_day: Arc<RwLock<Option<f32>>>,
+    pub active_viewmodel: Arc<RwLock<Option<ViewModelDef>>>,
+    pub pending_viewmodel_action: Arc<Mutex<Option<(String, f32)>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ViewModelDef {
+    pub mesh: String,
+    pub texture: Option<String>,
+    pub offset: [f32; 3],
+    pub scale: [f32; 3],
 }
 
 #[derive(Debug, Clone)]
@@ -347,6 +357,8 @@ impl LuaEngineContext {
             pointer_lock_command: Arc::new(std::sync::atomic::AtomicI8::new(0)),
             active_voxel_world: Arc::new(RwLock::new(None)),
             time_of_day: Arc::new(RwLock::new(None)),
+            active_viewmodel: Arc::new(RwLock::new(None)),
+            pending_viewmodel_action: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1862,6 +1874,70 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register ui_slot: {}", e))?;
         lua.globals().set("ui_slot", ui_slot).map_err(|e| e.to_string())?;
 
+        // 41d. set_viewmodel(mesh, [texture], [offset], [scale])
+        let vm_set_ref = ctx.active_viewmodel.clone();
+        let set_viewmodel = lua
+            .create_function(
+                move |_,
+                      (mesh, texture, offset_table, scale_table): (
+                    String,
+                    Option<String>,
+                    Option<mlua::Table>,
+                    Option<mlua::Table>,
+                )| {
+                    let mut offset = [0.25, -0.22, 0.45];
+                    if let Some(t) = offset_table {
+                        let x = t.get(1).or_else(|_| t.get("x")).unwrap_or(0.25);
+                        let y = t.get(2).or_else(|_| t.get("y")).unwrap_or(-0.22);
+                        let z = t.get(3).or_else(|_| t.get("z")).unwrap_or(0.45);
+                        offset = [x, y, z];
+                    }
+                    let mut scale = [0.15, 0.15, 0.15];
+                    if let Some(t) = scale_table {
+                        let sx = t.get(1).or_else(|_| t.get("x")).unwrap_or(0.15);
+                        let sy = t.get(2).or_else(|_| t.get("y")).unwrap_or(0.15);
+                        let sz = t.get(3).or_else(|_| t.get("z")).unwrap_or(0.15);
+                        scale = [sx, sy, sz];
+                    }
+                    let clean_tex = texture.filter(|t| !t.trim().is_empty());
+                    if let Ok(mut vm) = vm_set_ref.write() {
+                        *vm = Some(ViewModelDef {
+                            mesh,
+                            texture: clean_tex,
+                            offset,
+                            scale,
+                        });
+                    }
+                    Ok(true)
+                },
+            )
+            .map_err(|e| format!("Failed to register set_viewmodel: {}", e))?;
+        lua.globals().set("set_viewmodel", set_viewmodel).map_err(|e| e.to_string())?;
+
+        // 41e. clear_viewmodel()
+        let vm_clear_ref = ctx.active_viewmodel.clone();
+        let clear_viewmodel = lua
+            .create_function(move |_, ()| {
+                if let Ok(mut vm) = vm_clear_ref.write() {
+                    *vm = None;
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register clear_viewmodel: {}", e))?;
+        lua.globals().set("clear_viewmodel", clear_viewmodel).map_err(|e| e.to_string())?;
+
+        // 41f. trigger_viewmodel_action(action_type, [intensity])
+        let vm_act_ref = ctx.pending_viewmodel_action.clone();
+        let trigger_viewmodel_action = lua
+            .create_function(move |_, (action_type, intensity): (String, Option<f32>)| {
+                if let Ok(mut act) = vm_act_ref.lock() {
+                    *act = Some((action_type, intensity.unwrap_or(1.0)));
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register trigger_viewmodel_action: {}", e))?;
+        lua.globals().set("trigger_viewmodel_action", trigger_viewmodel_action).map_err(|e| e.to_string())?;
+
         // 42. play_anim(entity_id, clip_name, [looping])
         let anim_play_ref = ctx.pending_anims.clone();
         let play_anim = lua
@@ -2865,6 +2941,59 @@ mod tests {
                 assert_eq!(hotkey_label.as_deref(), Some("2"));
             }
             _ => panic!("Expected UiElement::Slot for elements[2]"),
+        }
+
+        let _ = std::fs::remove_file(script_path);
+    }
+
+    #[test]
+    fn test_viewmodel_lua_bindings() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        let test_script = r#"
+            set_viewmodel("sword", "assets/textures/sword.png", {0.28, -0.20, 0.50}, {0.18, 0.18, 0.18})
+            trigger_viewmodel_action("swing", 1.25)
+        "#;
+
+        let script_path = "assets/scripts/test_vm_script.lua";
+        std::fs::write(script_path, test_script).unwrap();
+
+        let mut comp = ScriptComponent::new(script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        assert!(res.is_ok(), "Init failed: {:?}", res.err());
+
+        // Check active viewmodel
+        {
+            let vm = ctx.active_viewmodel.read().unwrap();
+            assert!(vm.is_some());
+            let def = vm.as_ref().unwrap();
+            assert_eq!(def.mesh, "sword");
+            assert_eq!(def.texture.as_deref(), Some("assets/textures/sword.png"));
+            assert_eq!(def.offset, [0.28, -0.20, 0.50]);
+            assert_eq!(def.scale, [0.18, 0.18, 0.18]);
+        }
+
+        // Check pending action
+        {
+            let act = ctx.pending_viewmodel_action.lock().unwrap();
+            assert_eq!(*act, Some(("swing".to_string(), 1.25)));
+        }
+
+        // Test clear viewmodel from Lua
+        let clear_script = r#"
+            clear_viewmodel()
+        "#;
+        std::fs::write(script_path, clear_script).unwrap();
+        let mut comp2 = ScriptComponent::new(script_path.to_string());
+        let res2 = comp2.init_or_reload(ctx.clone());
+        assert!(res2.is_ok());
+
+        {
+            let vm = ctx.active_viewmodel.read().unwrap();
+            assert!(vm.is_none());
         }
 
         let _ = std::fs::remove_file(script_path);

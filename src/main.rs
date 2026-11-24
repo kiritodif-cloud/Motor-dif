@@ -177,6 +177,8 @@ pub struct EngineState {
     pub active_sun_intensity: f32,
     pub active_stars_vis: f32,
     pub ui_texture_cache: HashMap<String, egui::TextureHandle>,
+    pub active_viewmodel_action: Option<(String, f32, f32, f32)>,
+    pub viewmodel_bob_phase: f32,
     pub total_time: f32,
 
     // Editor State
@@ -513,6 +515,8 @@ impl EngineState {
             active_sun_intensity: 1.0,
             active_stars_vis: 0.0,
             ui_texture_cache: HashMap::new(),
+            active_viewmodel_action: None,
+            viewmodel_bob_phase: 0.0,
             total_time: 0.0,
 
             workspace: EditorWorkspace::Scene,
@@ -2973,6 +2977,37 @@ impl EngineState {
         created_ids
     }
 
+    pub fn compute_viewmodel_animation(&self) -> (glam::Vec3, glam::Quat) {
+        let mut offset = glam::Vec3::ZERO;
+        let mut rot = glam::Quat::IDENTITY;
+
+        if let Some((action, intensity, elapsed, duration)) = &self.active_viewmodel_action {
+            let p = (elapsed / duration).clamp(0.0, 1.0);
+            match action.as_str() {
+                "swing" => {
+                    let half_pi = std::f32::consts::PI;
+                    let curve = (p * half_pi).sin();
+                    let angle = curve * 0.95 * intensity;
+                    rot = glam::Quat::from_rotation_x(-angle) * glam::Quat::from_rotation_y(-angle * 0.45);
+                    offset = glam::Vec3::new(-0.06 * curve, -0.12 * curve, 0.08 * curve) * *intensity;
+                }
+                "recoil" => {
+                    let recoil_curve = (1.0 - p) * (1.0 - p) * (p * 4.0).min(1.0) * intensity;
+                    offset = glam::Vec3::new(0.0, 0.04 * recoil_curve, -0.12 * recoil_curve);
+                    rot = glam::Quat::from_rotation_x(0.35 * recoil_curve);
+                }
+                "bob" => {
+                    let bob_x = (p * std::f32::consts::TAU).cos() * 0.02 * intensity;
+                    let bob_y = (p * std::f32::consts::TAU * 2.0).sin().abs() * 0.018 * intensity;
+                    offset = glam::Vec3::new(bob_x, -bob_y, 0.0);
+                }
+                _ => {}
+            }
+        }
+
+        (offset, rot)
+    }
+
     pub fn update_and_render(&mut self) {
         let now = Instant::now();
         let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
@@ -2991,6 +3026,30 @@ impl EngineState {
             if let Some(env) = pending_env.take() {
                 self.environment_settings = env;
             }
+        }
+
+        // Drain pending viewmodel action from Lua
+        if let Ok(mut pending_vm_act) = self.lua_ctx.pending_viewmodel_action.lock() {
+            if let Some((action, intensity)) = pending_vm_act.take() {
+                let dur = match action.as_str() {
+                    "swing" => 0.25,
+                    "recoil" => 0.15,
+                    _ => 0.35,
+                };
+                self.active_viewmodel_action = Some((action, intensity, 0.0, dur));
+            }
+        }
+
+        // Advance active viewmodel action
+        let mut vm_action_done = false;
+        if let Some((_, _, ref mut elapsed, duration)) = self.active_viewmodel_action {
+            *elapsed += dt;
+            if *elapsed >= duration {
+                vm_action_done = true;
+            }
+        }
+        if vm_action_done {
+            self.active_viewmodel_action = None;
         }
 
         // Drain pending pointer lock command from Lua
@@ -7865,6 +7924,90 @@ impl EngineState {
             }
         }
 
+        // 1.5. View-Model Pass (First-Person Hand/Weapon with Anti-Clipping Depth Clear)
+        let is_playing = self.is_standalone_play || self.play_mode == PlayMode::Play;
+        let active_vm = if is_playing {
+            self.lua_ctx.active_viewmodel.read().ok().and_then(|vm| vm.clone())
+        } else {
+            None
+        };
+        let (action_offset, action_rot) = self.compute_viewmodel_animation();
+        if let Some(vm) = &active_vm {
+            self.gpu.ensure_mesh(&vm.mesh);
+            if let Some(tex_path) = &vm.texture {
+                let _ = self.gpu.get_or_load_texture(tex_path);
+            }
+        }
+        if let Some(vm) = active_vm {
+            if let Some(mesh_gpu) = self.gpu.meshes.get(&vm.mesh) {
+                let tex_bind = if let Some(tex_path) = &vm.texture {
+                    &self.gpu.get_texture(tex_path).bind_group
+                } else {
+                    &self.gpu.default_white_texture.bind_group
+                };
+
+                let final_offset = glam::Vec3::from(vm.offset) + action_offset;
+
+                let cam_forward = (self.camera.target - self.camera.eye).normalize_or_zero();
+                let cam_fwd = if cam_forward.length_squared() > 0.001 { cam_forward } else { -glam::Vec3::Z };
+                let cam_right = cam_fwd.cross(glam::Vec3::Y).normalize_or_zero();
+                let cam_r = if cam_right.length_squared() > 0.001 { cam_right } else { glam::Vec3::X };
+                let cam_up = cam_r.cross(cam_fwd).normalize_or_zero();
+
+                let cam_mat = glam::Mat3::from_cols(cam_r, cam_up, -cam_fwd);
+                let cam_rot = glam::Quat::from_mat3(&cam_mat);
+
+                let vm_world_pos = self.camera.eye + cam_r * final_offset.x + cam_up * final_offset.y + cam_fwd * final_offset.z;
+                let vm_world_rot = cam_rot * action_rot;
+                let vm_scale = glam::Vec3::from(vm.scale);
+                let model_mat = glam::Mat4::from_scale_rotation_translation(vm_scale, vm_world_rot, vm_world_pos);
+
+                let vm_instance = renderer::InstanceRaw {
+                    model: model_mat.to_cols_array_2d(),
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    extra: [0.0, 0.0, 0.0, 0.0],
+                    uv_offset: [0.0, 0.0],
+                    uv_scale: [1.0, 1.0],
+                    fresnel: [0.0, 0.0, 0.0, 0.0],
+                };
+                let vm_inst_buf = renderer::create_instance_buffer(&self.gpu.device, &[vm_instance]);
+
+                let mut vm_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("View-Model Pass (Anti-Clipping)"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.gpu.post_process.hdr_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.gpu.depth_texture.view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                    multiview_mask: None,
+                });
+
+                vm_pass.set_pipeline(&self.gpu.render_pipeline);
+                vm_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
+                vm_pass.set_bind_group(1, tex_bind, &[]);
+                vm_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
+                vm_pass.set_bind_group(3, &self.gpu.shadow_bind_group, &[]);
+                vm_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
+                vm_pass.set_vertex_buffer(1, vm_inst_buf.slice(..));
+                vm_pass.set_index_buffer(mesh_gpu.index_buffer.slice(..), mesh_gpu.index_format);
+                vm_pass.draw_indexed(0..mesh_gpu.num_indices, 0, 0..1);
+            }
+        }
+
         // 2. Fullscreen HDR Post-Processing Pass (Bloom + ACES Tone Mapping + Vignette)
         {
             let mut pp_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -8426,5 +8569,60 @@ mod tests {
         let config_json = "{\n  \"mcpServers\": {\n    \"motor-dif\": {\n      \"url\": \"http://127.0.0.1:3030/mcp\"\n    }\n  }\n}";
         assert!(config_json.contains("http://127.0.0.1:3030/mcp"));
         assert!(config_json.contains("\"motor-dif\""));
+    }
+
+    #[test]
+    fn test_viewmodel_actions_animation_math() {
+        let compute = |action: Option<(String, f32, f32, f32)>| -> (glam::Vec3, glam::Quat) {
+            let mut offset = glam::Vec3::ZERO;
+            let mut rot = glam::Quat::IDENTITY;
+
+            if let Some((action, intensity, elapsed, duration)) = action {
+                let p = (elapsed / duration).clamp(0.0, 1.0);
+                match action.as_str() {
+                    "swing" => {
+                        let half_pi = std::f32::consts::PI;
+                        let curve = (p * half_pi).sin();
+                        let angle = curve * 0.95 * intensity;
+                        rot = glam::Quat::from_rotation_x(-angle) * glam::Quat::from_rotation_y(-angle * 0.45);
+                        offset = glam::Vec3::new(-0.06 * curve, -0.12 * curve, 0.08 * curve) * intensity;
+                    }
+                    "recoil" => {
+                        let recoil_curve = (1.0 - p) * (1.0 - p) * (p * 4.0).min(1.0) * intensity;
+                        offset = glam::Vec3::new(0.0, 0.04 * recoil_curve, -0.12 * recoil_curve);
+                        rot = glam::Quat::from_rotation_x(0.35 * recoil_curve);
+                    }
+                    "bob" => {
+                        let bob_x = (p * std::f32::consts::TAU).cos() * 0.02 * intensity;
+                        let bob_y = (p * std::f32::consts::TAU * 2.0).sin().abs() * 0.018 * intensity;
+                        offset = glam::Vec3::new(bob_x, -bob_y, 0.0);
+                    }
+                    _ => {}
+                }
+            }
+
+            (offset, rot)
+        };
+
+        // None -> zero offset, identity rot
+        let (off_none, rot_none) = compute(None);
+        assert_eq!(off_none, glam::Vec3::ZERO);
+        assert_eq!(rot_none, glam::Quat::IDENTITY);
+
+        // Swing at midpoint -> downwards and forward displacement
+        let (off_swing, rot_swing) = compute(Some(("swing".to_string(), 1.0, 0.125, 0.25)));
+        assert!(off_swing.y < 0.0, "Swing should dip downwards");
+        assert!(off_swing.z > 0.0, "Swing should reach forward");
+        assert_ne!(rot_swing, glam::Quat::IDENTITY);
+
+        // Recoil at early peak -> pushes back in Z and tilts pitch
+        let (off_recoil, rot_recoil) = compute(Some(("recoil".to_string(), 1.0, 0.04, 0.15)));
+        assert!(off_recoil.z < 0.0, "Recoil should push backwards in Z");
+        assert!(off_recoil.y > 0.0, "Recoil should kick slightly up in Y");
+        assert!(rot_recoil.x > 0.0, "Recoil should tilt muzzle up");
+
+        // Bob -> periodic lateral and vertical sway
+        let (off_bob, _) = compute(Some(("bob".to_string(), 1.0, 0.1, 0.35)));
+        assert_ne!(off_bob, glam::Vec3::ZERO);
     }
 }

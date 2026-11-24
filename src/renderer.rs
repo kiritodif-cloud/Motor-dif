@@ -1774,6 +1774,8 @@ impl GpuContext {
         meshes.insert("jagged_rock".to_string(), create_jagged_rock_mesh(&device));
         meshes.insert("crystal_cluster".to_string(), create_crystal_cluster_mesh(&device));
         meshes.insert("sci_fi_crate".to_string(), create_sci_fi_crate_mesh(&device));
+        meshes.insert("sword".to_string(), create_sword_mesh(&device));
+        meshes.insert("pickaxe".to_string(), create_pickaxe_mesh(&device));
 
         // egui integration
         let egui_ctx = egui::Context::default();
@@ -1926,6 +1928,12 @@ impl GpuContext {
             }
             "sci_fi_crate" => {
                 self.meshes.insert("sci_fi_crate".to_string(), create_sci_fi_crate_mesh(&self.device));
+            }
+            "sword" => {
+                self.meshes.insert("sword".to_string(), create_sword_mesh(&self.device));
+            }
+            "pickaxe" => {
+                self.meshes.insert("pickaxe".to_string(), create_pickaxe_mesh(&self.device));
             }
             _ => {
                 match load_gltf_mesh(&self.device, mesh_id) {
@@ -2998,6 +3006,109 @@ pub fn create_sci_fi_crate_mesh(device: &wgpu::Device) -> MeshGpu {
     });
     let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Sci-Fi Crate Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+    MeshGpu {
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint16,
+    }
+}
+
+fn push_box_mesh(
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u16>,
+    center: [f32; 3],
+    size: [f32; 3],
+    color: [f32; 4],
+) {
+    let hw = size[0] * 0.5;
+    let hh = size[1] * 0.5;
+    let hd = size[2] * 0.5;
+    let cx = center[0];
+    let cy = center[1];
+    let cz = center[2];
+
+    let base = vertices.len() as u16;
+    let faces = [
+        ([cx-hw, cy-hh, cz+hd], [cx+hw, cy-hh, cz+hd], [cx+hw, cy+hh, cz+hd], [cx-hw, cy+hh, cz+hd], [0.0, 0.0, 1.0]),
+        ([cx+hw, cy-hh, cz-hd], [cx-hw, cy-hh, cz-hd], [cx-hw, cy+hh, cz-hd], [cx+hw, cy+hh, cz-hd], [0.0, 0.0, -1.0]),
+        ([cx-hw, cy+hh, cz+hd], [cx+hw, cy+hh, cz+hd], [cx+hw, cy+hh, cz-hd], [cx-hw, cy+hh, cz-hd], [0.0, 1.0, 0.0]),
+        ([cx-hw, cy-hh, cz-hd], [cx+hw, cy-hh, cz-hd], [cx+hw, cy-hh, cz+hd], [cx-hw, cy-hh, cz+hd], [0.0, -1.0, 0.0]),
+        ([cx+hw, cy-hh, cz+hd], [cx+hw, cy-hh, cz-hd], [cx+hw, cy+hh, cz-hd], [cx+hw, cy+hh, cz+hd], [1.0, 0.0, 0.0]),
+        ([cx-hw, cy-hh, cz-hd], [cx-hw, cy-hh, cz+hd], [cx-hw, cy+hh, cz+hd], [cx-hw, cy+hh, cz-hd], [-1.0, 0.0, 0.0]),
+    ];
+
+    for (f_idx, (p0, p1, p2, p3, n)) in faces.iter().enumerate() {
+        let b = base + (f_idx as u16) * 4;
+        vertices.push(Vertex { position: *p0, normal: *n, uv: [0.0, 1.0], color });
+        vertices.push(Vertex { position: *p1, normal: *n, uv: [1.0, 1.0], color });
+        vertices.push(Vertex { position: *p2, normal: *n, uv: [1.0, 0.0], color });
+        vertices.push(Vertex { position: *p3, normal: *n, uv: [0.0, 0.0], color });
+        indices.extend_from_slice(&[b, b+1, b+2, b, b+2, b+3]);
+    }
+}
+
+pub fn create_sword_mesh(device: &wgpu::Device) -> MeshGpu {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let steel = [0.90, 0.92, 0.96, 1.0];
+    let gold = [0.92, 0.75, 0.25, 1.0];
+    let brown = [0.45, 0.28, 0.16, 1.0];
+
+    // Handle
+    push_box_mesh(&mut vertices, &mut indices, [0.0, -0.15, 0.0], [0.05, 0.26, 0.05], brown);
+    // Pommel
+    push_box_mesh(&mut vertices, &mut indices, [0.0, -0.30, 0.0], [0.08, 0.06, 0.08], gold);
+    // Crossguard
+    push_box_mesh(&mut vertices, &mut indices, [0.0, 0.0, 0.0], [0.34, 0.05, 0.07], gold);
+    // Blade
+    push_box_mesh(&mut vertices, &mut indices, [0.0, 0.45, 0.0], [0.08, 0.85, 0.02], steel);
+    // Tip
+    push_box_mesh(&mut vertices, &mut indices, [0.0, 0.92, 0.0], [0.04, 0.12, 0.015], steel);
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Sword Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Sword Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+    MeshGpu {
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint16,
+    }
+}
+
+pub fn create_pickaxe_mesh(device: &wgpu::Device) -> MeshGpu {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let wood = [0.55, 0.38, 0.22, 1.0];
+    let iron = [0.70, 0.72, 0.78, 1.0];
+
+    // Shaft / handle
+    push_box_mesh(&mut vertices, &mut indices, [0.0, -0.18, 0.0], [0.05, 0.75, 0.05], wood);
+    // Center connector
+    push_box_mesh(&mut vertices, &mut indices, [0.0, 0.22, 0.0], [0.08, 0.10, 0.08], iron);
+    // Left pick
+    push_box_mesh(&mut vertices, &mut indices, [-0.20, 0.20, 0.0], [0.34, 0.06, 0.05], iron);
+    // Right pick
+    push_box_mesh(&mut vertices, &mut indices, [0.20, 0.20, 0.0], [0.34, 0.06, 0.05], iron);
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Pickaxe Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Pickaxe Index Buffer"),
         contents: bytemuck::cast_slice(&indices),
         usage: wgpu::BufferUsages::INDEX,
     });
