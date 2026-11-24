@@ -6050,42 +6050,45 @@ impl EngineState {
                             });
                         }
 
-                        // 8. Viewport Floating Overlay: Bottom-Right Toast Notifications
-                        let now = Instant::now();
-                        self.toasts.retain(|(_, start, _)| now.duration_since(*start).as_secs_f32() < 2.5);
+                        // 8. Viewport Floating Overlay: Bottom-Right Toast Notifications (Editor only)
+                        let is_playing_hud = self.is_standalone_play || self.play_mode == PlayMode::Play;
+                        if !is_playing_hud {
+                            let now = Instant::now();
+                            self.toasts.retain(|(_, start, _)| now.duration_since(*start).as_secs_f32() < 2.5);
 
-                        if !self.toasts.is_empty() {
-                            let total_h = self.toasts.len() as f32 * 36.0;
-                            let toast_area = egui::Area::new(ui.make_persistent_id("viewport_toast_container"))
-                                .fixed_pos(egui::pos2((viewport_rect.max.x - 270.0).max(viewport_rect.min.x + 10.0), (viewport_rect.max.y - total_h - 14.0).max(viewport_rect.min.y + 10.0)));
-                            toast_area.show(ui.ctx(), |ui| {
-                                for (msg, start, color) in &self.toasts {
-                                    let elapsed = now.duration_since(*start).as_secs_f32();
-                                    let alpha = if elapsed > 2.0 {
-                                        ((2.5 - elapsed) / 0.5 * 255.0).clamp(0.0, 255.0) as u8
-                                    } else {
-                                        255u8
-                                    };
-                                    egui::Frame::new()
-                                        .fill(egui::Color32::from_rgba_premultiplied(20, 22, 28, alpha))
-                                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), alpha)))
-                                        .corner_radius(egui::CornerRadius::same(6))
-                                        .inner_margin(egui::Margin::symmetric(10, 6))
-                                        .show(ui, |ui| {
-                                            ui.horizontal(|ui| {
-                                                ui.colored_label(
-                                                    egui::Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), alpha),
-                                                    "[i]",
-                                                );
-                                                ui.colored_label(
-                                                    egui::Color32::from_rgba_premultiplied(230, 232, 238, alpha),
-                                                    msg,
-                                                );
+                            if !self.toasts.is_empty() {
+                                let total_h = self.toasts.len() as f32 * 36.0;
+                                let toast_area = egui::Area::new(ui.make_persistent_id("viewport_toast_container"))
+                                    .fixed_pos(egui::pos2((viewport_rect.max.x - 270.0).max(viewport_rect.min.x + 10.0), (viewport_rect.max.y - total_h - 14.0).max(viewport_rect.min.y + 10.0)));
+                                toast_area.show(ui.ctx(), |ui| {
+                                    for (msg, start, color) in &self.toasts {
+                                        let elapsed = now.duration_since(*start).as_secs_f32();
+                                        let alpha = if elapsed > 2.0 {
+                                            ((2.5 - elapsed) / 0.5 * 255.0).clamp(0.0, 255.0) as u8
+                                        } else {
+                                            255u8
+                                        };
+                                        egui::Frame::new()
+                                            .fill(egui::Color32::from_rgba_premultiplied(20, 22, 28, alpha))
+                                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), alpha)))
+                                            .corner_radius(egui::CornerRadius::same(6))
+                                            .inner_margin(egui::Margin::symmetric(10, 6))
+                                            .show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.colored_label(
+                                                        egui::Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), alpha),
+                                                        "[i]",
+                                                    );
+                                                    ui.colored_label(
+                                                        egui::Color32::from_rgba_premultiplied(230, 232, 238, alpha),
+                                                        msg,
+                                                    );
+                                                });
                                             });
-                                        });
-                                    ui.add_space(3.0);
-                                }
-                            });
+                                        ui.add_space(3.0);
+                                    }
+                                });
+                            }
                         }
                     });
 
@@ -7033,6 +7036,49 @@ impl EngineState {
             bytemuck::cast_slice(&[pp_uniform]),
         );
 
+        // 0. Directional Shadow Pass (Depth Only, 2048x2048)
+        self.gpu.update_shadow_camera(self.camera.target);
+        {
+            let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Shadow Pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.gpu.shadow_texture.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+
+            shadow_pass.set_pipeline(&self.gpu.shadow_pipeline);
+            shadow_pass.set_bind_group(0, &self.gpu.shadow_camera_bind_group, &[]);
+
+            for ((mesh_id, _tex_opt, blend_mode), instances) in &instances_by_batch {
+                if blend_mode == "additive" || instances.is_empty() {
+                    continue;
+                }
+                if let Some(mesh_gpu) = self.gpu.meshes.get(mesh_id) {
+                    let instance_buffer = create_instance_buffer(&self.gpu.device, instances);
+                    shadow_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
+                    shadow_pass.set_vertex_buffer(1, instance_buffer.slice(..));
+                    shadow_pass.set_index_buffer(
+                        mesh_gpu.index_buffer.slice(..),
+                        mesh_gpu.index_format,
+                    );
+                    shadow_pass.draw_indexed(
+                        0..mesh_gpu.num_indices,
+                        0,
+                        0..instances.len() as u32,
+                    );
+                }
+            }
+        }
+
         // 1. 3D Scene Render Pass (HDR)
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -7073,6 +7119,7 @@ impl EngineState {
             render_pass.set_pipeline(&self.gpu.render_pipeline);
             render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
             render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
+            render_pass.set_bind_group(3, &self.gpu.shadow_bind_group, &[]);
 
             for ((mesh_id, tex_opt, blend_mode), instances) in &instances_by_batch {
                 if blend_mode == "additive" || instances.is_empty() {
@@ -7105,6 +7152,7 @@ impl EngineState {
             render_pass.set_pipeline(&self.gpu.additive_render_pipeline);
             render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
             render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
+            render_pass.set_bind_group(3, &self.gpu.shadow_bind_group, &[]);
 
             for ((mesh_id, tex_opt, blend_mode), instances) in &instances_by_batch {
                 if blend_mode != "additive" || instances.is_empty() {
@@ -7179,6 +7227,7 @@ impl EngineState {
                 render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
                 render_pass.set_bind_group(1, &self.gpu.default_white_texture.bind_group, &[]);
                 render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
+                render_pass.set_bind_group(3, &self.gpu.shadow_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, tv_buf.slice(..));
                 render_pass.set_vertex_buffer(1, inst_buf.slice(..));
                 render_pass.set_index_buffer(ti_buf.slice(..), wgpu::IndexFormat::Uint16);

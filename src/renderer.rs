@@ -2,10 +2,17 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
+use glam::{camera::rh, Vec3};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use crate::camera::{Camera, CameraUniform};
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct ShadowUniform {
+    pub light_view_proj: [[f32; 4]; 4],
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
@@ -291,7 +298,58 @@ pub struct GpuContext {
     pub egui_renderer: egui_wgpu::Renderer,
     pub egui_winit_state: egui_winit::State,
     pub post_process: PostProcessPipeline,
+    pub shadow_texture: DepthTexture,
+    pub shadow_sampler: wgpu::Sampler,
+    pub shadow_buffer: wgpu::Buffer,
+    pub shadow_bind_group_layout: wgpu::BindGroupLayout,
+    pub shadow_bind_group: wgpu::BindGroup,
+    pub shadow_camera_bind_group_layout: wgpu::BindGroupLayout,
+    pub shadow_camera_bind_group: wgpu::BindGroup,
+    pub shadow_pipeline: wgpu::RenderPipeline,
 }
+
+const SHADOW_SHADER_SOURCE: &str = r#"
+struct ShadowUniform {
+    light_view_proj: mat4x4<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> shadow_uniform: ShadowUniform;
+
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) vert_color: vec4<f32>,
+};
+
+struct InstanceInput {
+    @location(4) model_matrix_0: vec4<f32>,
+    @location(5) model_matrix_1: vec4<f32>,
+    @location(6) model_matrix_2: vec4<f32>,
+    @location(7) model_matrix_3: vec4<f32>,
+    @location(8) inst_color: vec4<f32>,
+    @location(9) inst_extra: vec4<f32>,
+    @location(10) uv_offset: vec2<f32>,
+    @location(11) uv_scale: vec2<f32>,
+    @location(12) fresnel: vec4<f32>,
+};
+
+@vertex
+fn vs_shadow(
+    vertex: VertexInput,
+    instance: InstanceInput,
+) -> @builtin(position) vec4<f32> {
+    let model_matrix = mat4x4<f32>(
+        instance.model_matrix_0,
+        instance.model_matrix_1,
+        instance.model_matrix_2,
+        instance.model_matrix_3,
+    );
+    let world_pos = model_matrix * vec4<f32>(vertex.position, 1.0);
+    return shadow_uniform.light_view_proj * world_pos;
+}
+"#;
 
 const SHADER_SOURCE: &str = r#"
 struct CameraUniform {
@@ -329,6 +387,17 @@ struct LightsUniform {
 @group(2) @binding(0)
 var<uniform> lights: LightsUniform;
 
+struct ShadowUniform {
+    light_view_proj: mat4x4<f32>,
+};
+
+@group(3) @binding(0)
+var t_shadow: texture_depth_2d;
+@group(3) @binding(1)
+var s_shadow: sampler_comparison;
+@group(3) @binding(2)
+var<uniform> shadow_uniform: ShadowUniform;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -358,6 +427,7 @@ struct VertexOutput {
     @location(5) fresnel: vec4<f32>,
     @location(6) uv_scroll: vec2<f32>,
     @location(7) view_mode: f32,
+    @location(8) shadow_pos: vec4<f32>,
 };
 
 @vertex
@@ -390,7 +460,47 @@ fn vs_main(
     out.fresnel = instance.fresnel;
     out.uv_scroll = vec2<f32>(instance.inst_extra.y, instance.inst_extra.z);
     out.view_mode = instance.inst_extra.w;
+    out.shadow_pos = shadow_uniform.light_view_proj * world_pos;
     return out;
+}
+
+fn hash21(p: vec2<f32>) -> f32 {
+    let p2 = fract(p * vec2<f32>(123.34, 456.21));
+    return fract(dot(p2, p2 + 45.32));
+}
+
+fn micro_noise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = hash21(i);
+    let b = hash21(i + vec2<f32>(1.0, 0.0));
+    let c = hash21(i + vec2<f32>(0.0, 1.0));
+    let d = hash21(i + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+fn fetch_shadow(shadow_pos: vec4<f32>, n_dot_l: f32) -> f32 {
+    let proj_coords = shadow_pos.xyz / shadow_pos.w;
+    let uv = vec2<f32>(proj_coords.x * 0.5 + 0.5, 1.0 - (proj_coords.y * 0.5 + 0.5));
+    let current_depth = proj_coords.z;
+
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || current_depth > 1.0 || current_depth < 0.0) {
+        return 1.0;
+    }
+
+    let bias = max(0.004 * (1.0 - n_dot_l), 0.001);
+    let biased_depth = current_depth - bias;
+
+    let texel_size = 1.0 / 2048.0;
+    var shadow = 0.0;
+    for (var x = -1; x <= 1; x = x + 1) {
+        for (var y = -1; y <= 1; y = y + 1) {
+            let offset = vec2<f32>(f32(x), f32(y)) * texel_size;
+            shadow += textureSampleCompare(t_shadow, s_shadow, uv + offset, biased_depth);
+        }
+    }
+    return shadow / 9.0;
 }
 
 @fragment
@@ -415,23 +525,30 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(base_color.rgb + emissive, base_color.a);
     }
 
-    // 1. Hemispheric Ambient Lighting (Sky/Ground)
-    let sky_ambient = vec3<f32>(0.28, 0.32, 0.40);
-    let ground_ambient = vec3<f32>(0.12, 0.13, 0.16);
-    let hemi_blend = in.world_normal.y * 0.5 + 0.5;
-    let ambient = mix(ground_ambient, sky_ambient, hemi_blend);
+    // Procedural surface micro-detail (breaks plastic look on untextured terrain and props)
+    let n1 = micro_noise(in.world_pos.xz * 12.0);
+    let n2 = micro_noise(in.world_pos.xz * 32.0);
+    let detail_mod = 0.93 + 0.14 * (n1 * 0.7 + n2 * 0.3);
+    let surface_color = base_color.rgb * detail_mod;
 
-    // 2. Directional Diffuse Lighting
+    // 1. Hemispheric Ambient Lighting (Sky/Ground) blended with camera skybox zenith/horizon
+    let hemi_factor = clamp(in.world_normal.y * 0.5 + 0.5, 0.0, 1.0);
+    let sky_ambient = mix(vec3<f32>(0.26, 0.30, 0.38), camera.zenith_color.rgb * 0.45, 0.5);
+    let ground_ambient = mix(vec3<f32>(0.11, 0.12, 0.14), camera.horizon_color.rgb * 0.25, 0.5);
+    let ambient = mix(ground_ambient, sky_ambient, hemi_factor);
+
+    // 2. Directional Diffuse Lighting with PCF Soft Shadows
     let light_dir = normalize(vec3<f32>(0.5, 0.8, 0.4));
     let n_dot_l = max(dot(in.world_normal, light_dir), 0.0);
     let light_color = vec3<f32>(1.0, 0.98, 0.92);
-    let diffuse = light_color * n_dot_l * 0.70;
+    let shadow_factor = fetch_shadow(in.shadow_pos, n_dot_l);
+    let diffuse = light_color * n_dot_l * 0.70 * shadow_factor;
 
     // 3. Blinn-Phong Specular
     let view_dir = normalize(camera.camera_pos.xyz - in.world_pos);
     let half_dir = normalize(light_dir + view_dir);
     let n_dot_h = max(dot(in.world_normal, half_dir), 0.0);
-    let spec_factor = pow(n_dot_h, 32.0) * step(0.001, n_dot_l) * 0.35;
+    let spec_factor = pow(n_dot_h, 32.0) * step(0.001, n_dot_l) * 0.35 * shadow_factor;
     let specular = vec3<f32>(1.0, 1.0, 1.0) * spec_factor;
 
     // 4. Point Lights Accumulation
@@ -466,7 +583,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // 6. Combined Lighting
-    let lit_color = base_color.rgb * (ambient + diffuse + point_diffuse) + specular + point_specular + emissive + fresnel_contrib;
+    let lit_color = surface_color * (ambient + diffuse + point_diffuse) + specular + point_specular + emissive + fresnel_contrib;
 
     // 7. FogExp2 Exponential Fog
     let dist = length(camera.camera_pos.xyz - in.world_pos);
@@ -621,6 +738,17 @@ fn aces_filmic(x: vec3<f32>) -> vec3<f32> {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+fn aces_filmic_saturated(color: vec3<f32>) -> vec3<f32> {
+    let per_channel = aces_filmic(color);
+    let peak = max(color.r, max(color.g, color.b));
+    if (peak <= 0.0001) {
+        return vec3<f32>(0.0);
+    }
+    let mapped_peak = (peak * (2.51 * peak + 0.03)) / (peak * (2.43 * peak + 0.59) + 0.14);
+    let luma_based = clamp(color * (mapped_peak / peak), vec3<f32>(0.0), vec3<f32>(1.0));
+    return mix(per_channel, luma_based, 0.65);
+}
+
 @fragment
 fn fs_post_process(in: VertexOutput) -> @location(0) vec4<f32> {
     let base_color = textureSample(hdr_texture, hdr_sampler, in.uv).rgb;
@@ -661,8 +789,8 @@ fn fs_post_process(in: VertexOutput) -> @location(0) vec4<f32> {
         final_color += bloom_sum * pp.bloom_intensity;
     }
 
-    // ACES Filmic Tone Mapping
-    final_color = aces_filmic(final_color);
+    // ACES Filmic Tone Mapping with Emissive Saturation Preservation
+    final_color = aces_filmic_saturated(final_color);
 
     // Subtle Vignette
     if (pp.vignette_intensity > 0.0) {
@@ -1064,6 +1192,152 @@ impl GpuContext {
             label: Some("lights_bind_group"),
         });
 
+        // Shadow Mapping Resources
+        let shadow_texture = DepthTexture::create_depth_texture(&device, 2048, 2048, "shadow_depth_texture");
+
+        let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("shadow_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            ..Default::default()
+        });
+
+        let shadow_uniform = ShadowUniform {
+            light_view_proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
+        };
+        let shadow_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("shadow_buffer"),
+            contents: bytemuck::cast_slice(&[shadow_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let shadow_camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("shadow_camera_bind_group_layout"),
+            });
+
+        let shadow_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &shadow_camera_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: shadow_buffer.as_entire_binding(),
+            }],
+            label: Some("shadow_camera_bind_group"),
+        });
+
+        let shadow_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Depth,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+                label: Some("shadow_bind_group_layout"),
+            });
+
+        let shadow_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &shadow_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&shadow_texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: shadow_buffer.as_entire_binding(),
+                },
+            ],
+            label: Some("shadow_bind_group"),
+        });
+
+        let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Shadow Shader Module"),
+            source: wgpu::ShaderSource::Wgsl(SHADOW_SHADER_SOURCE.into()),
+        });
+
+        let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Shadow Pipeline Layout"),
+            bind_group_layouts: &[Some(&shadow_camera_bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Shadow Render Pipeline"),
+            layout: Some(&shadow_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shadow_shader,
+                entry_point: Some("vs_shadow"),
+                buffers: &[Some(Vertex::desc()), Some(InstanceRaw::desc())],
+                compilation_options: Default::default(),
+            },
+            fragment: None,
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DepthTexture::DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: 2,
+                    slope_scale: 2.0,
+                    clamp: 0.0,
+                },
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         // Pipeline Layout
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1072,6 +1346,7 @@ impl GpuContext {
                     Some(&camera_bind_group_layout),
                     Some(&texture_bind_group_layout),
                     Some(&lights_bind_group_layout),
+                    Some(&shadow_bind_group_layout),
                 ],
                 immediate_size: 0,
             });
@@ -1343,7 +1618,27 @@ impl GpuContext {
             egui_renderer,
             egui_winit_state,
             post_process,
+            shadow_texture,
+            shadow_sampler,
+            shadow_buffer,
+            shadow_bind_group_layout,
+            shadow_bind_group,
+            shadow_camera_bind_group_layout,
+            shadow_camera_bind_group,
+            shadow_pipeline,
         }
+    }
+
+    pub fn update_shadow_camera(&self, camera_target: Vec3) {
+        let light_dir = Vec3::new(0.5, 0.8, 0.4).normalize();
+        let target_xz = Vec3::new(camera_target.x, 0.0, camera_target.z);
+        let light_pos = target_xz + light_dir * 50.0;
+        let view = rh::view::look_at_mat4(light_pos, target_xz, Vec3::Y);
+        let proj = rh::proj::directx::orthographic(-45.0, 45.0, -45.0, 45.0, 1.0, 120.0);
+        let light_view_proj = (proj * view).to_cols_array_2d();
+
+        let uniform = ShadowUniform { light_view_proj };
+        self.queue.write_buffer(&self.shadow_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
 
     pub fn get_or_load_texture(&mut self, path: &str) -> &TextureGpu {
@@ -2526,5 +2821,7 @@ mod tests {
         assert_eq!(size_of::<LightsUniform>() % 16, 0);
         assert_eq!(size_of::<PostProcessUniform>(), 32);
         assert_eq!(size_of::<PostProcessUniform>() % 16, 0);
+        assert_eq!(size_of::<ShadowUniform>(), 64);
+        assert_eq!(size_of::<ShadowUniform>() % 16, 0);
     }
 }
