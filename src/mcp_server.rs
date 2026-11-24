@@ -402,15 +402,18 @@ pub async fn handle_jsonrpc(
                         },
                         {
                             "name": "export_game",
-                            "description": "Exporta el juego completo a un paquete independiente ejecutable en dist/",
+                            "description": "Export the current or specified game scene into a standalone distribution folder with executable, config and harvested assets.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
-                                    "game_name": { "type": "string", "description": "Nombre del juego y del ejecutable generado" },
-                                    "entry_scene": { "type": "string", "description": "Ruta de la escena inicial (ej. 'assets/scene.json')" },
-                                    "output_dir": { "type": "string", "description": "Directorio de destino (opcional, por defecto 'dist/<game_name>')" }
+                                    "title": { "type": "string", "description": "Title of the exported game" },
+                                    "game_name": { "type": "string", "description": "Alias for title" },
+                                    "scene_path": { "type": "string", "description": "Path to the entry scene (e.g. 'assets/scene.json')" },
+                                    "entry_scene": { "type": "string", "description": "Alias for scene_path" },
+                                    "output_dir": { "type": "string", "description": "Destination directory (e.g. 'dist/my_game')" },
+                                    "fullscreen": { "type": "boolean", "description": "Whether to start the standalone game in fullscreen" }
                                 },
-                                "required": ["game_name", "entry_scene"]
+                                "required": ["title"]
                             }
                         },
                         {
@@ -918,20 +921,35 @@ pub async fn handle_jsonrpc(
                     }
                 }
                 "export_game" => {
-                    let game_name = args.get("game_name").and_then(|v| v.as_str()).unwrap_or("MotorGame");
-                    let entry_scene = args.get("entry_scene").and_then(|v| v.as_str()).unwrap_or("assets/scene.json");
+                    let title = args
+                        .get("title")
+                        .or_else(|| args.get("game_name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("MotorGame");
+                    let scene_path = args
+                        .get("scene_path")
+                        .or_else(|| args.get("entry_scene"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("assets/scene.json");
                     let output_dir = args.get("output_dir").and_then(|v| v.as_str());
+                    let fullscreen = args.get("fullscreen").and_then(|v| v.as_bool()).unwrap_or(false);
 
-                    match crate::exporter::export_game(game_name, entry_scene, output_dir) {
-                        Ok(out_path) => {
+                    match crate::exporter::export_game(title, scene_path, output_dir, fullscreen) {
+                        Ok(res) => {
                             Some(JsonRpcResponse::success(
                                 id,
                                 json!({
                                     "content": [{
                                         "type": "text",
-                                        "text": format!("Juego exportado exitosamente en '{}'", out_path.display())
+                                        "text": format!("Game exported successfully to '{}' ({} assets, {})", res.output_dir.display(), res.asset_count, res.total_mb)
                                     }],
-                                    "dist_path": out_path.to_string_lossy(),
+                                    "success": true,
+                                    "output_dir": res.output_dir.to_string_lossy(),
+                                    "dist_path": res.output_dir.to_string_lossy(),
+                                    "total_bytes": res.total_bytes,
+                                    "total_mb": res.total_mb,
+                                    "asset_count": res.asset_count,
+                                    "exe_name": res.exe_name,
                                     "status": "success"
                                 }),
                             ))

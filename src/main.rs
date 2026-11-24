@@ -209,6 +209,10 @@ pub struct EngineState {
     pub show_connect_mcp_modal: bool,
     pub export_game_name: String,
     pub export_entry_scene: String,
+    pub export_output_dir: String,
+    pub export_fullscreen: bool,
+    pub export_last_result: Option<exporter::ExportResult>,
+    pub export_error: Option<String>,
     pub show_music_forge_window: bool,
     pub music_forge_preset_idx: usize,
     pub music_forge_recipe: crate::music_forge::MusicRecipe,
@@ -558,6 +562,10 @@ impl EngineState {
             show_connect_mcp_modal: false,
             export_game_name: "MyGame".to_string(),
             export_entry_scene: initial_scene_path.clone(),
+            export_output_dir: String::new(),
+            export_fullscreen: false,
+            export_last_result: None,
+            export_error: None,
             show_music_forge_window: false,
             music_forge_preset_idx: 0,
             music_forge_recipe: crate::music_forge::preset_space_ambient(),
@@ -6858,46 +6866,95 @@ impl EngineState {
                     });
                     let mut export_trigger = false;
                     let mut close_modal = false;
+                    let mut open_explorer_path: Option<std::path::PathBuf> = None;
 
                     egui::Window::new("Export Game (Standalone)")
-                        .fixed_pos(egui::pos2(screen_rect.center().x - 180.0, screen_rect.center().y - 120.0))
-                        .fixed_size(egui::vec2(360.0, 220.0))
+                        .fixed_pos(egui::pos2(screen_rect.center().x - 210.0, screen_rect.center().y - 170.0))
+                        .fixed_size(egui::vec2(420.0, 340.0))
                         .resizable(false)
                         .collapsible(false)
                         .show(ui.ctx(), |ui| {
-                            ui.heading("📦 Standalone Exporter");
+                            ui.heading("📦 1-Click Game Exporter");
+                            ui.label("Package the game with harvested assets, config and executable.");
                             ui.add_space(8.0);
-                            ui.label("Game Title / Executable Name:");
+                            ui.separator();
+                            ui.add_space(8.0);
+
+                            ui.label(egui::RichText::new("Game Title:").strong());
                             ui.text_edit_singleline(&mut self.export_game_name);
                             ui.add_space(6.0);
-                            ui.label("Entry Scene Path:");
+
+                            ui.label(egui::RichText::new("Entry Scene:").strong());
                             ui.text_edit_singleline(&mut self.export_entry_scene);
-                            ui.add_space(14.0);
+                            ui.add_space(6.0);
+
+                            ui.label(egui::RichText::new("Output Directory:").strong());
+                            let default_out = format!("dist/{}", self.export_game_name.trim().to_lowercase().replace(' ', "_"));
+                            let hint = if self.export_output_dir.trim().is_empty() { default_out } else { self.export_output_dir.clone() };
+                            ui.text_edit_singleline(&mut self.export_output_dir);
+                            if self.export_output_dir.trim().is_empty() {
+                                ui.colored_label(egui::Color32::from_rgb(156, 163, 175), format!("Default: {}", hint));
+                            }
+                            ui.add_space(6.0);
+
+                            ui.checkbox(&mut self.export_fullscreen, "Start in Fullscreen Mode (Borderless)");
+                            ui.add_space(10.0);
+
+                            if let Some(res) = &self.export_last_result {
+                                ui.group(|ui| {
+                                    ui.colored_label(egui::Color32::from_rgb(34, 197, 94), "✅ Game exported successfully!");
+                                    ui.label(format!("• Output: {}", res.output_dir.display()));
+                                    ui.label(format!("• Total Size: {}", res.total_mb));
+                                    ui.label(format!("• Harvested Assets: {}", res.asset_count));
+                                    if ui.button("📂 Open in Explorer").clicked() {
+                                        open_explorer_path = Some(res.output_dir.clone());
+                                    }
+                                });
+                                ui.add_space(8.0);
+                            }
+
+                            if let Some(err) = &self.export_error {
+                                ui.colored_label(egui::Color32::from_rgb(239, 68, 68), format!("❌ Error: {}", err));
+                                ui.add_space(8.0);
+                            }
+
                             ui.horizontal(|ui| {
-                                if ui.button(egui::RichText::new("🚀 Build & Export").strong()).clicked() {
+                                if ui.button(egui::RichText::new("📦 Build & Export Game").strong()).clicked() {
                                     export_trigger = true;
                                 }
-                                if ui.button("Cancel").clicked() {
+                                if ui.button("Close").clicked() {
                                     close_modal = true;
                                 }
                             });
                         });
 
+                    if let Some(path) = open_explorer_path {
+                        let _ = std::process::Command::new("explorer").arg(&path).spawn();
+                    }
+
                     if close_modal {
                         self.show_export_modal = false;
+                        self.export_error = None;
                     }
                     if export_trigger {
-                        match exporter::export_game(&self.export_game_name, &self.export_entry_scene, None) {
-                            Ok(path) => {
-                                let msg = format!("Game exported to '{}'!", path.display());
+                        let out_opt = if self.export_output_dir.trim().is_empty() {
+                            None
+                        } else {
+                            Some(self.export_output_dir.as_str())
+                        };
+                        match exporter::export_game(&self.export_game_name, &self.export_entry_scene, out_opt, self.export_fullscreen) {
+                            Ok(res) => {
+                                let msg = format!("Game exported to '{}' ({} assets, {})", res.output_dir.display(), res.asset_count, res.total_mb);
                                 self.logs.push(msg.clone());
                                 self.add_toast(&msg, egui::Color32::from_rgb(56, 189, 248));
-                                self.show_export_modal = false;
+                                self.export_last_result = Some(res);
+                                self.export_error = None;
                             }
                             Err(e) => {
                                 let err = format!("Export failed: {}", e);
                                 self.logs.push(err.clone());
                                 self.add_toast(&err, egui::Color32::from_rgb(239, 68, 68));
+                                self.export_error = Some(e);
                             }
                         }
                     }
@@ -8294,9 +8351,10 @@ fn main() {
             let name = if i + 1 < args.len() { &args[i + 1] } else { "MyGame" };
             let scene = if i + 2 < args.len() { &args[i + 2] } else { "assets/scene.json" };
             let out = if i + 3 < args.len() { Some(args[i + 3].as_str()) } else { Some("dist") };
-            match exporter::export_game(name, scene, out) {
-                Ok(p) => {
-                    println!("Standalone game exported successfully to: {:?}", p);
+            match exporter::export_game(name, scene, out, fullscreen) {
+                Ok(res) => {
+                    println!("Standalone game exported successfully to: {:?}", res.output_dir);
+                    println!("Total size: {}, assets harvested: {}", res.total_mb, res.asset_count);
                     return;
                 }
                 Err(e) => {
