@@ -2256,6 +2256,62 @@ impl GpuContext {
         self.texture_cache.get(path).unwrap_or(&self.default_white_texture)
     }
 
+    pub fn reload_texture(&mut self, path: &str) -> bool {
+        let mut reloaded = false;
+        let norm_path = path.replace('\\', "/").to_lowercase();
+        let file_name = std::path::Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        let matching_keys: Vec<String> = self
+            .texture_cache
+            .keys()
+            .filter(|k| {
+                let norm_k = k.replace('\\', "/").to_lowercase();
+                norm_k == norm_path
+                    || norm_k.ends_with(&norm_path)
+                    || norm_path.ends_with(&norm_k)
+                    || (!file_name.is_empty() && norm_k.ends_with(&file_name))
+            })
+            .cloned()
+            .collect();
+
+        for key in matching_keys {
+            if let Ok(bytes) = std::fs::read(&key) {
+                if let Ok(tex) = TextureGpu::from_bytes_pbr(
+                    &self.device,
+                    &self.queue,
+                    &self.texture_bind_group_layout,
+                    &bytes,
+                    &self.dummy_normal.view,
+                    &self.dummy_mr.view,
+                    &self.dummy_black.view,
+                    &key,
+                ) {
+                    self.texture_cache.insert(key.clone(), tex);
+                    reloaded = true;
+                }
+            }
+        }
+
+        if reloaded {
+            self.material_cache.clear();
+        }
+        reloaded
+    }
+
+    pub fn reload_shader_if_valid(&mut self, path: &str) -> Result<String, String> {
+        let content = std::fs::read_to_string(path).map_err(|e| format!("Read error: {}", e))?;
+        let module_desc = wgpu::ShaderModuleDescriptor {
+            label: Some("Shader Reload Validation"),
+            source: wgpu::ShaderSource::Wgsl(content.into()),
+        };
+        let _module = self.device.create_shader_module(module_desc);
+        Ok("Shader syntax validated and compiled successfully".to_string())
+    }
+
     pub fn get_or_create_material(&mut self, key: &MaterialKey) -> &wgpu::BindGroup {
         if key.normal.is_none() && key.metallic_roughness.is_none() && key.emissive.is_none() {
             if let Some(diffuse) = &key.diffuse {

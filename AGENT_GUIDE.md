@@ -73,6 +73,7 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `load_scene(path)`: Queues scene transition on frame boundary.
   - `save_data(key, val)`, `load_data(key) -> val`: Legacy JSON persistence to `assets/save_data.json`.
   - `save_game(slot, data) -> bool`, `load_game(slot) -> table|nil`, `delete_save(slot) -> bool`, `list_saves() -> table`: Slotted JSON save/load in `saves/<slot>.json` with path traversal defense.
+  - `spawn_prefab(path, x, y, z) -> str`: Instantiates prefab hierarchy from `assets/prefabs/<name>.prefab.json` (or `.json`).
 - Camera & Input & Game Feel:
   - `set_camera(x,y,z, tx,ty,tz)`, `follow_entity(id, ox,oy,oz, smoothness)`
   - `camera_shake(intensity, duration, [frequency])`, `camera_lerp_to(ex,ey,ez, tx,ty,tz, duration)`
@@ -220,5 +221,5 @@ MCP Tools Directory:
 - `spawn_prefab({ name, position })`: Instantiates `.prefab.json` or `.json` prefab hierarchy with root and children.
 - `save_prefab({ entity_id, path })`: Exports entity hierarchy to `assets/prefabs/<name>.prefab.json`.
 - `find_path({ from, to, max_steps })`: Computes 3D A* path between coordinates.
-- Editor Shortcuts: `Ctrl+Z` (Undo), `Ctrl+Y`/`Ctrl+Shift+Z` (Redo), `Ctrl+S` (Save), `W`/`E`/`R` (Gizmo), `🧲 Snap` (0.25-2.0m, 15°-90°).
+- Editor Shortcuts: `F3` (Profiler CPU/GPU breakdown, sparkline & VRAM), `F11` (Fullscreen), `Ctrl+Z` (Undo), `Ctrl+Y` (Redo), `Ctrl+S` (Save), `W`/`E`/`R` (Gizmos), `🧲 Snap`.
 - Auth: Optional `--mcp-token <TOKEN>` (or `MOTOR_MCP_TOKEN`), requires `Authorization: Bearer <TOKEN>` header.

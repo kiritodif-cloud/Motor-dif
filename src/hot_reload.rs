@@ -7,6 +7,8 @@ pub enum HotReloadEvent {
     SceneChanged,
     ScriptChanged(PathBuf),
     PrefabChanged(PathBuf),
+    TextureChanged(PathBuf),
+    ShaderChanged(PathBuf),
     Other(PathBuf),
 }
 
@@ -72,6 +74,10 @@ impl HotReloadManager {
                     let path_str = path.to_string_lossy().to_lowercase();
                     if file_name.ends_with(".prefab.json") || path_str.contains("prefabs") {
                         events.push(HotReloadEvent::PrefabChanged(path));
+                    } else if file_name.ends_with(".png") || file_name.ends_with(".jpg") || file_name.ends_with(".jpeg") {
+                        events.push(HotReloadEvent::TextureChanged(path));
+                    } else if file_name.ends_with(".wgsl") {
+                        events.push(HotReloadEvent::ShaderChanged(path));
                     } else if file_name.ends_with(".json") && file_name != "input_map.json" && file_name != "save_data.json" && file_name != "game.json" && file_name != "game_config.json" {
                         scene_changed = true;
                     } else if file_name.ends_with(".lua") {
@@ -98,5 +104,48 @@ impl HotReloadManager {
         }
 
         events
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hot_reload_event_types() {
+        let script_ev = HotReloadEvent::ScriptChanged(PathBuf::from("assets/scripts/player.lua"));
+        let prefab_ev = HotReloadEvent::PrefabChanged(PathBuf::from("assets/prefabs/chest.prefab.json"));
+        let tex_ev = HotReloadEvent::TextureChanged(PathBuf::from("assets/textures/crate_diffuse.png"));
+        let shader_ev = HotReloadEvent::ShaderChanged(PathBuf::from("assets/shaders/pbr.wgsl"));
+        let scene_ev = HotReloadEvent::SceneChanged;
+
+        assert_eq!(scene_ev, HotReloadEvent::SceneChanged);
+        match script_ev {
+            HotReloadEvent::ScriptChanged(p) => assert!(p.ends_with("player.lua")),
+            _ => panic!("Expected ScriptChanged"),
+        }
+        match prefab_ev {
+            HotReloadEvent::PrefabChanged(p) => assert!(p.ends_with("chest.prefab.json")),
+            _ => panic!("Expected PrefabChanged"),
+        }
+        match tex_ev {
+            HotReloadEvent::TextureChanged(p) => assert!(p.ends_with("crate_diffuse.png")),
+            _ => panic!("Expected TextureChanged"),
+        }
+        match shader_ev {
+            HotReloadEvent::ShaderChanged(p) => assert!(p.ends_with("pbr.wgsl")),
+            _ => panic!("Expected ShaderChanged"),
+        }
+    }
+
+    #[test]
+    fn test_hot_reload_fallback() {
+        let mut hr = HotReloadManager::fallback("Watcher disabled for headless test".to_string());
+        assert_eq!(hr.last_reload_error.as_deref(), Some("Watcher disabled for headless test"));
+        let events = hr.poll_events();
+        assert!(events.is_empty());
+
+        hr.suppress_scene_events(std::time::Duration::from_millis(50));
+        assert!(hr.ignore_scene_change_until.is_some());
     }
 }

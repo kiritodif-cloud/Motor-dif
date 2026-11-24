@@ -1,4 +1,4 @@
-# Motor-dif
+# Motor-dif v0.2.0
 
 **Motor-dif** es un motor de videojuegos 2D/3D ligero y **nativo para IA** escrito en **Rust**, diseñado para crear, iterar y exportar juegos completos conversando en lenguaje natural con agentes de IA a través de **MCP (Model Context Protocol)**, sin sacrificar rendimiento en gráficas integradas.
 
@@ -6,6 +6,7 @@
 [![wgpu](https://img.shields.io/badge/Graphics-wgpu-blue)](https://wgpu.rs/)
 [![MCP](https://img.shields.io/badge/AI--Native-MCP%20Server-8A2BE2)](https://modelcontextprotocol.io/)
 [![Performance](https://img.shields.io/badge/Release-~75%20FPS%20(iGPU)-brightgreen)]()
+[![CI/CD](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-blue?logo=github)](https://github.com)
 
 ---
 
@@ -14,33 +15,57 @@
 La mayoría de los motores tradicionales fueron diseñados para flujos manuales complejos, mientras que los prototipos web generados por IA (HTML/Three.js) chocan rápido con límites de físicas, guardado de escenas, editor visual y empaquetado.
 
 **Motor-dif** combina lo mejor de ambos mundos:
-- **Núcleo nativo en Rust (`wgpu` + `Rapier3D` + `mlua` + `egui`):** Compila a un único ejecutable ligero y corre fluido (~75 FPS en modo *Release* con sombras `2048x2048` y HDR en gráficas integradas).
-- **Servidor MCP integrado (`http://127.0.0.1:3030/mcp`):** Permite que cualquier agente (Antigravity, Claude Desktop, OpenCode, etc.) inspeccione la documentación del motor, construya mundos, capture el visor en vivo, lea errores de consola y pruebe el juego en tiempo real.
-- **Forges nativas en Rust:** En lugar de obligar a la IA a ensamblar miles de primitivas sueltas o reescribir controladores desde cero, Motor-dif expone generadores nativos de alto rendimiento para terrenos, mundos voxel, música y controladores de jugador.
+- **Núcleo nativo en Rust (`wgpu` + `Rapier3D` + `mlua` + `egui`):** Compila a un único ejecutable ligero y corre fluido (> 60-75 FPS en modo *Release* con sombras `2048x2048`, PBR, 16 luces y HDR en gráficas integradas).
+- **Servidor MCP integrado (`http://127.0.0.1:3030/mcp`):** Permite que cualquier agente (Antigravity, Claude Desktop, Cursor, OpenCode, etc.) inspeccione la documentación del motor, construya mundos, capture el visor en vivo, lea errores de consola y pruebe el juego en tiempo real con autenticación opcional por token (`--mcp-token`).
+- **Forges nativas en Rust:** Generadores procedurales integrados para modelos, texturas, mapas de altura, mundos voxel, audio adaptativo, sistemas de partículas y controladores de jugador.
 
 ---
 
-## Características Principales
+## Novedades de Producción en Motor-dif v0.2.0
 
-### Renderizado Moderno y Ligero (`wgpu`)
-- **Shadow Mapping Direccional (2048x2048):** Pase *depth-only* centrado dinámicamente en la cámara con filtro **PCF 3x3** y *slope-scaled bias*.
-- **Post-Procesado HDR con ACES Saturado:** Tone Mapping fílmico diseñado para preservar el color de materiales emisivos (neones, cristales, lava) sin quemarlos a blanco.
-- **Iluminación Ambiental Hemisférica y Ciclo Día/Noche:** Controlable en una línea desde Lua (`set_time_of_day(hour)`), ajustando sol/luna, cielo, niebla y dirección de sombras automáticamente.
-- **Transparencia y Detalle:** Soporte de *Alpha Cutout* (con sombras recortadas para follaje), mezclado translúcido (agua/vidrio), *Vertex Ambient Occlusion*, muestreo *Nearest-Neighbor* para pixel-art y micro-ruido procedural en WGSL.
-- **View-Model en 1ª Persona:** Renderizado sin *clipping* contra paredes con animaciones procedurales (`swing`, `recoil`, `bob`).
+### 1. Acabado Visual y Gráficos Modernos (`wgpu`)
+- **Pipeline PBR Completo:** Modelo de microfacetas Cook-Torrance GGX con mapas de normales (*tangent-space*), rugosidad, metalicidad y emisión.
+- **Sombras Direccionales PCF 3x3:** Sombra suave gaussianizada de 2048x2048 con *slope-scaled bias* y profundidad centrada en cámara.
+- **16 Luces Dinámicas:** Iluminación por puntos y focos (*point & spot lights*) con cálculo de atenuación cuadrática en GPU.
+- **Niebla Atmosférica:** Modos lineal y exponencial integrados armoniosamente con el ciclo día/noche y el color de horizonte.
+- **Post-Procesado HDR con ACES Saturado:** Mapeo tonal cinematográfico con bloom, viñeta y aberración cromática configurable en caliente.
+- **View-Model en 1ª Persona:** Renderizado de armas y herramientas en primer plano sin *clipping* contra paredes, con animaciones procedurales (`swing`, `recoil`, `bob`).
 
-### Forges Nativas para Agentes de IA
-- **`Voxel Forge`:** Motor de chunks en Rust con *Hidden-Face Culling*, atlas UV procedural con texturas por cara, *Vertex AO* horneado, colisiones rápidas (`voxel_is_solid`), raycast DDA exacto (`voxel_raycast`) y persistencia en sidecar `.voxels.json`.
-- **`Level Forge`:** Generación de terrenos procedurales exportados a `.glb` con persistencia automática de mapa de alturas (`.heightmap.json` + reconstrucción *fallback* desde `.glb`) y dispersión de props estilizados (`basalt_pillar`, `jagged_rock`, `crystal_cluster`, `sci_fi_crate`).
-- **Controladores Listos (`forge_spawn_controller`):** Inyección en 1 llamada de jugadores probados para `fps`, `third_person`, `top_down` y `vehicle`.
-- **`Music Forge`:** Síntesis procedural de audio y música ambiental integrada.
+### 2. Animación Esquelética y Audio Espacial 3D
+- **Skeletal Animation Player:** Reproducción de clips de animación glTF con interpolación esférica de cuaterniones (slerp) y mezcla por desvanecimiento cruzado (*crossfade blending*).
+- **Audio Espacial 3D:** Atenuación paramétrica con curvas lineal, exponencial y smoothstep, más paneo estéreo posicional relativo a la orientación de la cámara.
+- **Buses de Audio:** Control independiente de volúmenes para `Master`, `SFX` y `Music`.
 
-### Editor, Scripting Lua y Distribución
-- **Editor Visual (`egui`):** Jerarquía de escena, Inspector, Consola con filtros, Navegador de Assets, Editor de Scripts y botón **`Connect MCP`** en 1 clic.
-- **Play Mode Limpio:** *Pointer Lock* nativo (`Esc` para liberar), restricción del cursor al visor y ocultamiento automático de rejilla, gizmos, *colliders* y *toasts* del editor.
-- **Hot-Reload en Vivo:** Edita scripts `.lua` o escenas `.json` y observa los cambios al instante.
-- **UI y Persistencia en Lua:** Interfaz con íconos, recortes de atlas y slots de inventario (`ui_image`, `ui_slot`), más sistema seguro de partidas guardadas (`save_game` / `load_game`).
-- **Exportador en 1 Clic (`Export Game`):** Recolecta únicamente los assets usados por la escena y empaqueta un ejecutable independiente con `game_config.json` listo para distribuir.
+### 3. Navegación, IA y Pathfinding 3D
+- **A\* 3D Consciente de Terreno y Vóxeles:** Búsqueda heurística euclidiana que escala pendientes y sortea obstáculos con presupuesto de pasos por fotograma (*step budget*).
+- **Steering Behaviors:** Comportamiento `steer_towards` con suavizado de giro en yaw y llegada automática.
+- **Líneas de Depuración 3D:** Renderizado inmediato de rutas (`draw_path`), líneas (`draw_line_3d`) y anillos (`draw_ring_3d`) en el visor.
+
+### 4. Partículas GPU y Game Feel
+- **Emisores de Partículas Instanciadas:** Simulación ultraligera en CPU/GPU con presets de producción (`explosion`, `fire`, `smoke`, `sparks`, `rain`, `magic_portal`).
+- **Game Feel Instantáneo:** Escala de tiempo dinámico (`set_time_scale`), micro-congelamiento de impacto (`hitstop`) y sacudida de cámara con frecuencia y armónicos (`camera_shake`).
+
+### 5. Físicas de Producción con Rapier3D
+- **Kinematic Character Controller:** Desplazamiento cinemático robusto con subida de escalones (0.4m), límite de pendiente (45°), fijación al suelo (0.2m) y tiempo coyote (0.15s).
+- **Capas y Máscaras de Colisión (`CollisionLayer`):** Filtrado por máscaras de bits (`DEFAULT`, `PLAYER`, `ENEMY`, `WORLD`, `PROJECTILE`, `TRIGGER`).
+- **Consultas Espaciales:** Detección de impacto por raycast (`raycast`) y comprobación de volumen esférico (`overlap_sphere`).
+- **Callbacks de Eventos:** Detección en scripts de `on_collision(self, other_id, nx, ny, nz)`, `on_trigger_enter` y `on_trigger_exit`.
+
+### 6. Mapeo Profesional de Input y UI Responsiva
+- **Sistema de Input Basado en Acciones:** Soporte para teclado, ratón y mandos/gamepad con zona muerta configurable, triggers analógicos y persistencia en `assets/input_config.json`.
+- **UI Adaptable con 9 Anclajes:** Posicionamiento responsivo de paneles, barras de vida, etiquetas, botones, imágenes y ranuras de inventario de 720p a 4K.
+- **Motor de Tweens en Lua:** Interpolaciones visuales fluidas (`tween_ui_property`) con curvas de easing (`linear`, `ease_in_quad`, `ease_out_quad`, `ease_in_out_cubic`, `bounce_out`).
+
+### 7. Herramientas de Producción en Editor y Profiler
+- **Sistema de Prefabs (`.prefab.json`):** Jerarquías completas de entidades con hijos y componentes, instanciables desde el Editor, Lua (`spawn_prefab`) y MCP (`spawn_prefab`).
+- **Historial Deshacer/Rehacer (`Ctrl+Z` / `Ctrl+Y`):** Pila de estados al transformar entidades con gizmos en el visor.
+- **Snapping en Cuadrícula (`🧲 Snap`):** Ajuste magnético de posición (0.25m - 2.0m) y rotación (15° - 90°).
+- **Profiler en Tiempo Real (`F3`):** Gráfica sparkline de 120 frames con líneas de referencia de 60 y 30 FPS, desglose de tiempos CPU/GPU (Simulación, Render, UI), recuento de entidades, draw calls, partículas y cálculo de memoria VRAM estimada.
+- **Hot-Reload Total sin Reinicios:** Detección en tiempo real con `notify` de scripts Lua, texturas `.png`, prefabs `.prefab.json` y shaders `.wgsl`.
+
+### 8. Distribución y CI/CD Multiplataforma
+- **Exportación en 1 Clic (`File -> Export Game...`):** Cosechado inteligente de dependencias para crear un paquete limpio y ejecutable independiente con `game_config.json`.
+- **GitHub Actions (`.github/workflows/release.yml`):** Compilación automática, ejecución de tests y empaquetado de ejecutables para Windows (zip) y Linux (tar.gz).
 
 ---
 
@@ -48,7 +73,7 @@ La mayoría de los motores tradicionales fueron diseñados para flujos manuales 
 
 ### Requisitos
 - [Rust](https://www.rust-lang.org/tools/install) (toolchain estable)
-- GPU compatible con Vulkan, DirectX 12 o Metal (funciona en gráficas integradas)
+- GPU compatible con Vulkan, DirectX 12 o Metal (totalmente compatible con gráficas integradas Intel/AMD)
 
 ### Compilar y Ejecutar
 ```bash
@@ -56,10 +81,10 @@ La mayoría de los motores tradicionales fueron diseñados para flujos manuales 
 git clone https://github.com/tu-usuario/Motor-dif.git
 cd Motor-dif
 
-# Ejecutar pruebas unitarias
+# Ejecutar pruebas unitarias (142 tests pasando al 100%)
 cargo test --bin motor_dif
 
-# Compilar en modo Release (recomendado para máximo rendimiento)
+# Compilar en modo Release optimizado
 cargo build --release
 
 # Iniciar el editor
@@ -70,8 +95,8 @@ cargo build --release
 
 ## Conectar con un Agente de IA (MCP)
 
-1. Abre **Motor-dif**. El servidor MCP se iniciará automáticamente en `http://127.0.0.1:3030/mcp`.
-2. Haz clic en **`Connect MCP`** en la barra del editor para copiar la configuración JSON a tu cliente compatible (Antigravity, Claude Desktop, OpenCode, etc.):
+1. Abre **Motor-dif**. El servidor MCP se iniciará en `http://127.0.0.1:3030/mcp`.
+2. Haz clic en **`Connect MCP`** en la barra superior del editor para copiar la configuración a tu cliente de IA (Antigravity, Claude Desktop, Cursor, etc.):
 
 ```json
 {
@@ -83,18 +108,39 @@ cargo build --release
 }
 ```
 
-3. Pídele al agente que cree un juego en lenguaje natural, por ejemplo:
-   > *"Crea un mundo estilo Minecraft con árboles, agua, ciclo día/noche y una barra de 9 bloques donde pueda picar y construir en primera persona usando Motor-dif."*
-
-El agente consultará `get_engine_docs`, generará el mundo con `Voxel Forge`, inyectará el controlador FPS, cargará la escena, entrará en Modo Play y verificará visualmente el resultado con `capture_viewport`.
+Si ejecutas el motor con token de seguridad:
+```bash
+./target/release/motor_dif --mcp-token MI_TOKEN_SECRETO
+```
+Agrega la cabecera correspondiente:
+```json
+{
+  "mcpServers": {
+    "motor-dif": {
+      "url": "http://127.0.0.1:3030/mcp",
+      "headers": {
+        "Authorization": "Bearer MI_TOKEN_SECRETO"
+      }
+    }
+  }
+}
+```
 
 ---
 
-## Exportar tu Juego
+## Atajos de Teclado del Editor
 
-Desde el editor ve a **`File -> Export Game...`** (o usa la herramienta MCP `export_game`):
-- Elige el nombre del juego y si arrancará en pantalla completa.
-- Motor-dif creará una carpeta limpia en `exports/<tu-juego>/` con el ejecutable renombrado, `game_config.json` y **únicamente** los modelos, texturas, scripts y audios utilizados por tu proyecto.
+| Atajo | Acción |
+| :--- | :--- |
+| `F3` | Abrir/Cerrar Profiler en tiempo real (Sparkline, desglose de tiempos y memoria) |
+| `F11` | Alternar Pantalla Completa |
+| `W` / `E` / `R` | Gizmo de Traslación / Rotación / Escala |
+| `Ctrl+Z` | Deshacer última transformación |
+| `Ctrl+Y` / `Ctrl+Shift+Z` | Rehacer transformación |
+| `Ctrl+S` | Guardar escena actual |
+| `Ctrl+D` | Duplicar entidad seleccionada |
+| `Supr` | Eliminar entidad seleccionada |
+| `Esc` | Liberar Pointer Lock en Modo Play |
 
 ---
 
@@ -102,17 +148,26 @@ Desde el editor ve a **`File -> Export Game...`** (o usa la herramienta MCP `exp
 
 ```text
 Motor-dif/
+├── .github/workflows/
+│   └── release.yml        # CI/CD multiplataforma (Windows & Linux) y empaquetado de releases
 ├── src/
-│   ├── main.rs            # Bucle principal, editor egui, Pointer Lock y modo standalone
-│   ├── renderer.rs        # Pipeline wgpu, Shadow Mapping PCF, ACES, Skybox y View-Model
-│   ├── scripting.rs       # Runtime Lua (mlua), API de juego, UI y save/load
-│   ├── mcp_server.rs      # Servidor HTTP MCP, herramientas y errores auto-correctivos
-│   ├── voxel_forge.rs     # Chunks nativos, Hidden-Face Culling, Vertex AO y DDA raycast
-│   ├── level_forge.rs     # Terreno procedural, props low-poly y sidecars .heightmap.json
-│   ├── physics.rs         # Integración de físicas Rapier3D
-│   └── exporter.rs        # Empaquetador standalone y recolector de dependencias
-├── assets/                # Escenas, scripts Lua, modelos .glb, texturas y audio
-├── AGENT_GUIDE.md         # Guía compacta embebida para agentes MCP
+│   ├── main.rs            # Bucle principal, editor egui, F3 Profiler, Hot-Reload y Standalone
+│   ├── renderer.rs        # Pipeline wgpu, PBR GGX, normal maps, soft shadows PCF 3x3, 16 luces y ACES
+│   ├── scripting.rs       # Runtime Lua (mlua), bindings de ECS, UI, físicas, audio, AI y tweens
+│   ├── mcp_server.rs      # Servidor HTTP MCP, esquemas auto-correctivos y autenticación Bearer
+│   ├── physics.rs         # Rapier3D: KinematicCharacterController, capas de colisión y spatial queries
+│   ├── animation.rs       # Reproductor glTF con blending y presets procedurales
+│   ├── audio.rs           # Motor de audio espacial 3D con curvas de atenuación y buses Master/SFX/Music
+│   ├── nav.rs             # A* 3D de terreno y vóxeles con step budget y comportamientos de dirección
+│   ├── particles.rs       # Sistema de partículas GPU instanciadas con presets de producción
+│   ├── input_map.rs       # Mapeo de acciones, soporte para mandos/gamepad y persistencia
+│   ├── game_ui.rs         # Renderizador declarativo con 9 anclajes responsivos y atlas de sprites
+│   ├── tweens.rs          # Gestor de tweens con curvas de aceleración y amortiguación
+│   ├── voxel_forge.rs     # Motor de chunks voxel, Hidden-Face Culling, Vertex AO y DDA raycast
+│   ├── level_forge.rs     # Terrenos procedurales, dispersión estilizada y mapas de altura
+│   └── exporter.rs        # Empaquetador independiente en 1 clic y cosechador de dependencias
+├── assets/                # Escenas, prefabs, scripts Lua, modelos .glb, texturas y sonido
+├── AGENT_GUIDE.md         # Guía de referencia ultracompacta para agentes MCP (< 240 líneas)
 └── Cargo.toml
 ```
 

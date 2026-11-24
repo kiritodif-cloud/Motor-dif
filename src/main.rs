@@ -232,6 +232,9 @@ pub struct EngineState {
     pub vfx_forge_recipe: crate::vfx_forge::VfxRecipe,
     pub show_profiler: bool,
     pub frametime_history: std::collections::VecDeque<f32>,
+    pub sim_time_ms: f32,
+    pub render_time_ms: f32,
+    pub ui_time_ms: f32,
     pub view_mode: renderer::ViewMode,
     pub camera_bookmarks: [Option<(Vec3, Vec3)>; 4],
     pub last_draw_calls: usize,
@@ -589,7 +592,10 @@ impl EngineState {
             show_vfx_forge_window: false,
             vfx_forge_recipe: crate::vfx_forge::preset_explosion(),
             show_profiler: false,
-            frametime_history: std::collections::VecDeque::with_capacity(100),
+            frametime_history: std::collections::VecDeque::with_capacity(120),
+            sim_time_ms: 0.0,
+            render_time_ms: 0.0,
+            ui_time_ms: 0.0,
             view_mode: renderer::ViewMode::Lit,
             camera_bookmarks: [None, None, None, None],
             last_draw_calls: 0,
@@ -619,6 +625,143 @@ impl EngineState {
 
     pub fn add_toast(&mut self, text: impl Into<String>, color: egui::Color32) {
         self.toasts.push((text.into(), Instant::now(), color));
+    }
+
+    pub fn render_profiler_overlay(&self, ui: &egui::Ui, viewport_rect: egui::Rect) {
+        if !self.show_profiler {
+            return;
+        }
+
+        let profiler_area = egui::Area::new(ui.make_persistent_id("viewport_profiler_f3"))
+            .fixed_pos(egui::pos2(viewport_rect.min.x + 12.0, viewport_rect.min.y + 48.0));
+        profiler_area.show(ui.ctx(), |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_premultiplied(18, 21, 28, 235))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(56, 189, 248)))
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    let avg_ms = if self.frametime_history.is_empty() {
+                        0.0
+                    } else {
+                        self.frametime_history.iter().sum::<f32>() / self.frametime_history.len() as f32
+                    };
+                    let avg_fps = if avg_ms > 0.0 { 1000.0 / avg_ms } else { 0.0 };
+
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("PROFILER (F3)").strong().color(egui::Color32::from_rgb(56, 189, 248)));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new(format!("{:.1}ms", avg_ms)).size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                        });
+                    });
+                    ui.separator();
+
+                    // Sparkline Graph: 120 frames with reference lines
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(220.0, 52.0), egui::Sense::hover());
+                    let painter = ui.painter();
+                    painter.rect_filled(rect, egui::CornerRadius::same(4), egui::Color32::from_rgb(14, 16, 22));
+                    painter.rect_stroke(rect, egui::CornerRadius::same(4), egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(46, 51, 64, 150)), egui::StrokeKind::Inside);
+
+                    // Target reference lines: 16.6ms (60 FPS) and 33.3ms (30 FPS)
+                    let max_graph_ms = 40.0f32;
+                    let y_60 = rect.max.y - (16.6 / max_graph_ms) * rect.height();
+                    let y_30 = rect.max.y - (33.3 / max_graph_ms) * rect.height();
+                    painter.line_segment([egui::pos2(rect.min.x, y_60), egui::pos2(rect.max.x, y_60)], egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(34, 197, 94, 90)));
+                    painter.line_segment([egui::pos2(rect.min.x, y_30), egui::pos2(rect.max.x, y_30)], egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(240, 120, 40, 80)));
+                    painter.text(egui::pos2(rect.max.x - 2.0, y_60 - 2.0), egui::Align2::RIGHT_BOTTOM, "60 FPS", egui::FontId::proportional(8.0), egui::Color32::from_rgba_unmultiplied(34, 197, 94, 150));
+                    painter.text(egui::pos2(rect.max.x - 2.0, y_30 - 2.0), egui::Align2::RIGHT_BOTTOM, "30 FPS", egui::FontId::proportional(8.0), egui::Color32::from_rgba_unmultiplied(240, 120, 40, 150));
+
+                    if self.frametime_history.len() >= 2 {
+                        let count = self.frametime_history.len();
+                        let step_x = rect.width() / (count - 1) as f32;
+                        let mut prev_pt: Option<egui::Pos2> = None;
+                        for (i, &ms) in self.frametime_history.iter().enumerate() {
+                            let clamped_ms = ms.clamp(0.0, max_graph_ms);
+                            let px = rect.min.x + i as f32 * step_x;
+                            let py = rect.max.y - (clamped_ms / max_graph_ms) * rect.height();
+                            let cur_pt = egui::pos2(px, py);
+                            if let Some(prev) = prev_pt {
+                                let col = if ms <= 16.6 {
+                                    egui::Color32::from_rgb(34, 197, 94)
+                                } else if ms <= 33.3 {
+                                    egui::Color32::from_rgb(250, 204, 21)
+                                } else {
+                                    egui::Color32::from_rgb(239, 68, 68)
+                                };
+                                painter.line_segment([prev, cur_pt], egui::Stroke::new(1.5, col));
+                            }
+                            prev_pt = Some(cur_pt);
+                        }
+                    }
+
+                    ui.add_space(4.0);
+
+                    // Timing Breakdown (Sim / Render / UI)
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("CPU Breakdown:").size(10.5).color(egui::Color32::from_rgb(142, 149, 165)));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("Sim: {:.1}ms", self.sim_time_ms)).size(10.5).strong().color(egui::Color32::from_rgb(56, 189, 248)));
+                        ui.label(egui::RichText::new("|").size(10.5).color(egui::Color32::from_rgb(80, 85, 100)));
+                        ui.label(egui::RichText::new(format!("Render: {:.1}ms", self.render_time_ms)).size(10.5).strong().color(egui::Color32::from_rgb(168, 85, 247)));
+                        ui.label(egui::RichText::new("|").size(10.5).color(egui::Color32::from_rgb(80, 85, 100)));
+                        ui.label(egui::RichText::new(format!("UI: {:.1}ms", self.ui_time_ms)).size(10.5).strong().color(egui::Color32::from_rgb(34, 197, 94)));
+                    });
+
+                    ui.add_space(3.0);
+                    ui.separator();
+                    ui.add_space(2.0);
+
+                    // Stats grid
+                    let bodies_count = self.physics.dynamic_bodies_count() + self.physics.fixed_bodies_count();
+                    let particles_count = self.particles.active_count();
+                    let lights_count = self.world.query::<&crate::ecs::PointLight>().iter().count();
+
+                    let est_mem_mb = {
+                        let mut bytes = (self.gpu.config.width as usize) * (self.gpu.config.height as usize) * 4 * 2;
+                        bytes += 2048 * 2048 * 4;
+                        bytes += self.gpu.texture_cache.len() * 2 * 1024 * 1024;
+                        for mesh in self.gpu.meshes.values() {
+                            bytes += (mesh.num_indices as usize) * 48;
+                        }
+                        bytes += particles_count * 64;
+                        (bytes as f32) / (1024.0 * 1024.0)
+                    };
+
+                    egui::Grid::new("profiler_stats_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 3.0])
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("FPS / Frametime:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                            ui.label(egui::RichText::new(format!("{:.0} FPS ({:.2} ms) | Avg: {:.1} FPS", self.fps, 1000.0 / self.fps.max(1.0), avg_fps)).size(11.0).strong());
+                            ui.end_row();
+
+                            ui.label(egui::RichText::new("Draw Calls (Batches):").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                            ui.label(egui::RichText::new(format!("{}", self.last_draw_calls)).size(11.0).strong().color(egui::Color32::from_rgb(56, 189, 248)));
+                            ui.end_row();
+
+                            ui.label(egui::RichText::new("Entities:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                            ui.label(egui::RichText::new(format!("{}", self.world.len())).size(11.0).strong());
+                            ui.end_row();
+
+                            ui.label(egui::RichText::new("Physics Bodies:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                            ui.label(egui::RichText::new(format!("{}", bodies_count)).size(11.0).strong());
+                            ui.end_row();
+
+                            ui.label(egui::RichText::new("Active Particles:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                            ui.label(egui::RichText::new(format!("{}", particles_count)).size(11.0).strong());
+                            ui.end_row();
+
+                            ui.label(egui::RichText::new("Point Lights:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                            ui.label(egui::RichText::new(format!("{}", lights_count)).size(11.0).strong());
+                            ui.end_row();
+
+                            ui.label(egui::RichText::new("Est. Memory:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                            ui.label(egui::RichText::new(format!("{:.1} MB", est_mem_mb)).size(11.0).strong().color(egui::Color32::from_rgb(34, 197, 94)));
+                            ui.end_row();
+                        });
+                });
+        });
     }
 
     pub fn sync_entity_to_physics(&mut self, entity: hecs::Entity) {
@@ -3222,6 +3365,7 @@ impl EngineState {
     }
 
     pub fn update_and_render(&mut self) {
+        let frame_sim_start = Instant::now();
         let now = Instant::now();
         let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
         self.last_frame_time = now;
@@ -3297,7 +3441,7 @@ impl EngineState {
         }
 
         self.frametime_history.push_back(dt * 1000.0);
-        if self.frametime_history.len() > 90 {
+        if self.frametime_history.len() > 120 {
             self.frametime_history.pop_front();
         }
 
@@ -3353,7 +3497,40 @@ impl EngineState {
                 }
                 HotReloadEvent::PrefabChanged(path) => {
                     let p_str = path.to_string_lossy().replace('\\', "/");
-                    self.sync_prefab_instances(&p_str);
+                    let count = self.sync_prefab_instances(&p_str);
+                    let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    let msg = format!("Hot-Reload: Prefab '{}' reloaded ({} instances updated)", fname, count);
+                    self.logs.push(msg.clone());
+                    self.hot_reload.last_reload_status = Some(msg.clone());
+                    self.add_toast(msg, egui::Color32::from_rgb(56, 189, 248));
+                }
+                HotReloadEvent::TextureChanged(path) => {
+                    let p_str = path.to_string_lossy().replace('\\', "/");
+                    let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    self.ui_texture_cache.retain(|k, _| !k.contains(fname));
+                    let reloaded = self.gpu.reload_texture(&p_str);
+                    let msg = format!("Hot-Reload: Texture '{}' reloaded (GPU: {})", fname, reloaded);
+                    self.logs.push(msg.clone());
+                    self.hot_reload.last_reload_status = Some(msg.clone());
+                    self.add_toast(msg, egui::Color32::from_rgb(34, 197, 94));
+                }
+                HotReloadEvent::ShaderChanged(path) => {
+                    let p_str = path.to_string_lossy().replace('\\', "/");
+                    let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    match self.gpu.reload_shader_if_valid(&p_str) {
+                        Ok(info) => {
+                            let msg = format!("Hot-Reload: Shader '{}' ({})", fname, info);
+                            self.logs.push(msg.clone());
+                            self.hot_reload.last_reload_status = Some(msg.clone());
+                            self.add_toast(msg, egui::Color32::from_rgb(168, 85, 247));
+                        }
+                        Err(err) => {
+                            let msg = format!("Hot-Reload: Shader '{}' failed: {}", fname, err);
+                            self.logs.push(msg.clone());
+                            self.hot_reload.last_reload_error = Some(msg.clone());
+                            self.add_toast(msg, egui::Color32::from_rgb(239, 68, 68));
+                        }
+                    }
                 }
                 HotReloadEvent::Other(_) => {}
             }
@@ -4676,6 +4853,8 @@ impl EngineState {
             self.gpu.get_or_create_material(mat_key);
         }
 
+        self.sim_time_ms = frame_sim_start.elapsed().as_secs_f32() * 1000.0;
+
         let output = match self.gpu.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(frame) | CurrentSurfaceTexture::Suboptimal(frame) => frame,
             CurrentSurfaceTexture::Lost | CurrentSurfaceTexture::Outdated => {
@@ -4696,6 +4875,8 @@ impl EngineState {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Main Command Encoder"),
                 });
+
+        let frame_ui_start = Instant::now();
 
         // Egui Pass Preparation
         let raw_input = self.gpu.egui_winit_state.take_egui_input(&self.window);
@@ -4844,6 +5025,9 @@ impl EngineState {
                                     ft.elapsed < ft.lifetime
                                 });
                             }
+
+                            // F3 Profiler Overlay (Standalone)
+                            self.render_profiler_overlay(ui, viewport_rect);
                         });
                     return;
                 }
@@ -7008,104 +7192,7 @@ impl EngineState {
                         }
 
                         // 7b. F3 Profiler Overlay
-                        if self.show_profiler {
-                            let profiler_area = egui::Area::new(ui.make_persistent_id("viewport_profiler_f3"))
-                                .fixed_pos(egui::pos2((viewport_rect.max.x - 240.0).max(viewport_rect.min.x + 10.0), viewport_rect.min.y + 48.0));
-                            profiler_area.show(ui.ctx(), |ui| {
-                                egui::Frame::new()
-                                    .fill(egui::Color32::from_rgba_premultiplied(20, 23, 30, 235))
-                                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(56, 189, 248)))
-                                    .corner_radius(egui::CornerRadius::same(6))
-                                    .inner_margin(egui::Margin::symmetric(10, 8))
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.label(egui::RichText::new("PROFILER (F3)").strong().color(egui::Color32::from_rgb(56, 189, 248)));
-                                            let avg_ms = if self.frametime_history.is_empty() {
-                                                0.0
-                                            } else {
-                                                self.frametime_history.iter().sum::<f32>() / self.frametime_history.len() as f32
-                                            };
-                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                ui.label(egui::RichText::new(format!("{:.1}ms", avg_ms)).size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
-                                            });
-                                        });
-                                        ui.separator();
-
-                                        // Sparkline Graph
-                                        let (rect, _) = ui.allocate_exact_size(egui::vec2(210.0, 50.0), egui::Sense::hover());
-                                        let painter = ui.painter();
-                                        painter.rect_filled(rect, egui::CornerRadius::same(4), egui::Color32::from_rgb(16, 18, 24));
-                                        painter.rect_stroke(rect, egui::CornerRadius::same(4), egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(46, 51, 64, 150)), egui::StrokeKind::Inside);
-
-                                        // Target reference lines: 16.6ms (60 FPS) and 33.3ms (30 FPS)
-                                        let max_graph_ms = 40.0f32;
-                                        let y_60 = rect.max.y - (16.6 / max_graph_ms) * rect.height();
-                                        let y_30 = rect.max.y - (33.3 / max_graph_ms) * rect.height();
-                                        painter.line_segment([egui::pos2(rect.min.x, y_60), egui::pos2(rect.max.x, y_60)], egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(60, 220, 100, 90)));
-                                        painter.line_segment([egui::pos2(rect.min.x, y_30), egui::pos2(rect.max.x, y_30)], egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(240, 120, 40, 80)));
-                                        painter.text(egui::pos2(rect.max.x - 2.0, y_60 - 2.0), egui::Align2::RIGHT_BOTTOM, "60 FPS", egui::FontId::proportional(8.0), egui::Color32::from_rgba_unmultiplied(60, 220, 100, 140));
-
-                                        if self.frametime_history.len() >= 2 {
-                                            let count = self.frametime_history.len();
-                                            let step_x = rect.width() / (count - 1) as f32;
-                                            let mut prev_pt: Option<egui::Pos2> = None;
-                                            for (i, &ms) in self.frametime_history.iter().enumerate() {
-                                                let clamped_ms = ms.clamp(0.0, max_graph_ms);
-                                                let px = rect.min.x + i as f32 * step_x;
-                                                let py = rect.max.y - (clamped_ms / max_graph_ms) * rect.height();
-                                                let cur_pt = egui::pos2(px, py);
-                                                if let Some(prev) = prev_pt {
-                                                    let col = if ms <= 17.5 {
-                                                        egui::Color32::from_rgb(56, 189, 248)
-                                                    } else if ms <= 33.3 {
-                                                        egui::Color32::from_rgb(250, 204, 21)
-                                                    } else {
-                                                        egui::Color32::from_rgb(248, 113, 113)
-                                                    };
-                                                    painter.line_segment([prev, cur_pt], egui::Stroke::new(1.5, col));
-                                                }
-                                                prev_pt = Some(cur_pt);
-                                            }
-                                        }
-
-                                        ui.add_space(4.0);
-
-                                        // Stats grid
-                                        let bodies_count = self.physics.dynamic_bodies_count() + self.physics.fixed_bodies_count();
-                                        let particles_count = self.particles.active_count();
-                                        let lights_count = self.world.query::<&crate::ecs::PointLight>().iter().count();
-
-                                        egui::Grid::new("profiler_stats_grid")
-                                            .num_columns(2)
-                                            .spacing([12.0, 3.0])
-                                            .show(ui, |ui| {
-                                                ui.label(egui::RichText::new("FPS / Frametime:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
-                                                ui.label(egui::RichText::new(format!("{:.0} FPS ({:.2} ms)", self.fps, 1000.0 / self.fps.max(1.0))).size(11.0).strong());
-                                                ui.end_row();
-
-                                                ui.label(egui::RichText::new("Draw Calls (Batches):").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
-                                                ui.label(egui::RichText::new(format!("{}", self.last_draw_calls)).size(11.0).strong().color(egui::Color32::from_rgb(56, 189, 248)));
-                                                ui.end_row();
-
-                                                ui.label(egui::RichText::new("Entities:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
-                                                ui.label(egui::RichText::new(format!("{}", self.world.len())).size(11.0).strong());
-                                                ui.end_row();
-
-                                                ui.label(egui::RichText::new("Physics Bodies:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
-                                                ui.label(egui::RichText::new(format!("{}", bodies_count)).size(11.0).strong());
-                                                ui.end_row();
-
-                                                ui.label(egui::RichText::new("Active Particles:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
-                                                ui.label(egui::RichText::new(format!("{}", particles_count)).size(11.0).strong());
-                                                ui.end_row();
-
-                                                ui.label(egui::RichText::new("Point Lights:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
-                                                ui.label(egui::RichText::new(format!("{}", lights_count)).size(11.0).strong());
-                                                ui.end_row();
-                                            });
-                                    });
-                            });
-                        }
+                        self.render_profiler_overlay(ui, viewport_rect);
 
                         // 8. Viewport Floating Overlay: Bottom-Right Toast Notifications (Editor only)
                         let is_playing_hud = self.is_standalone_play || self.play_mode == PlayMode::Play;
@@ -8205,6 +8292,9 @@ impl EngineState {
             &screen_descriptor,
         );
 
+        self.ui_time_ms = frame_ui_start.elapsed().as_secs_f32() * 1000.0;
+        let frame_render_start = Instant::now();
+
         // Update Post-Processing Uniform Buffer
         let pp_uniform = renderer::PostProcessUniform {
             bloom_enabled: if self.post_process_settings.bloom_enabled { 1 } else { 0 },
@@ -8621,6 +8711,7 @@ impl EngineState {
         textures_delta.clear();
 
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
+        self.render_time_ms = frame_render_start.elapsed().as_secs_f32() * 1000.0;
 
         // 3. Handle pending viewport capture if requested by MCP
         if let Some(respond_to) = self.pending_viewport_capture.take() {
@@ -9269,5 +9360,25 @@ mod tests {
         assert_eq!(redone.entities.len(), 1);
         assert_eq!(redone.entities[0].id, "cube1");
         assert_eq!(history.undo_stack.len(), 1);
+    }
+
+    #[test]
+    fn test_profiler_history_and_timings() {
+        let mut history = std::collections::VecDeque::with_capacity(120);
+        for i in 0..150 {
+            history.push_back(16.6 + (i as f32) * 0.1);
+            if history.len() > 120 {
+                history.pop_front();
+            }
+        }
+        assert_eq!(history.len(), 120);
+        let avg_ms = history.iter().sum::<f32>() / history.len() as f32;
+        assert!(avg_ms > 16.0);
+
+        let sim_time = 2.5f32;
+        let render_time = 4.2f32;
+        let ui_time = 1.8f32;
+        let total_cpu = sim_time + render_time + ui_time;
+        assert!((total_cpu - 8.5).abs() < 1e-4);
     }
 }
