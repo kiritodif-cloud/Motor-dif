@@ -83,9 +83,14 @@ pub enum McpCommand {
         ortho_size: Option<f32>,
         respond_to: oneshot::Sender<Result<String, String>>,
     },
+    LoadScene {
+        path: String,
+        respond_to: oneshot::Sender<Result<Value, String>>,
+    },
     SetPlayMode {
-        mode: String,
-        respond_to: oneshot::Sender<Result<String, String>>,
+        playing: Option<bool>,
+        mode: Option<String>,
+        respond_to: oneshot::Sender<Result<Value, String>>,
     },
     StepSimulation {
         dt: f32,
@@ -447,14 +452,25 @@ pub async fn handle_jsonrpc(
                             }
                         },
                         {
-                            "name": "set_play_mode",
-                            "description": "Inicia ('play'), pausa ('pause') o resetea/detiene ('stop') la simulacion",
+                            "name": "load_scene",
+                            "description": "Carga una escena .json desde assets/ en el editor, deteniendo la simulacion previa si estaba activa",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
-                                    "mode": { "type": "string", "enum": ["play", "pause", "stop"], "description": "Modo deseado" }
+                                    "path": { "type": "string", "description": "Ruta de la escena ('assets/<nombre>.json' o '<nombre>.json')" }
                                 },
-                                "required": ["mode"]
+                                "required": ["path"]
+                            }
+                        },
+                        {
+                            "name": "set_play_mode",
+                            "description": "Inicia o detiene la simulacion de juego ('playing': true o false, o 'mode': 'play' | 'stop')",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "playing": { "type": "boolean", "description": "true para iniciar simulacion (Play), false para detener (Stop)" },
+                                    "mode": { "type": "string", "enum": ["play", "pause", "stop"], "description": "Modo deseado alternativo ('play', 'stop', 'pause')" }
+                                }
                             }
                         },
                         {
@@ -973,17 +989,51 @@ pub async fn handle_jsonrpc(
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al configurar camara")),
                     }
                 }
-                "set_play_mode" => {
-                    let mode = match args.get("mode").and_then(|v| v.as_str()) {
-                        Some(m) => m.to_string(),
-                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'mode'")),
+                "load_scene" => {
+                    let raw_path = match args.get("path").and_then(|v| v.as_str()) {
+                        Some(p) => p.to_string(),
+                        None => return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'path'")),
+                    };
+                    let norm = raw_path.trim().replace('\\', "/");
+                    let path = if norm.starts_with("assets/") {
+                        norm
+                    } else {
+                        format!("assets/{}", norm)
                     };
                     let (tx, rx) = oneshot::channel();
-                    if cmd_tx.send(McpCommand::SetPlayMode { mode, respond_to: tx }).await.is_err() {
+                    if cmd_tx.send(McpCommand::LoadScene { path, respond_to: tx }).await.is_err() {
                         return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
                     }
                     match rx.await {
-                        Ok(Ok(msg)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": msg }] }))),
+                        Ok(Ok(val)) => Some(JsonRpcResponse::success(
+                            id,
+                            json!({
+                                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }],
+                                "data": val
+                            }),
+                        )),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al cargar escena")),
+                    }
+                }
+                "set_play_mode" => {
+                    let playing = args.get("playing").and_then(|v| v.as_bool());
+                    let mode = args.get("mode").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    if playing.is_none() && mode.is_none() {
+                        return Some(JsonRpcResponse::error(id, -32602, "Falta el parametro requerido 'playing' (booleano) o 'mode' (string)"));
+                    }
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::SetPlayMode { playing, mode, respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(val)) => Some(JsonRpcResponse::success(
+                            id,
+                            json!({
+                                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }],
+                                "data": val
+                            }),
+                        )),
                         Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al cambiar modo de simulacion")),
                     }

@@ -1690,29 +1690,58 @@ impl EngineState {
                     self.logs.push(msg.clone());
                     let _ = respond_to.send(Ok(msg));
                 }
-                McpCommand::SetPlayMode { mode, respond_to } => {
-                    match mode.to_lowercase().as_str() {
-                        "play" => {
-                            self.start_play_mode();
-                            let msg = "Play mode set to Play".to_string();
-                            let _ = respond_to.send(Ok(msg));
-                        }
-                        "pause" => {
-                            self.play_mode = PlayMode::Pause;
-                            let msg = "Play mode set to Pause".to_string();
-                            self.logs.push(msg.clone());
-                            let _ = respond_to.send(Ok(msg));
-                        }
-                        "stop" => {
-                            self.stop_simulation();
-                            let msg = "Play mode set to Stop (Scene restored)".to_string();
-                            let _ = respond_to.send(Ok(msg));
-                        }
-                        _ => {
-                            let err = format!("Unknown play mode '{}'. Valid modes: 'play', 'pause', 'stop'", mode);
-                            let _ = respond_to.send(Err(err));
+                McpCommand::LoadScene { path, respond_to } => {
+                    if !std::path::Path::new(&path).exists() {
+                        let _ = respond_to.send(Err(format!("Scene file not found: '{}'", path)));
+                    } else {
+                        match self.open_scene(&path) {
+                            Ok(()) => {
+                                let count = self.world.len();
+                                let val = serde_json::json!({
+                                    "success": true,
+                                    "scene": path,
+                                    "entities": count
+                                });
+                                let _ = respond_to.send(Ok(val));
+                            }
+                            Err(e) => {
+                                let _ = respond_to.send(Err(format!("Failed to load scene '{}': {}", path, e)));
+                            }
                         }
                     }
+                }
+                McpCommand::SetPlayMode { playing, mode, respond_to } => {
+                    let result = if let Some(p) = playing {
+                        if p {
+                            self.start_play_mode();
+                        } else {
+                            self.stop_simulation();
+                        }
+                        Ok(serde_json::json!({
+                            "success": true,
+                            "playing": p
+                        }))
+                    } else if let Some(m) = mode.as_deref() {
+                        match m.to_lowercase().as_str() {
+                            "play" => {
+                                self.start_play_mode();
+                                Ok(serde_json::json!({ "success": true, "playing": true }))
+                            }
+                            "pause" => {
+                                self.play_mode = PlayMode::Pause;
+                                Ok(serde_json::json!({ "success": true, "playing": false, "mode": "pause" }))
+                            }
+                            "stop" | "edit" => {
+                                self.stop_simulation();
+                                Ok(serde_json::json!({ "success": true, "playing": false }))
+                            }
+                            _ => Err(format!("Unknown play mode '{}'. Valid modes: 'play', 'pause', 'stop'", m)),
+                        }
+                    } else {
+                        Err("Neither 'playing' nor 'mode' specified".to_string())
+                    };
+
+                    let _ = respond_to.send(result);
                 }
                 McpCommand::StepSimulation { dt, respond_to } => {
                     let step_dt = if dt <= 0.0 { 1.0 / 60.0 } else { dt };

@@ -358,6 +358,12 @@ impl LuaEngineContext {
         if let Ok(mut ft) = self.floating_texts.lock() {
             ft.clear();
         }
+        if let Ok(mut hud) = self.hud_texts.write() {
+            hud.clear();
+        }
+        if let Ok(mut btns) = self.hud_buttons.write() {
+            btns.clear();
+        }
     }
 }
 
