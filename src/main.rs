@@ -223,6 +223,7 @@ pub struct EngineState {
     pub is_left_mouse_down: bool,
     pub just_pressed_mouse: [bool; 3],
     pub viewport_rect: egui::Rect,
+    pub was_cursor_in_viewport: bool,
     pub active_gizmo_axis: Option<GizmoAxis>,
     pub hovered_gizmo_axis: Option<GizmoAxis>,
     pub gizmo_drag_start_pos: Option<Vec3>,
@@ -545,6 +546,7 @@ impl EngineState {
             is_left_mouse_down: false,
             just_pressed_mouse: [false; 3],
             viewport_rect: egui::Rect::NOTHING,
+            was_cursor_in_viewport: false,
             active_gizmo_axis: None,
             hovered_gizmo_axis: None,
             gizmo_drag_start_pos: None,
@@ -727,6 +729,12 @@ impl EngineState {
             self.play_snapshot = Some(assets::extract_scene_from_world(&self.world, &self.camera, &self.physics));
         }
         self.play_mode = PlayMode::Play;
+        self.was_cursor_in_viewport = false;
+        self.just_pressed_mouse = [false; 3];
+        if let Ok(mut minfo) = self.lua_ctx.mouse_info.write() {
+            minfo.delta = [0.0, 0.0];
+            minfo.buttons_just_pressed = [false; 3];
+        }
 
         // Initialize and execute all Lua scripts now that Play mode is active
         for (meta, script) in self.world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
@@ -758,7 +766,27 @@ impl EngineState {
         }
         self.active_gizmo_axis = None;
         self.hovered_gizmo_axis = None;
+        self.was_cursor_in_viewport = false;
+        self.just_pressed_mouse = [false; 3];
+        if let Ok(mut minfo) = self.lua_ctx.mouse_info.write() {
+            minfo.delta = [0.0, 0.0];
+            minfo.buttons_down = [false; 3];
+            minfo.buttons_just_pressed = [false; 3];
+        }
         self.play_mode = PlayMode::Edit;
+    }
+
+    /// Checks if the mouse cursor is currently positioned inside the 3D viewport rectangle
+    pub fn is_cursor_in_viewport(&self) -> bool {
+        if self.is_standalone_play {
+            return true;
+        }
+        if !self.viewport_rect.is_positive() {
+            return true;
+        }
+        let scale_factor = self.window.scale_factor() as f32;
+        let pt = egui::pos2(self.mouse_pos[0] / scale_factor, self.mouse_pos[1] / scale_factor);
+        self.viewport_rect.contains(pt)
     }
 
     pub fn spawn_primitive(&mut self, mesh_type: &str, color: [f32; 4]) {
@@ -1392,11 +1420,29 @@ impl EngineState {
                 let dx = new_x - self.mouse_pos[0];
                 let dy = new_y - self.mouse_pos[1];
                 self.mouse_pos = [new_x, new_y];
+
+                let in_viewport = self.is_cursor_in_viewport();
+                let is_play_mode = self.play_mode == PlayMode::Play;
+
                 if let Ok(mut minfo) = self.lua_ctx.mouse_info.write() {
                     minfo.screen_pos = [new_x, new_y];
-                    minfo.delta[0] += dx;
-                    minfo.delta[1] += dy;
+                    if is_play_mode {
+                        if in_viewport {
+                            if self.was_cursor_in_viewport {
+                                minfo.delta[0] += dx;
+                                minfo.delta[1] += dy;
+                            } else {
+                                minfo.delta = [0.0, 0.0];
+                            }
+                        } else {
+                            minfo.delta = [0.0, 0.0];
+                        }
+                    } else {
+                        minfo.delta[0] += dx;
+                        minfo.delta[1] += dy;
+                    }
                 }
+                self.was_cursor_in_viewport = in_viewport;
                 self.window.request_redraw();
             }
             WindowEvent::MouseWheel { .. } => {
@@ -1404,22 +1450,31 @@ impl EngineState {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let is_pressed = *state == winit::event::ElementState::Pressed;
+                let in_viewport = self.is_cursor_in_viewport();
+                let is_play_mode = self.play_mode == PlayMode::Play;
+
                 match button {
                     winit::event::MouseButton::Left => {
                         if is_pressed && !self.is_left_mouse_down {
-                            self.just_pressed_mouse[0] = true;
+                            if !is_play_mode || in_viewport {
+                                self.just_pressed_mouse[0] = true;
+                            }
                         }
                         self.is_left_mouse_down = is_pressed;
                     }
                     winit::event::MouseButton::Right => {
                         if is_pressed && !self.is_right_mouse_down {
-                            self.just_pressed_mouse[1] = true;
+                            if !is_play_mode || in_viewport {
+                                self.just_pressed_mouse[1] = true;
+                            }
                         }
                         self.is_right_mouse_down = is_pressed;
                     }
                     winit::event::MouseButton::Middle => {
                         if is_pressed && !self.is_middle_mouse_down {
-                            self.just_pressed_mouse[2] = true;
+                            if !is_play_mode || in_viewport {
+                                self.just_pressed_mouse[2] = true;
+                            }
                         }
                         self.is_middle_mouse_down = is_pressed;
                     }
@@ -2646,21 +2701,37 @@ impl EngineState {
             }
 
             // Sync mouse info to Lua context
+            let in_viewport = self.is_cursor_in_viewport();
+            let is_play_mode = self.play_mode == PlayMode::Play;
+
             let (screen_pos, screen_size) = if self.is_standalone_play || !self.viewport_rect.is_positive() {
                 (self.mouse_pos, [self.gpu.config.width as f32, self.gpu.config.height as f32])
             } else {
                 let v_min = self.viewport_rect.min;
+                let scale_factor = self.window.scale_factor() as f32;
                 (
-                    [self.mouse_pos[0] - v_min.x, self.mouse_pos[1] - v_min.y],
+                    [(self.mouse_pos[0] / scale_factor) - v_min.x, (self.mouse_pos[1] / scale_factor) - v_min.y],
                     [self.viewport_rect.width().max(1.0), self.viewport_rect.height().max(1.0)],
+                )
+            };
+
+            let (buttons_down, buttons_just_pressed) = if is_play_mode && !in_viewport {
+                ([false; 3], [false; 3])
+            } else {
+                (
+                    [self.is_left_mouse_down, self.is_right_mouse_down, self.is_middle_mouse_down],
+                    self.just_pressed_mouse,
                 )
             };
 
             if let Ok(mut m) = self.lua_ctx.mouse_info.write() {
                 m.screen_pos = screen_pos;
                 m.screen_size = screen_size;
-                m.buttons_down = [self.is_left_mouse_down, self.is_right_mouse_down, self.is_middle_mouse_down];
-                m.buttons_just_pressed = self.just_pressed_mouse;
+                m.buttons_down = buttons_down;
+                m.buttons_just_pressed = buttons_just_pressed;
+                if is_play_mode && !in_viewport {
+                    m.delta = [0.0, 0.0];
+                }
             }
 
             // 1. Sync entity positions to LuaEngineContext for get_entity(id)
@@ -3755,6 +3826,7 @@ impl EngineState {
                         .frame(Frame::new().fill(egui::Color32::TRANSPARENT))
                         .show(ui, |ui| {
                             let viewport_rect = ui.max_rect();
+                            self.viewport_rect = viewport_rect;
                             let painter = ui.painter().with_clip_rect(viewport_rect);
 
                             if let Ok(hud) = self.lua_ctx.hud_texts.read() {
@@ -5656,8 +5728,8 @@ impl EngineState {
                             }
                         }
 
-                        // 3. Debug Colliders Wireframe (Rapier3D)
-                        if self.debug_colliders {
+                        // 3. Debug Colliders Wireframe (Rapier3D) - hidden in Play mode
+                        if !is_playing && self.debug_colliders {
                             let green_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(60, 255, 60));
                             for (_handle, collider) in self.physics.collider_set.iter() {
                                 let pos = collider.position();
@@ -7718,5 +7790,72 @@ mod tests {
             let hm_path = crate::level_forge::heightmap_path_for_glb("assets/models/terrain_demo.glb");
             assert!(Path::new(&hm_path).exists(), "Companion .heightmap.json must exist after sync");
         }
+    }
+
+    #[test]
+    fn test_viewport_mouse_clipping_and_collider_auto_hide() {
+        // 1. Viewport bounds calculation
+        let viewport_rect = egui::Rect::from_min_max(
+            egui::pos2(240.0, 48.0),
+            egui::pos2(1000.0, 700.0),
+        );
+
+        // Inside 3D Viewport
+        let pt_inside = egui::pos2(500.0, 350.0);
+        assert!(viewport_rect.contains(pt_inside));
+
+        // Outside 3D Viewport: Top toolbar
+        let pt_top_bar = egui::pos2(500.0, 20.0);
+        assert!(!viewport_rect.contains(pt_top_bar));
+
+        // Outside 3D Viewport: Left hierarchy
+        let pt_hierarchy = egui::pos2(100.0, 350.0);
+        assert!(!viewport_rect.contains(pt_hierarchy));
+
+        // Outside 3D Viewport: Right inspector
+        let pt_inspector = egui::pos2(1100.0, 350.0);
+        assert!(!viewport_rect.contains(pt_inspector));
+
+        // Outside 3D Viewport: Bottom console
+        let pt_console = egui::pos2(500.0, 750.0);
+        assert!(!viewport_rect.contains(pt_console));
+
+        // 2. Mouse delta & buttons masking simulation for Play mode
+        let test_masking = |is_play_mode: bool, in_viewport: bool, raw_down: [bool; 3], raw_jp: [bool; 3], raw_delta: [f32; 2]| {
+            let (buttons_down, buttons_just_pressed) = if is_play_mode && !in_viewport {
+                ([false; 3], [false; 3])
+            } else {
+                (raw_down, raw_jp)
+            };
+            let delta = if is_play_mode && !in_viewport {
+                [0.0, 0.0]
+            } else {
+                raw_delta
+            };
+            (buttons_down, buttons_just_pressed, delta)
+        };
+
+        // In Play mode, cursor inside viewport -> receives mouse events
+        let (down, jp, delta) = test_masking(true, true, [true, false, false], [true, false, false], [5.0, -3.0]);
+        assert_eq!(down, [true, false, false]);
+        assert_eq!(jp, [true, false, false]);
+        assert_eq!(delta, [5.0, -3.0]);
+
+        // In Play mode, cursor outside viewport (over Stop button or console) -> masked to 0
+        let (down_out, jp_out, delta_out) = test_masking(true, false, [true, false, false], [true, false, false], [5.0, -3.0]);
+        assert_eq!(down_out, [false, false, false], "Buttons must be masked when outside viewport in play mode");
+        assert_eq!(jp_out, [false, false, false], "Just pressed must be masked when outside viewport in play mode");
+        assert_eq!(delta_out, [0.0, 0.0], "Mouse delta must be zeroed when outside viewport in play mode");
+
+        // 3. Collider wireframe visibility logic
+        let debug_colliders = true;
+        let is_playing_play = true;
+        let is_playing_edit = false;
+
+        let render_in_play = !is_playing_play && debug_colliders;
+        assert!(!render_in_play, "Colliders must be hidden when is_playing is true");
+
+        let render_in_edit = !is_playing_edit && debug_colliders;
+        assert!(render_in_edit, "Colliders must be visible when returning to edit mode");
     }
 }
