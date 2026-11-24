@@ -143,6 +143,7 @@ pub struct LuaEngineContext {
     pub pending_vfx_commands: Arc<Mutex<Vec<VfxCommand>>>,
     pub pointer_locked: Arc<std::sync::atomic::AtomicBool>,
     pub pointer_lock_command: Arc<std::sync::atomic::AtomicI8>,
+    pub active_voxel_world: Arc<RwLock<Option<crate::voxel_forge::VoxelWorld>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -343,6 +344,7 @@ impl LuaEngineContext {
             pending_vfx_commands: Arc::new(Mutex::new(Vec::new())),
             pointer_locked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pointer_lock_command: Arc::new(std::sync::atomic::AtomicI8::new(0)),
+            active_voxel_world: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -2129,6 +2131,81 @@ impl ScriptComponent {
             })
             .map_err(|e| format!("Failed to register is_pointer_locked: {}", e))?;
         lua.globals().set("is_pointer_locked", is_pointer_locked).map_err(|e| e.to_string())?;
+
+        // 70. voxel_get_block(x: integer, y: integer, z: integer) -> integer
+        let voxel_world_ref = ctx.active_voxel_world.clone();
+        let voxel_get_block = lua
+            .create_function(move |_, (x, y, z): (i32, i32, i32)| {
+                if let Ok(lock) = voxel_world_ref.read() {
+                    if let Some(world) = lock.as_ref() {
+                        return Ok(world.get_block(x, y, z) as u8);
+                    }
+                }
+                Ok(0u8)
+            })
+            .map_err(|e| format!("Failed to register voxel_get_block: {}", e))?;
+        lua.globals().set("voxel_get_block", voxel_get_block).map_err(|e| e.to_string())?;
+
+        // 71. voxel_set_block(x: integer, y: integer, z: integer, id: integer)
+        let voxel_world_ref2 = ctx.active_voxel_world.clone();
+        let voxel_set_block = lua
+            .create_function(move |_, (x, y, z, id): (i32, i32, i32, u8)| {
+                if let Ok(mut lock) = voxel_world_ref2.write() {
+                    if let Some(world) = lock.as_mut() {
+                        world.set_block(x, y, z, crate::voxel_forge::BlockId::from_u8(id));
+                    }
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register voxel_set_block: {}", e))?;
+        lua.globals().set("voxel_set_block", voxel_set_block).map_err(|e| e.to_string())?;
+
+        // 72. voxel_raycast(ox, oy, oz, dx, dy, dz, max_dist) -> table
+        let voxel_world_ref3 = ctx.active_voxel_world.clone();
+        let voxel_raycast_fn = lua
+            .create_function(move |lua, (ox, oy, oz, dx, dy, dz, max_dist): (f32, f32, f32, f32, f32, f32, f32)| {
+                let hit_opt = if let Ok(lock) = voxel_world_ref3.read() {
+                    if let Some(world) = lock.as_ref() {
+                        crate::voxel_forge::voxel_raycast(world, ox, oy, oz, dx, dy, dz, max_dist)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let tbl = lua.create_table()?;
+                if let Some(hit) = hit_opt {
+                    tbl.set("hit", true)?;
+                    tbl.set("x", hit.block_pos[0])?;
+                    tbl.set("y", hit.block_pos[1])?;
+                    tbl.set("z", hit.block_pos[2])?;
+                    tbl.set("nx", hit.normal[0])?;
+                    tbl.set("ny", hit.normal[1])?;
+                    tbl.set("nz", hit.normal[2])?;
+                    tbl.set("id", hit.block_id)?;
+                    tbl.set("dist", hit.distance)?;
+                } else {
+                    tbl.set("hit", false)?;
+                }
+                Ok(tbl)
+            })
+            .map_err(|e| format!("Failed to register voxel_raycast: {}", e))?;
+        lua.globals().set("voxel_raycast", voxel_raycast_fn).map_err(|e| e.to_string())?;
+
+        // 73. voxel_is_solid(x: integer, y: integer, z: integer) -> bool
+        let voxel_world_ref4 = ctx.active_voxel_world.clone();
+        let voxel_is_solid = lua
+            .create_function(move |_, (x, y, z): (i32, i32, i32)| {
+                if let Ok(lock) = voxel_world_ref4.read() {
+                    if let Some(world) = lock.as_ref() {
+                        return Ok(world.is_solid(x, y, z));
+                    }
+                }
+                Ok(false)
+            })
+            .map_err(|e| format!("Failed to register voxel_is_solid: {}", e))?;
+        lua.globals().set("voxel_is_solid", voxel_is_solid).map_err(|e| e.to_string())?;
 
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)

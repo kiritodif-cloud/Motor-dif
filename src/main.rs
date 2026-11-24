@@ -24,6 +24,7 @@ pub mod texture_forge;
 pub mod tweens;
 pub mod ui_theme;
 pub mod vfx_forge;
+pub mod voxel_forge;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -412,6 +413,7 @@ impl EngineState {
                 let ctx_opt = if is_standalone_play { Some(&lua_ctx) } else { None };
                 assets::apply_scene_to_world(&scene, &mut world, &mut camera, &mut physics, ctx_opt);
                 crate::level_forge::sync_active_terrain_from_scene(&scene, &lua_ctx.active_terrain);
+                crate::voxel_forge::sync_active_voxel_world_from_scene(&scene, &lua_ctx.active_voxel_world);
                 logs.push(format!("Scene loaded from '{}' ({} entities)", initial_scene_path, world.len()));
             }
             Err(e) => {
@@ -637,6 +639,7 @@ impl EngineState {
             Ok(scene) => {
                 assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, ctx_opt);
                 crate::level_forge::sync_active_terrain_from_scene(&scene, &self.lua_ctx.active_terrain);
+                crate::voxel_forge::sync_active_voxel_world_from_scene(&scene, &self.lua_ctx.active_voxel_world);
                 if let Some(pp) = &scene.post_process {
                     self.post_process_settings = pp.clone();
                     if let Ok(mut lock) = self.lua_ctx.post_process_settings.write() {
@@ -699,6 +702,7 @@ impl EngineState {
         };
         assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, ctx_opt);
         crate::level_forge::sync_active_terrain_from_scene(&scene, &self.lua_ctx.active_terrain);
+        crate::voxel_forge::sync_active_voxel_world_from_scene(&scene, &self.lua_ctx.active_voxel_world);
 
         // 5. Apply post-process and environment settings
         if let Some(pp) = &scene.post_process {
@@ -757,6 +761,7 @@ impl EngineState {
         if let Some(snapshot) = self.play_snapshot.take() {
             assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, None);
             crate::level_forge::sync_active_terrain_from_scene(&snapshot, &self.lua_ctx.active_terrain);
+            crate::voxel_forge::sync_active_voxel_world_from_scene(&snapshot, &self.lua_ctx.active_voxel_world);
             self.logs.push("Simulation stopped. Scene restored to initial snapshot.".to_string());
             self.add_toast("Simulation stopped & restored", egui::Color32::from_rgb(239, 68, 68));
         }
@@ -2604,6 +2609,124 @@ impl EngineState {
                         })));
                     }
                 }
+                McpCommand::ForgeCreateVoxelWorld {
+                    width_chunks,
+                    depth_chunks,
+                    seed,
+                    terrain_type,
+                    name,
+                    respond_to,
+                } => {
+                    self.push_history();
+                    let clean_name = if name.trim().is_empty() { "voxel_world" } else { name.trim() };
+                    let atlas_path = "assets/textures/voxel_atlas.png";
+                    let _ = crate::voxel_forge::ensure_voxel_atlas(atlas_path);
+                    self.gpu.get_or_load_texture(atlas_path);
+
+                    let world = crate::voxel_forge::generate_voxel_world(width_chunks, depth_chunks, seed, &terrain_type);
+                    let total_blocks = world.total_blocks();
+
+                    // Save .voxels.json
+                    let json_path = format!("assets/models/{}.voxels.json", clean_name);
+                    let _ = world.save_to_json(&json_path);
+
+                    // Build meshes (opaque + water translucent)
+                    let (opaque_mesh, water_mesh) = crate::voxel_forge::mesh_voxel_world(&world);
+                    let opaque_glb_path = format!("assets/models/{}.glb", clean_name);
+                    let water_glb_path = format!("assets/models/{}_water.glb", clean_name);
+
+                    let mut total_verts = 0;
+                    let mut total_tris = 0;
+
+                    if !opaque_mesh.positions.is_empty() {
+                        let _ = crate::glb_exporter::export_glb_to_file(&opaque_mesh, clean_name, &opaque_glb_path);
+                        self.gpu.ensure_mesh(&opaque_glb_path);
+                        total_verts += opaque_mesh.positions.len();
+                        total_tris += opaque_mesh.indices.len() / 3;
+
+                        // Insert opaque world entity
+                        let ent_id = format!("{}_opaque", clean_name);
+                        let mut meta = None;
+                        for r in self.world.iter() {
+                            if let Some(m) = r.get::<&EntityMeta>() {
+                                if m.id == ent_id {
+                                    meta = Some(r.entity());
+                                    break;
+                                }
+                            }
+                        }
+                        let entity = meta.unwrap_or_else(|| self.world.reserve_entity());
+                        let _ = self.world.insert(entity, (
+                            EntityMeta { id: ent_id.clone(), name: ent_id.clone(), parent: None },
+                            Transform::from_xyz(0.0, 0.0, 0.0),
+                            MeshRender {
+                                mesh_type: opaque_glb_path.clone(),
+                                color: [1.0, 1.0, 1.0, 1.0],
+                                texture: Some(atlas_path.to_string()),
+                                emissive: 0.0,
+                                fresnel_color: None,
+                                fresnel_power: None,
+                                blend_mode: Some("opaque".to_string()),
+                                wireframe: None,
+                                uv_scroll: None,
+                            },
+                        ));
+                    }
+
+                    if !water_mesh.positions.is_empty() {
+                        let _ = crate::glb_exporter::export_glb_to_file(&water_mesh, &format!("{}_water", clean_name), &water_glb_path);
+                        self.gpu.ensure_mesh(&water_glb_path);
+                        total_verts += water_mesh.positions.len();
+                        total_tris += water_mesh.indices.len() / 3;
+
+                        // Insert translucent water entity
+                        let water_id = format!("{}_water", clean_name);
+                        let mut meta = None;
+                        for r in self.world.iter() {
+                            if let Some(m) = r.get::<&EntityMeta>() {
+                                if m.id == water_id {
+                                    meta = Some(r.entity());
+                                    break;
+                                }
+                            }
+                        }
+                        let entity = meta.unwrap_or_else(|| self.world.reserve_entity());
+                        let _ = self.world.insert(entity, (
+                            EntityMeta { id: water_id.clone(), name: water_id.clone(), parent: None },
+                            Transform::from_xyz(0.0, 0.0, 0.0),
+                            MeshRender {
+                                mesh_type: water_glb_path.clone(),
+                                color: [1.0, 1.0, 1.0, 1.0],
+                                texture: Some(atlas_path.to_string()),
+                                emissive: 0.0,
+                                fresnel_color: None,
+                                fresnel_power: None,
+                                blend_mode: Some("translucent".to_string()),
+                                wireframe: None,
+                                uv_scroll: None,
+                            },
+                        ));
+                    }
+
+                    // Update lua active_voxel_world
+                    if let Ok(mut lock) = self.lua_ctx.active_voxel_world.write() {
+                        *lock = Some(world);
+                    }
+
+                    self.logs.push(format!("Voxel world '{}' created: {} chunks, {} blocks, {} tris", clean_name, width_chunks * depth_chunks, total_blocks, total_tris));
+                    self.add_toast(format!("Voxel World '{}' baked!", clean_name), egui::Color32::from_rgb(34, 197, 94));
+
+                    let _ = respond_to.send(Ok(serde_json::json!({
+                        "success": true,
+                        "name": clean_name,
+                        "chunks": width_chunks * depth_chunks,
+                        "total_blocks": total_blocks,
+                        "vertices": total_verts,
+                        "triangles": total_tris,
+                        "voxels_path": json_path,
+                        "mesh_path": opaque_glb_path,
+                    })));
+                }
             }
         }
     }
@@ -3295,6 +3418,7 @@ impl EngineState {
                     self.selected_entity = None;
                     assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
                     crate::level_forge::sync_active_terrain_from_scene(&scene, &self.lua_ctx.active_terrain);
+                    crate::voxel_forge::sync_active_voxel_world_from_scene(&scene, &self.lua_ctx.active_voxel_world);
                     let msg = format!("Scene transitioned to '{}'", scene_file);
                     self.logs.push(msg);
                 }
@@ -7064,6 +7188,7 @@ impl EngineState {
                     };
                     assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, ctx_opt);
                     crate::level_forge::sync_active_terrain_from_scene(&scene, &self.lua_ctx.active_terrain);
+                    crate::voxel_forge::sync_active_voxel_world_from_scene(&scene, &self.lua_ctx.active_voxel_world);
                     if let Some(env) = &scene.environment {
                         self.environment_settings = env.clone();
                     }

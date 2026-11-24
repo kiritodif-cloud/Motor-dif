@@ -176,6 +176,14 @@ pub enum McpCommand {
         attach_to_entity: Option<String>,
         respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
     },
+    ForgeCreateVoxelWorld {
+        width_chunks: usize,
+        depth_chunks: usize,
+        seed: u64,
+        terrain_type: String,
+        name: String,
+        respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -718,6 +726,20 @@ pub async fn handle_jsonrpc(
                                     "recipe": { "type": "object", "description": "Receta VFX procedural personalizada (VfxRecipe)" },
                                     "position": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Posicion [x, y, z] de disparo en el mundo" },
                                     "attach_to_entity": { "type": "string", "description": "ID de la entidad a la que adjuntar el emisor persistente" }
+                                }
+                            }
+                        },
+                        {
+                            "name": "forge_create_voxel_world",
+                            "description": "Genera un mundo voxel procedural con chunks de 16x32x16, hidden-face culling, ambient occlusion de esquinas, biomas y atlas pixel-art, y lo persiste en .voxels.json y mallas .glb",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "width_chunks": { "type": "number", "description": "Ancho en chunks (16 bloques cada uno). Por defecto 2" },
+                                    "depth_chunks": { "type": "number", "description": "Profundidad en chunks (16 bloques cada uno). Por defecto 2" },
+                                    "seed": { "type": "number", "description": "Semilla para generacion procedural" },
+                                    "terrain_type": { "type": "string", "description": "Tipo de terreno (ej. 'hills', 'plains', 'mountains')" },
+                                    "name": { "type": "string", "description": "Nombre de guardado del mundo (por defecto 'voxel_world')" }
                                 }
                             }
                         }
@@ -1433,6 +1455,30 @@ pub async fn handle_jsonrpc(
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al disparar VFX")),
                     }
                 }
+                "forge_create_voxel_world" => {
+                    let width_chunks = args.get("width_chunks").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
+                    let depth_chunks = args.get("depth_chunks").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
+                    let seed = args.get("seed").and_then(|v| v.as_u64()).unwrap_or(42);
+                    let terrain_type = args.get("terrain_type").and_then(|v| v.as_str()).unwrap_or("hills").to_string();
+                    let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("voxel_world").to_string();
+
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::ForgeCreateVoxelWorld {
+                        width_chunks,
+                        depth_chunks,
+                        seed,
+                        terrain_type,
+                        name,
+                        respond_to: tx,
+                    }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(val)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }], "data": val }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al generar mundo voxel")),
+                    }
+                }
                 _ => Some(JsonRpcResponse::error(id, -32601, format!("Herramienta desconocida: {}", tool_name))),
             }
         }
@@ -1669,6 +1715,7 @@ mod tests {
         assert!(resp_str.contains("forge_scatter_props"));
         assert!(resp_str.contains("forge_create_rigged_character"));
         assert!(resp_str.contains("forge_spawn_vfx"));
+        assert!(resp_str.contains("forge_create_voxel_world"));
         assert!(resp_str.contains("get_engine_docs"));
         assert!(resp_str.contains("load_scene"));
         assert!(resp_str.contains("set_play_mode"));
