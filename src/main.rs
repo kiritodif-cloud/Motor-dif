@@ -190,6 +190,8 @@ pub struct EngineState {
     pub play_snapshot: Option<SceneDef>,
     pub gizmo_mode: GizmoMode,
     pub snap_enabled: bool,
+    pub snap_unit: f32,
+    pub snap_rot_deg: f32,
     pub debug_colliders: bool,
     pub selected_entity: Option<hecs::Entity>,
     pub hierarchy_search: String,
@@ -363,6 +365,7 @@ impl EngineState {
         is_standalone_play: bool,
         initial_scene_path: String,
         enable_mcp: bool,
+        mcp_token: Option<String>,
     ) -> Self {
         let size = window.inner_size();
         let aspect = size.width as f32 / size.height.max(1) as f32;
@@ -463,7 +466,7 @@ impl EngineState {
 
         let (mcp_handle, mcp_server_addr, cmd_rx) = if enable_mcp || !is_standalone_play {
             let (tx, rx) = mpsc::channel(64);
-            let handle = mcp_server::start_mcp_server(tx, 3030);
+            let handle = mcp_server::start_mcp_server(tx, 3030, mcp_token);
             let addr = handle.bound_addr.to_string();
             logs.push(format!("MCP Server: running at http://{}/mcp and stdio", addr));
             (Some(handle), addr, rx)
@@ -543,6 +546,8 @@ impl EngineState {
             play_snapshot: None,
             gizmo_mode: GizmoMode::Translate,
             snap_enabled: false,
+            snap_unit: 0.5,
+            snap_rot_deg: 15.0,
             debug_colliders: true,
             selected_entity: initial_selected,
             hierarchy_search: String::new(),
@@ -709,6 +714,49 @@ impl EngineState {
                 self.add_toast(format!("Hot-reload error: {}", err), egui::Color32::from_rgb(239, 68, 68));
             }
         }
+    }
+
+    pub fn sync_prefab_instances(&mut self, prefab_path: &str) -> usize {
+        let Ok(prefab_def) = assets::load_prefab_def_from_file(prefab_path) else {
+            return 0;
+        };
+        let mut count = 0;
+        let norm_target = prefab_path.replace('\\', "/").to_lowercase();
+
+        let matching: Vec<hecs::Entity> = self.world.iter()
+            .filter_map(|er| {
+                let is_match = er.get::<&ecs::PrefabInstance>().map_or(false, |p| {
+                    let norm_s = p.source.replace('\\', "/").to_lowercase();
+                    norm_s == norm_target || norm_s.ends_with(&norm_target) || norm_target.ends_with(&norm_s)
+                });
+                if is_match { Some(er.entity()) } else { None }
+            })
+            .collect();
+
+        for entity in matching {
+            if let Ok(mut mesh) = self.world.get::<&mut MeshRender>(entity) {
+                mesh.mesh_type = prefab_def.root.mesh.clone();
+                mesh.color = prefab_def.root.color;
+                mesh.texture = prefab_def.root.texture.clone();
+                mesh.emissive = prefab_def.root.emissive;
+                mesh.fresnel_color = prefab_def.root.fresnel_color;
+                mesh.fresnel_power = prefab_def.root.fresnel_power;
+                mesh.blend_mode = prefab_def.root.blend_mode.clone();
+                mesh.wireframe = prefab_def.root.wireframe;
+                mesh.uv_scroll = prefab_def.root.uv_scroll;
+                count += 1;
+            }
+            if let Some(script_path) = &prefab_def.root.script {
+                let mut s = ScriptComponent::new(script_path.clone());
+                let _ = s.init_or_reload(self.lua_ctx.clone());
+                let _ = self.world.insert_one(entity, s);
+            }
+        }
+        if count > 0 {
+            self.logs.push(format!("Synced {} instances of prefab '{}'", count, prefab_path));
+            self.add_toast(format!("Synced {} prefab instances", count), egui::Color32::from_rgb(56, 189, 248));
+        }
+        count
     }
 
     pub fn open_scene(&mut self, path: &str) -> Result<(), String> {
@@ -1433,11 +1481,12 @@ impl EngineState {
                     let (_ctrl, do_s, do_z, do_y, do_d, do_del, do_w, do_e, do_r, do_f) = {
                         let set = self.pressed_keys.read().unwrap();
                         let ctrl_down = set.contains("CONTROL") || set.contains("CONTROLRIGHT") || set.contains("CONTROLLEFT");
+                        let shift_down = set.contains("SHIFT") || set.contains("SHIFTRIGHT") || set.contains("SHIFTLEFT");
                         (
                             ctrl_down,
                             ctrl_down && set.contains("S"),
-                            ctrl_down && set.contains("Z"),
-                            ctrl_down && set.contains("Y"),
+                            ctrl_down && !shift_down && set.contains("Z"),
+                            (ctrl_down && set.contains("Y")) || (ctrl_down && shift_down && set.contains("Z")),
                             ctrl_down && set.contains("D"),
                             !ctrl_down && set.contains("DELETE"),
                             !ctrl_down && set.contains("W"),
@@ -2263,57 +2312,67 @@ impl EngineState {
                     let _ = respond_to.send(Ok(msg));
                 }
                 McpCommand::SpawnPrefab { name, position, respond_to } => {
-                    let file_path = if name.ends_with(".json") {
+                    self.push_history();
+                    let file_path = if name.ends_with(".prefab.json") || name.ends_with(".json") {
                         if name.starts_with("assets/prefabs/") {
                             name.clone()
                         } else {
                             format!("assets/prefabs/{}", name)
                         }
                     } else {
-                        format!("assets/prefabs/{}.json", name)
+                        let p_prefab = format!("assets/prefabs/{}.prefab.json", name);
+                        if std::path::Path::new(&p_prefab).exists() {
+                            p_prefab
+                        } else {
+                            format!("assets/prefabs/{}.json", name)
+                        }
                     };
 
-                    match assets::load_prefab_from_file(&file_path) {
-                        Ok(mut def) => {
+                    match assets::load_prefab_def_from_file(&file_path) {
+                        Ok(prefab) => {
                             self.entity_counter += 1;
-                            def.id = format!("{}_{}", def.id, self.entity_counter);
-                            def.position = position;
+                            let mut root = prefab.root;
+                            let old_root_id = root.id.clone();
+                            let new_root_id = format!("{}_{}", old_root_id, self.entity_counter);
+                            root.id = new_root_id.clone();
+                            root.position = position;
 
                             let meta = EntityMeta {
-                                id: def.id.clone(),
-                                name: def.id.clone(),
-                                parent: def.parent.clone(),
+                                id: root.id.clone(),
+                                name: root.id.clone(),
+                                parent: root.parent.clone(),
                             };
                             let transform = Transform::new(
-                                Vec3::from(def.position),
-                                Vec3::from(def.rotation),
-                                Vec3::from(def.scale),
+                                Vec3::from(root.position),
+                                Vec3::from(root.rotation),
+                                Vec3::from(root.scale),
                             );
                             let mesh = MeshRender {
-                                mesh_type: def.mesh.clone(),
-                                color: def.color,
-                                texture: def.texture.clone(),
-                                emissive: def.emissive,
-                                fresnel_color: def.fresnel_color,
-                                fresnel_power: def.fresnel_power,
-                                blend_mode: def.blend_mode.clone(),
-                                wireframe: def.wireframe,
-                                uv_scroll: def.uv_scroll,
+                                mesh_type: root.mesh.clone(),
+                                color: root.color,
+                                texture: root.texture.clone(),
+                                emissive: root.emissive,
+                                fresnel_color: root.fresnel_color,
+                                fresnel_power: root.fresnel_power,
+                                blend_mode: root.blend_mode.clone(),
+                                wireframe: root.wireframe,
+                                uv_scroll: root.uv_scroll,
                             };
                             let e = self.world.spawn((meta, transform, mesh));
+                            let _ = self.world.insert_one(e, ecs::PrefabInstance { source: file_path.clone() });
 
-                            if let Some(phys) = &def.physics {
+                            if let Some(phys) = &root.physics {
                                 let handle = self.physics.add_body(&transform, phys);
                                 let _ = self.world.insert_one(e, RigidBodyComponent { handle });
                             }
 
-                            if let Some(script_path) = &def.script {
+                            if let Some(script_path) = &root.script {
                                 let mut s = ScriptComponent::new(script_path.clone());
                                 let _ = s.init_or_reload(self.lua_ctx.clone());
                                 let _ = self.world.insert_one(e, s);
                             }
 
-                            if let Some(pl) = &def.point_light {
+                            if let Some(pl) = &root.point_light {
                                 let _ = self.world.insert_one(e, ecs::PointLight {
                                     color: pl.color,
                                     intensity: pl.intensity,
@@ -2321,8 +2380,49 @@ impl EngineState {
                                 });
                             }
 
+                            // Spawn children if any
+                            for mut child in prefab.children {
+                                self.entity_counter += 1;
+                                child.id = format!("{}_{}", child.id, self.entity_counter);
+                                if child.parent.as_deref() == Some(&old_root_id) {
+                                    child.parent = Some(new_root_id.clone());
+                                }
+                                let c_meta = EntityMeta {
+                                    id: child.id.clone(),
+                                    name: child.id.clone(),
+                                    parent: child.parent.clone(),
+                                };
+                                let c_trans = Transform::new(
+                                    Vec3::from(child.position),
+                                    Vec3::from(child.rotation),
+                                    Vec3::from(child.scale),
+                                );
+                                let c_mesh = MeshRender {
+                                    mesh_type: child.mesh.clone(),
+                                    color: child.color,
+                                    texture: child.texture.clone(),
+                                    emissive: child.emissive,
+                                    fresnel_color: child.fresnel_color,
+                                    fresnel_power: child.fresnel_power,
+                                    blend_mode: child.blend_mode.clone(),
+                                    wireframe: child.wireframe,
+                                    uv_scroll: child.uv_scroll,
+                                };
+                                let c_e = self.world.spawn((c_meta, c_trans, c_mesh));
+                                let _ = self.world.insert_one(c_e, ecs::PrefabInstance { source: file_path.clone() });
+                                if let Some(phys) = &child.physics {
+                                    let handle = self.physics.add_body(&c_trans, phys);
+                                    let _ = self.world.insert_one(c_e, RigidBodyComponent { handle });
+                                }
+                                if let Some(script_path) = &child.script {
+                                    let mut s = ScriptComponent::new(script_path.clone());
+                                    let _ = s.init_or_reload(self.lua_ctx.clone());
+                                    let _ = self.world.insert_one(c_e, s);
+                                }
+                            }
+
                             self.selected_entity = Some(e);
-                            let msg = format!("Spawned prefab '{}' as entity '{}' at {:?}", name, def.id, position);
+                            let msg = format!("Spawned prefab '{}' as entity '{}' at {:?}", name, root.id, position);
                             self.logs.push(msg.clone());
                             let _ = respond_to.send(Ok(msg));
                         }
@@ -2331,6 +2431,38 @@ impl EngineState {
                             self.logs.push(err_msg.clone());
                             let _ = respond_to.send(Err(err_msg));
                         }
+                    }
+                }
+                McpCommand::SavePrefab { entity_id, name, respond_to } => {
+                    let mut found = None;
+                    for er in self.world.iter() {
+                        if let Some(meta) = er.get::<&EntityMeta>() {
+                            if meta.id == entity_id {
+                                found = Some(er.entity());
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(e) = found {
+                        if let Some(prefab_def) = assets::extract_prefab_hierarchy(&self.world, &self.physics, e) {
+                            let clean_name = name.trim().strip_suffix(".prefab.json").unwrap_or(name.trim()).strip_suffix(".json").unwrap_or(name.trim());
+                            let file_path = format!("assets/prefabs/{}.prefab.json", clean_name);
+                            match assets::save_prefab_to_file(&file_path, &prefab_def) {
+                                Ok(_) => {
+                                    let msg = format!("Prefab '{}' saved successfully with {} children to '{}'", clean_name, prefab_def.children.len(), file_path);
+                                    self.logs.push(msg.clone());
+                                    self.add_toast(&msg, egui::Color32::from_rgb(34, 197, 94));
+                                    let _ = respond_to.send(Ok(msg));
+                                }
+                                Err(err) => {
+                                    let _ = respond_to.send(Err(format!("Error writing prefab: {}", err)));
+                                }
+                            }
+                        } else {
+                            let _ = respond_to.send(Err(format!("Failed to extract entity '{}'", entity_id)));
+                        }
+                    } else {
+                        let _ = respond_to.send(Err(format!("Entity '{}' not found", entity_id)));
                     }
                 }
                 McpCommand::SelectEntity { id, respond_to } => {
@@ -3147,6 +3279,10 @@ impl EngineState {
                     if !reloaded {
                         self.logs.push(format!("Script modified: {}", path.display()));
                     }
+                }
+                HotReloadEvent::PrefabChanged(path) => {
+                    let p_str = path.to_string_lossy().replace('\\', "/");
+                    self.sync_prefab_instances(&p_str);
                 }
                 HotReloadEvent::Other(_) => {}
             }
@@ -4566,7 +4702,26 @@ impl EngineState {
                         ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Scale, "[R] Scale");
 
                         ui.separator();
-                        ui.checkbox(&mut self.snap_enabled, "Snap (Ctrl)");
+                        ui.checkbox(&mut self.snap_enabled, "🧲 Snap");
+                        if self.snap_enabled {
+                            egui::ComboBox::from_id_salt("topbar_snap_unit")
+                                .width(65.0)
+                                .selected_text(format!("{}m", self.snap_unit))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.snap_unit, 0.25, "0.25m");
+                                    ui.selectable_value(&mut self.snap_unit, 0.5, "0.5m");
+                                    ui.selectable_value(&mut self.snap_unit, 1.0, "1.0m");
+                                    ui.selectable_value(&mut self.snap_unit, 2.0, "2.0m");
+                                });
+                            egui::ComboBox::from_id_salt("topbar_snap_rot")
+                                .width(55.0)
+                                .selected_text(format!("{}°", self.snap_rot_deg as i32))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.snap_rot_deg, 15.0, "15°");
+                                    ui.selectable_value(&mut self.snap_rot_deg, 45.0, "45°");
+                                    ui.selectable_value(&mut self.snap_rot_deg, 90.0, "90°");
+                                });
+                        }
 
                         ui.separator();
                         ui.label("Workspace:");
@@ -5065,31 +5220,68 @@ impl EngineState {
                                             }
                                         }
 
-                                        if let Ok(mut meta) = self.world.get::<&mut EntityMeta>(entity) {
-                                            ui.horizontal(|ui| {
-                                                ui.label("ID:");
-                                                ui.text_edit_singleline(&mut meta.id);
-                                            });
+                                            let mut do_save_prefab = false;
+                                            let mut do_resync = false;
+                                            let mut meta_id = String::new();
+                                            let mut prefab_src = None;
+                                            if let Ok(mut meta) = self.world.get::<&mut EntityMeta>(entity) {
+                                                meta_id = meta.id.clone();
+                                                prefab_src = self.world.get::<&ecs::PrefabInstance>(entity).ok().map(|p| p.source.clone());
+                                                ui.horizontal(|ui| {
+                                                    ui.label("ID:");
+                                                    ui.text_edit_singleline(&mut meta.id);
+                                                });
 
-                                            ui.horizontal(|ui| {
-                                                ui.label("Parent:");
-                                                let current_parent_text = meta.parent.clone().unwrap_or_else(|| "None (Root)".to_string());
-                                                egui::ComboBox::from_id_salt("parent_select")
-                                                    .selected_text(&current_parent_text)
-                                                    .show_ui(ui, |ui| {
-                                                        let is_none = meta.parent.is_none();
-                                                        if ui.selectable_label(is_none, "None (Root)").clicked() {
-                                                            meta.parent = None;
-                                                        }
-                                                        for pid in &all_other_ids {
-                                                            let is_selected = meta.parent.as_ref() == Some(pid);
-                                                            if ui.selectable_label(is_selected, pid).clicked() {
-                                                                meta.parent = Some(pid.clone());
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Parent:");
+                                                    let current_parent_text = meta.parent.clone().unwrap_or_else(|| "None (Root)".to_string());
+                                                    egui::ComboBox::from_id_salt("parent_select")
+                                                        .selected_text(&current_parent_text)
+                                                        .show_ui(ui, |ui| {
+                                                            let is_none = meta.parent.is_none();
+                                                            if ui.selectable_label(is_none, "None (Root)").clicked() {
+                                                                meta.parent = None;
                                                             }
-                                                        }
+                                                            for pid in &all_other_ids {
+                                                                let is_selected = meta.parent.as_ref() == Some(pid);
+                                                                if ui.selectable_label(is_selected, pid).clicked() {
+                                                                    meta.parent = Some(pid.clone());
+                                                                }
+                                                            }
+                                                        });
+                                                });
+
+                                                if let Some(source) = &prefab_src {
+                                                    ui.horizontal(|ui| {
+                                                        ui.colored_label(egui::Color32::from_rgb(96, 165, 250), format!("🔗 Prefab: {}", source));
                                                     });
-                                            });
-                                        }
+                                                }
+                                                ui.horizontal(|ui| {
+                                                    if ui.small_button("💾 Save as Prefab").clicked() {
+                                                        do_save_prefab = true;
+                                                    }
+                                                    if prefab_src.is_some() {
+                                                        if ui.small_button("🔄 Resync").clicked() {
+                                                            do_resync = true;
+                                                        }
+                                                    }
+                                                });
+                                            }
+
+                                            if do_save_prefab {
+                                                if let Some(prefab_def) = assets::extract_prefab_hierarchy(&self.world, &self.physics, entity) {
+                                                    let path = format!("assets/prefabs/{}.prefab.json", meta_id);
+                                                    if assets::save_prefab_to_file(&path, &prefab_def).is_ok() {
+                                                        let _ = self.world.insert_one(entity, ecs::PrefabInstance { source: path.clone() });
+                                                        self.add_toast(format!("Saved prefab '{}' with {} children", meta_id, prefab_def.children.len()), egui::Color32::from_rgb(34, 197, 94));
+                                                    }
+                                                }
+                                            }
+                                            if do_resync {
+                                                if let Some(src) = &prefab_src {
+                                                    self.sync_prefab_instances(src);
+                                                }
+                                            }
                                     });
 
                                     ui.add_space(4.0);
@@ -5583,7 +5775,7 @@ impl EngineState {
                                         if ui.button("[*] Save as Prefab").clicked() {
                                             if let Some(def) = assets::extract_entity_def(&self.world, &self.physics, entity) {
                                                 let prefab_path = format!("assets/prefabs/{}.json", def.id);
-                                                match assets::save_prefab_to_file(&prefab_path, &def) {
+                                                match assets::save_entity_as_prefab_to_file(&prefab_path, &def) {
                                                     Ok(()) => {
                                                         self.logs.push(format!("Saved prefab to '{}'", prefab_path));
                                                     }
@@ -6055,6 +6247,7 @@ impl EngineState {
                                 if let Some(cursor) = pointer_pos {
                                     if viewport_rect.contains(cursor) {
                                         if let (Some(entity), Some(axis)) = (self.selected_entity, hovered_axis) {
+                                            self.push_history();
                                             self.active_gizmo_axis = Some(axis);
                                             self.gizmo_drag_mouse_origin = Some([cursor.x, cursor.y]);
                                             if let Ok(transform) = self.world.get::<&Transform>(entity) {
@@ -6128,9 +6321,10 @@ impl EngineState {
                                                 GizmoMode::Translate => {
                                                     let mut new_pos = start_pos + axis_vec * delta_world;
                                                     if is_snap {
-                                                        new_pos.x = (new_pos.x * 2.0).round() * 0.5;
-                                                        new_pos.y = (new_pos.y * 2.0).round() * 0.5;
-                                                        new_pos.z = (new_pos.z * 2.0).round() * 0.5;
+                                                        let unit = self.snap_unit.max(0.01);
+                                                        new_pos.x = (new_pos.x / unit).round() * unit;
+                                                        new_pos.y = (new_pos.y / unit).round() * unit;
+                                                        new_pos.z = (new_pos.z / unit).round() * unit;
                                                     }
                                                     {
                                                         if let Ok(mut transform) = self.world.get::<&mut Transform>(entity) {
@@ -6142,7 +6336,7 @@ impl EngineState {
                                                 GizmoMode::Rotate => {
                                                     let angle = (proj_pixels * 0.02) % (std::f32::consts::PI * 2.0);
                                                     let final_angle = if is_snap {
-                                                        let step = 15.0f32.to_radians();
+                                                        let step = self.snap_rot_deg.to_radians().max(0.01);
                                                         (angle / step).round() * step
                                                     } else {
                                                         angle
@@ -6159,9 +6353,10 @@ impl EngineState {
                                                     let scale_delta = proj_pixels * 0.015;
                                                     let mut new_scale = (start_scale + axis_vec * scale_delta).max(Vec3::splat(0.05));
                                                     if is_snap {
-                                                        new_scale.x = (new_scale.x * 4.0).round() * 0.25;
-                                                        new_scale.y = (new_scale.y * 4.0).round() * 0.25;
-                                                        new_scale.z = (new_scale.z * 4.0).round() * 0.25;
+                                                        let unit = self.snap_unit.max(0.01);
+                                                        new_scale.x = (new_scale.x / unit).round() * unit;
+                                                        new_scale.y = (new_scale.y / unit).round() * unit;
+                                                        new_scale.z = (new_scale.z / unit).round() * unit;
                                                     }
                                                     if let Ok(mut transform) = self.world.get::<&mut Transform>(entity) {
                                                         transform.scale = new_scale;
@@ -6173,9 +6368,8 @@ impl EngineState {
                                 }
                             }
 
-                            // Release Drag -> Push Undo History
+                            // Release Drag -> Finish Gizmo Action
                             if (is_primary_released || !is_primary_down) && self.active_gizmo_axis.is_some() {
-                                self.push_history();
                                 self.active_gizmo_axis = None;
                                 self.gizmo_drag_mouse_origin = None;
                                 self.gizmo_drag_start_pos = None;
@@ -8171,6 +8365,7 @@ pub struct App {
     custom_size: Option<(u32, u32)>,
     fullscreen: bool,
     enable_mcp: bool,
+    mcp_token: Option<String>,
 }
 
 impl App {
@@ -8181,6 +8376,7 @@ impl App {
         custom_size: Option<(u32, u32)>,
         fullscreen: bool,
         enable_mcp: bool,
+        mcp_token: Option<String>,
     ) -> Self {
         Self {
             state: None,
@@ -8190,6 +8386,7 @@ impl App {
             custom_size,
             fullscreen,
             enable_mcp,
+            mcp_token,
         }
     }
 }
@@ -8228,6 +8425,7 @@ impl ApplicationHandler for App {
                 self.is_play_mode,
                 self.target_scene.clone(),
                 self.enable_mcp,
+                self.mcp_token.clone(),
             ));
             window.set_visible(true);
             window.set_minimized(false);
@@ -8324,6 +8522,7 @@ fn main() {
     let mut custom_size = None;
     let mut fullscreen = false;
     let mut enable_mcp = false;
+    let mut mcp_token = std::env::var("MOTOR_MCP_TOKEN").ok();
 
     if args.iter().any(|a| a == "--mcp") {
         enable_mcp = true;
@@ -8362,6 +8561,11 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        } else if args[i] == "--mcp-token" {
+            if i + 1 < args.len() {
+                mcp_token = Some(args[i + 1].clone());
+                i += 1;
+            }
         } else if args[i] == "--scene" {
             if i + 1 < args.len() {
                 target_scene = args[i + 1].clone();
@@ -8383,6 +8587,7 @@ fn main() {
         custom_size,
         fullscreen,
         enable_mcp,
+        mcp_token,
     );
     event_loop.run_app(&mut app).expect("Error running event loop");
 }
@@ -8729,5 +8934,57 @@ mod tests {
         // Bob -> periodic lateral and vertical sway
         let (off_bob, _) = compute(Some(("bob".to_string(), 1.0, 0.1, 0.35)));
         assert_ne!(off_bob, glam::Vec3::ZERO);
+    }
+
+    #[test]
+    fn test_history_undo_redo_stack() {
+        let mut history = HistoryState::new();
+
+        let s1 = SceneDef {
+            entities: vec![],
+            camera: assets::CameraDef::default(),
+            environment: None,
+            post_process: None,
+        };
+
+        let mut s2 = s1.clone();
+        s2.entities.push(assets::EntityDef {
+            id: "cube1".to_string(),
+            mesh: "cube".to_string(),
+            position: [1.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+            texture: None,
+            parent: None,
+            color: [1.0, 1.0, 1.0, 1.0],
+            emissive: 0.0,
+            fresnel_color: None,
+            fresnel_power: None,
+            blend_mode: None,
+            wireframe: None,
+            uv_scroll: None,
+            script: None,
+            physics: None,
+            point_light: None,
+            animation_player: None,
+            procedural_rig: None,
+            vfx_emitter: None,
+        });
+
+        // 1. Initial push of s1
+        history.push(s1.clone());
+        assert_eq!(history.undo_stack.len(), 1);
+        assert_eq!(history.redo_stack.len(), 0);
+
+        // 2. Undo when current is s2 -> restores s1, pushes s2 to redo_stack
+        let restored = history.undo(s2.clone()).expect("Undo should succeed");
+        assert_eq!(restored.entities.len(), 0);
+        assert_eq!(history.redo_stack.len(), 1);
+
+        // 3. Redo when current is s1 -> restores s2, pushes s1 to undo_stack
+        let redone = history.redo(s1.clone()).expect("Redo should succeed");
+        assert_eq!(redone.entities.len(), 1);
+        assert_eq!(redone.entities[0].id, "cube1");
+        assert_eq!(history.undo_stack.len(), 1);
     }
 }

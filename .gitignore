@@ -1,3 +1,6 @@
 /target
 /dist
 *.png
+scratch/
+*.txt
+*.ps1

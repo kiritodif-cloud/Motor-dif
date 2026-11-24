@@ -889,26 +889,42 @@ impl ScriptComponent {
         let spawn_prefab = lua
             .create_function(
                 move |_, (name, x, y, z): (String, Option<f32>, Option<f32>, Option<f32>)| {
-                    let file_path = if name.ends_with(".json") {
+                    let file_path = if name.ends_with(".prefab.json") || name.ends_with(".json") {
                         if name.starts_with("assets/prefabs/") {
                             name.clone()
                         } else {
                             format!("assets/prefabs/{}", name)
                         }
                     } else {
-                        format!("assets/prefabs/{}.json", name)
+                        let p_prefab = format!("assets/prefabs/{}.prefab.json", name);
+                        if std::path::Path::new(&p_prefab).exists() {
+                            p_prefab
+                        } else {
+                            format!("assets/prefabs/{}.json", name)
+                        }
                     };
 
-                    match crate::assets::load_prefab_from_file(&file_path) {
-                        Ok(mut def) => {
+                    match crate::assets::load_prefab_def_from_file(&file_path) {
+                        Ok(prefab) => {
                             let ts = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map(|d| d.subsec_nanos())
                                 .unwrap_or(1);
-                            def.id = format!("{}_{}", def.id, ts % 10000);
-                            def.position = [x.unwrap_or(0.0), y.unwrap_or(0.0), z.unwrap_or(0.0)];
+                            let mut root = prefab.root;
+                            let old_root_id = root.id.clone();
+                            let new_root_id = format!("{}_{}", old_root_id, ts % 100000);
+                            root.id = new_root_id.clone();
+                            root.position = [x.unwrap_or(0.0), y.unwrap_or(0.0), z.unwrap_or(0.0)];
+
                             if let Ok(mut list) = spawns_ref_prefab.lock() {
-                                list.push(def);
+                                list.push(root);
+                                for mut child in prefab.children {
+                                    child.id = format!("{}_{}", child.id, ts % 100000);
+                                    if child.parent.as_deref() == Some(&old_root_id) {
+                                        child.parent = Some(new_root_id.clone());
+                                    }
+                                    list.push(child);
+                                }
                             }
                             Ok(true)
                         }

@@ -21,6 +21,17 @@ fn default_ortho_size() -> f32 {
     10.0
 }
 
+impl Default for CameraDef {
+    fn default() -> Self {
+        Self {
+            mode: "3d".to_string(),
+            position: [0.0, 5.0, 10.0],
+            target: [0.0, 0.0, 0.0],
+            ortho_size: 10.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhysicsDef {
     pub body: String,      // "dynamic" or "fixed"
@@ -497,15 +508,39 @@ pub fn apply_scene_to_world(
     }
 }
 
-pub fn load_prefab_from_file<P: AsRef<Path>>(path: P) -> Result<EntityDef, String> {
-    let content = fs::read_to_string(path.as_ref())
-        .map_err(|e| format!("Error reading prefab file: {}", e))?;
-    let prefab: EntityDef = serde_json::from_str(&content)
-        .map_err(|e| format!("Error parsing prefab JSON: {}", e))?;
-    Ok(prefab)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrefabDef {
+    pub root: EntityDef,
+    #[serde(default)]
+    pub children: Vec<EntityDef>,
 }
 
-pub fn save_prefab_to_file<P: AsRef<Path>>(path: P, def: &EntityDef) -> Result<(), String> {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum PrefabFormat {
+    Hierarchy(PrefabDef),
+    Single(EntityDef),
+}
+
+pub fn load_prefab_def_from_file<P: AsRef<Path>>(path: P) -> Result<PrefabDef, String> {
+    let content = fs::read_to_string(path.as_ref())
+        .map_err(|e| format!("Error reading prefab file: {}", e))?;
+    match serde_json::from_str::<PrefabFormat>(&content) {
+        Ok(PrefabFormat::Hierarchy(h)) => Ok(h),
+        Ok(PrefabFormat::Single(root)) => Ok(PrefabDef {
+            root,
+            children: Vec::new(),
+        }),
+        Err(e) => Err(format!("Error parsing prefab JSON: {}", e)),
+    }
+}
+
+pub fn load_prefab_from_file<P: AsRef<Path>>(path: P) -> Result<EntityDef, String> {
+    let def = load_prefab_def_from_file(path)?;
+    Ok(def.root)
+}
+
+pub fn save_prefab_to_file<P: AsRef<Path>>(path: P, def: &PrefabDef) -> Result<(), String> {
     let json = serde_json::to_string_pretty(def)
         .map_err(|e| format!("Error serializing prefab: {}", e))?;
     if let Some(parent) = path.as_ref().parent() {
@@ -514,6 +549,40 @@ pub fn save_prefab_to_file<P: AsRef<Path>>(path: P, def: &EntityDef) -> Result<(
     fs::write(path.as_ref(), json)
         .map_err(|e| format!("Error writing prefab file: {}", e))?;
     Ok(())
+}
+
+pub fn save_entity_as_prefab_to_file<P: AsRef<Path>>(path: P, def: &EntityDef) -> Result<(), String> {
+    save_prefab_to_file(path, &PrefabDef { root: def.clone(), children: Vec::new() })
+}
+
+pub fn extract_prefab_hierarchy(
+    world: &hecs::World,
+    physics: &PhysicsEngine,
+    root_entity: hecs::Entity,
+) -> Option<PrefabDef> {
+    let mut root = extract_entity_def(world, physics, root_entity)?;
+    let mut children = Vec::new();
+    let root_id = root.id.clone();
+    root.parent = None; // Root of prefab has no parent relative to prefab
+
+    let mut pending_parents = vec![root_id];
+    while let Some(current_parent_id) = pending_parents.pop() {
+        for er in world.iter() {
+            if er.entity() == root_entity {
+                continue;
+            }
+            if let Some(meta) = er.get::<&EntityMeta>() {
+                if meta.parent.as_deref() == Some(&current_parent_id) {
+                    if let Some(child_def) = extract_entity_def(world, physics, er.entity()) {
+                        pending_parents.push(child_def.id.clone());
+                        children.push(child_def);
+                    }
+                }
+            }
+        }
+    }
+
+    Some(PrefabDef { root, children })
 }
 
 pub fn extract_entity_def(
@@ -834,5 +903,71 @@ mod tests {
             assert_eq!(core.script, Some("assets/scripts/vfx_showcase.lua".to_string()));
             assert!(core.point_light.is_some());
         }
+    }
+
+    #[test]
+    fn test_prefab_hierarchy_roundtrip() {
+        let temp_dir = std::env::temp_dir();
+        let prefab_file = temp_dir.join("test_turret.prefab.json");
+
+        let root = EntityDef {
+            id: "turret_base".to_string(),
+            mesh: "cylinder".to_string(),
+            position: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+            texture: None,
+            parent: None,
+            color: [0.2, 0.2, 0.2, 1.0],
+            emissive: 0.0,
+            fresnel_color: None,
+            fresnel_power: None,
+            blend_mode: None,
+            wireframe: None,
+            uv_scroll: None,
+            script: None,
+            physics: None,
+            point_light: None,
+            animation_player: None,
+            procedural_rig: None,
+            vfx_emitter: None,
+        };
+
+        let child = EntityDef {
+            id: "turret_cannon".to_string(),
+            mesh: "cube".to_string(),
+            position: [0.0, 1.5, 0.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [0.3, 0.3, 1.2],
+            texture: None,
+            parent: Some("turret_base".to_string()),
+            color: [0.8, 0.1, 0.1, 1.0],
+            emissive: 0.5,
+            fresnel_color: None,
+            fresnel_power: None,
+            blend_mode: None,
+            wireframe: None,
+            uv_scroll: None,
+            script: None,
+            physics: None,
+            point_light: None,
+            animation_player: None,
+            procedural_rig: None,
+            vfx_emitter: None,
+        };
+
+        let prefab = PrefabDef {
+            root,
+            children: vec![child],
+        };
+
+        save_prefab_to_file(&prefab_file, &prefab).expect("Save prefab failed");
+        let loaded = load_prefab_def_from_file(&prefab_file).expect("Load prefab failed");
+        assert_eq!(loaded.root.id, "turret_base");
+        assert_eq!(loaded.children.len(), 1);
+        assert_eq!(loaded.children[0].id, "turret_cannon");
+        assert_eq!(loaded.children[0].parent.as_deref(), Some("turret_base"));
+
+        let _ = std::fs::remove_file(prefab_file);
     }
 }

@@ -50,6 +50,11 @@ pub struct EntityMeta {
     pub parent: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrefabInstance {
+    pub source: String,
+}
+
 impl EntityMeta {
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self {

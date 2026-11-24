@@ -202,3 +202,7 @@ MCP Tools Directory:
 - `forge_create_voxel_world({ width_chunks, depth_chunks, seed, terrain_type, name })`: Generates procedural voxel world (16x32x16 chunks) with culling, AO, and pixel atlas.
 - `forge_spawn_controller({ controller_type, entity_id, position, voxel_collision, speed, jump_force, overwrite })`: Generates ready-to-play controller template script and spawns player entity.
 - `export_game({ title, scene_path, output_dir, fullscreen })`: 1-Click standalone exporter with smart asset dependency harvesting, `game_config.json`, and executable bundle.
+- `spawn_prefab({ name, position })`: Instantiates `.prefab.json` or `.json` prefab hierarchy with root and children.
+- `save_prefab({ entity_id, path })`: Exports entity hierarchy to `assets/prefabs/<name>.prefab.json`.
+- Editor Shortcuts: `Ctrl+Z` (Undo), `Ctrl+Y`/`Ctrl+Shift+Z` (Redo), `Ctrl+S` (Save), `W`/`E`/`R` (Gizmo), `🧲 Snap` (0.25-2.0m, 15°-90°).
+- Auth: Optional `--mcp-token <TOKEN>` (or `MOTOR_MCP_TOKEN`), requires `Authorization: Bearer <TOKEN>` header.

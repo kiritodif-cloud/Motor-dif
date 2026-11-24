@@ -109,6 +109,11 @@ pub enum McpCommand {
         position: [f32; 3],
         respond_to: oneshot::Sender<Result<String, String>>,
     },
+    SavePrefab {
+        entity_id: String,
+        name: String,
+        respond_to: oneshot::Sender<Result<String, String>>,
+    },
     SelectEntity {
         id: String,
         respond_to: oneshot::Sender<Result<String, String>>,
@@ -534,7 +539,7 @@ pub async fn handle_jsonrpc(
                         },
                         {
                             "name": "spawn_prefab",
-                            "description": "Instancia un prefab desde assets/prefabs/<name>.json en la posicion indicada",
+                            "description": "Instancia un prefab desde assets/prefabs/<name>.prefab.json o .json en la posicion indicada",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -544,6 +549,18 @@ pub async fn handle_jsonrpc(
                                     "z": { "type": "number", "description": "Posicion Z" }
                                 },
                                 "required": ["name"]
+                            }
+                        },
+                        {
+                            "name": "save_prefab",
+                            "description": "Guarda una entidad y todos sus hijos en assets/prefabs/<name>.prefab.json",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "entity_id": { "type": "string", "description": "ID de la entidad raiz a guardar como prefab" },
+                                    "name": { "type": "string", "description": "Nombre del archivo de prefab sin extension" }
+                                },
+                                "required": ["entity_id", "name"]
                             }
                         },
                         {
@@ -1195,6 +1212,31 @@ pub async fn handle_jsonrpc(
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al instanciar prefab")),
                     }
                 }
+                "save_prefab" => {
+                    let entity_id = match args.get("entity_id").and_then(|v| v.as_str()) {
+                        Some(e) => e.to_string(),
+                        None => {
+                            let msg = mcp_param_error("save_prefab", "entity_id", "{\n  \"entity_id\": \"player\",\n  \"name\": \"player_character\"\n}");
+                            return Some(JsonRpcResponse::error(id, -32602, msg));
+                        }
+                    };
+                    let name = match args.get("name").and_then(|v| v.as_str()) {
+                        Some(n) => n.to_string(),
+                        None => {
+                            let msg = mcp_param_error("save_prefab", "name", "{\n  \"entity_id\": \"player\",\n  \"name\": \"player_character\"\n}");
+                            return Some(JsonRpcResponse::error(id, -32602, msg));
+                        }
+                    };
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::SavePrefab { entity_id, name, respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(Ok(msg)) => Some(JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": msg }] }))),
+                        Ok(Err(err)) => Some(JsonRpcResponse::error(id, -32000, err)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al guardar prefab")),
+                    }
+                }
                 "select_entity" => {
                     let id_str = match args.get("id").and_then(|v| v.as_str()) {
                         Some(s) => s.to_string(),
@@ -1664,7 +1706,35 @@ pub struct McpServerHandle {
     pub _rt: Arc<tokio::runtime::Runtime>,
 }
 
-pub fn start_mcp_server(cmd_tx: mpsc::Sender<McpCommand>, port: u16) -> McpServerHandle {
+pub fn verify_mcp_auth(headers: &str, expected_token: Option<&str>) -> bool {
+    let Some(token) = expected_token else {
+        return true;
+    };
+    let clean_token = token.trim();
+    if clean_token.is_empty() {
+        return true;
+    }
+    for line in headers.lines() {
+        let line_trim = line.trim();
+        if line_trim.to_ascii_lowercase().starts_with("authorization:") {
+            if let Some((_, val)) = line_trim.split_once(':') {
+                let token_part = val.trim();
+                if let Some(bearer) = token_part.strip_prefix("Bearer ") {
+                    if bearer.trim() == clean_token {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+pub fn start_mcp_server(
+    cmd_tx: mpsc::Sender<McpCommand>,
+    port: u16,
+    auth_token: Option<String>,
+) -> McpServerHandle {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let std_listener = match std::net::TcpListener::bind(addr) {
         Ok(l) => l,
@@ -1688,6 +1758,7 @@ pub fn start_mcp_server(cmd_tx: mpsc::Sender<McpCommand>, port: u16) -> McpServe
 
     // Spawn async tasks on Tokio runtime
     let cmd_tx_http = cmd_tx.clone();
+    let token_bg = auth_token.clone();
     rt.spawn(async move {
         let listener = match TcpListener::from_std(std_listener) {
             Ok(l) => l,
@@ -1701,6 +1772,7 @@ pub fn start_mcp_server(cmd_tx: mpsc::Sender<McpCommand>, port: u16) -> McpServe
         loop {
             if let Ok((mut socket, _)) = listener_arc.accept().await {
                 let cmd_tx_conn = cmd_tx_http.clone();
+                let token_conn = token_bg.clone();
                 tokio::spawn(async move {
                     let mut buf = Vec::new();
                     let mut temp = [0u8; 1024];
@@ -1727,7 +1799,14 @@ pub fn start_mcp_server(cmd_tx: mpsc::Sender<McpCommand>, port: u16) -> McpServe
 
                     // Handle CORS pre-flight
                     if headers_str.starts_with("OPTIONS") {
-                        let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, GET, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n\r\n";
+                        let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, GET, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\n\r\n";
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                        return;
+                    }
+
+                    // Optional Bearer Token Authentication
+                    if !verify_mcp_auth(&headers_str, token_conn.as_deref()) {
+                        let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n401 Unauthorized: Missing or invalid Authorization Bearer token\r\n";
                         let _ = socket.write_all(resp.as_bytes()).await;
                         return;
                     }
@@ -2197,5 +2276,14 @@ mod tests {
 
             rt.block_on(handle).unwrap();
         }
+    }
+
+    #[test]
+    fn test_mcp_auth_bearer_token() {
+        assert!(verify_mcp_auth("Host: localhost\r\n", None));
+        assert!(!verify_mcp_auth("Host: localhost\r\n", Some("secret123")));
+        assert!(!verify_mcp_auth("Authorization: Bearer wrong\r\n", Some("secret123")));
+        assert!(verify_mcp_auth("Host: localhost\r\nAuthorization: Bearer secret123\r\n", Some("secret123")));
+        assert!(verify_mcp_auth("authorization: Bearer secret123\r\n", Some("secret123")));
     }
 }

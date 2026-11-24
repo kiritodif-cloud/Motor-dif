@@ -6,6 +6,7 @@ use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 pub enum HotReloadEvent {
     SceneChanged,
     ScriptChanged(PathBuf),
+    PrefabChanged(PathBuf),
     Other(PathBuf),
 }
 
@@ -68,7 +69,10 @@ impl HotReloadManager {
                         .unwrap_or_default()
                         .to_lowercase();
 
-                    if file_name.ends_with(".json") && file_name != "input_map.json" && file_name != "save_data.json" && file_name != "game.json" {
+                    let path_str = path.to_string_lossy().to_lowercase();
+                    if file_name.ends_with(".prefab.json") || path_str.contains("prefabs") {
+                        events.push(HotReloadEvent::PrefabChanged(path));
+                    } else if file_name.ends_with(".json") && file_name != "input_map.json" && file_name != "save_data.json" && file_name != "game.json" && file_name != "game_config.json" {
                         scene_changed = true;
                     } else if file_name.ends_with(".lua") {
                         events.push(HotReloadEvent::ScriptChanged(path));
