@@ -136,16 +136,18 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
 
 ## mcp_workflow
 Recommended 4-step autonomous loop for AI agents (`http://127.0.0.1:3030/mcp`):
-1. **Query Docs:** Call `get_engine_docs({ topic: "all" })` (or specific topic) to verify signatures without exploring source files.
+1. **Query Docs:** Call `get_engine_docs({ topic: "all" })` (or specific topic) to verify signatures and workspace root without exploring source files.
 2. **Author Content:**
-   - Write scenes to `assets/<name>.json` and Lua scripts to `assets/scripts/<name>.lua`.
+   - Save new scene to `assets/<name>.json` and Lua scripts to `assets/scripts/<name>.lua`.
    - Or use procedural forges: `forge_create_model`, `forge_bake_glb`, `forge_create_texture`, `forge_create_music`, `forge_generate_terrain`, `forge_generate_dungeon`, `forge_scatter_props`, `forge_create_rigged_character`, `forge_spawn_vfx`.
-3. **Run & Validate:**
-   - Call `set_play_mode({ mode: "play" })`.
+3. **Load & Run:**
+   - Call `load_scene({ path: "assets/<name>.json" })` (or bare `<name>.json`).
+   - Call `set_play_mode({ playing: true })` to start simulation, initialize scripts, and hide editor gizmos.
+4. **Inspect & Validate:**
    - Query `get_console_logs({ filter: "error" })` or `get_engine_logs` to ensure 0 Lua runtime errors.
-4. **Visual & Performance Inspection:**
-   - Call `capture_viewport` to verify visual composition, materials, and HUD in Base64 PNG.
+   - Call `capture_viewport` to visually inspect scene composition, lighting, and HUD in Base64 PNG.
    - Call `get_performance_stats` to verify 60+ FPS, draw calls, and entity counts.
+   - To stop or reset: call `set_play_mode({ playing: false })`.
 
 MCP Tools Directory:
 - `get_engine_docs({ topic })`: Compact API signatures and schemas (topics: all, quickstart, scene_json, lua_core, lua_ui, lua_vfx_audio, lua_ai_rig, mcp_workflow).
@@ -156,8 +158,8 @@ MCP Tools Directory:
 - `get_console_logs({ filter })`: Retrieves engine/script log buffer.
 - `get_engine_logs()`: Compact diagnostic metrics (FPS, logs, Lua error string).
 - `capture_viewport()`: Captures rendered frame as Base64 PNG data.
-- `set_play_mode({ mode })`: Sets engine state (`"play"`, `"pause"`, `"edit"`).
-- `load_scene({ path })`: Loads `.json` scene from `assets/`.
+- `load_scene({ path })`: Loads `.json` scene from `assets/` into editor, safely stopping simulation if active.
+- `set_play_mode({ playing: bool })`: Starts (`playing: true`) or stops (`playing: false`) gameplay simulation.
 - `save_scene({ path })`: Serializes active scene to `assets/<path>.json`.
 - `get_scene_tree()`: Hierarchical parent-child tree and entity components.
 - `get_performance_stats()`: Profiler metrics (FPS, frame_time_ms, entities, draw_calls, particles, bodies).

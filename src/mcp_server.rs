@@ -1670,6 +1670,8 @@ mod tests {
         assert!(resp_str.contains("forge_create_rigged_character"));
         assert!(resp_str.contains("forge_spawn_vfx"));
         assert!(resp_str.contains("get_engine_docs"));
+        assert!(resp_str.contains("load_scene"));
+        assert!(resp_str.contains("set_play_mode"));
     }
 
     #[test]
@@ -1789,5 +1791,77 @@ mod tests {
         let resp_unknown_json = serde_json::to_value(&resp_unknown).unwrap();
         let unknown_text = resp_unknown_json["result"]["content"][0]["text"].as_str().unwrap();
         assert!(unknown_text.contains("Error: Topic 'non_existent_topic' not found"));
+    }
+
+    #[test]
+    fn test_mcp_load_scene_and_set_play_mode_dispatch() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(2);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // 1. Test load_scene dispatch
+        let req_load = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(201)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "load_scene",
+                "arguments": { "path": "my_level.json" }
+            })),
+        };
+
+        let handle = rt.spawn(async move {
+            if let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    McpCommand::LoadScene { path, respond_to } => {
+                        assert_eq!(path, "assets/my_level.json");
+                        let _ = respond_to.send(Ok(json!({
+                            "success": true,
+                            "scene": path,
+                            "entities": 10
+                        })));
+                    }
+                    _ => panic!("Expected LoadScene command"),
+                }
+            }
+            if let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    McpCommand::SetPlayMode { playing, mode: _, respond_to } => {
+                        assert_eq!(playing, Some(true));
+                        let _ = respond_to.send(Ok(json!({
+                            "success": true,
+                            "playing": true
+                        })));
+                    }
+                    _ => panic!("Expected SetPlayMode command"),
+                }
+            }
+        });
+
+        let resp_load = rt.block_on(async {
+            handle_jsonrpc(&cmd_tx, req_load).await
+        }).expect("Response expected");
+        let resp_load_val = serde_json::to_value(&resp_load).unwrap();
+        assert_eq!(resp_load_val["result"]["data"]["success"], true);
+        assert_eq!(resp_load_val["result"]["data"]["scene"], "assets/my_level.json");
+        assert_eq!(resp_load_val["result"]["data"]["entities"], 10);
+
+        // 2. Test set_play_mode dispatch
+        let req_play = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(202)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "set_play_mode",
+                "arguments": { "playing": true }
+            })),
+        };
+        let resp_play = rt.block_on(async {
+            handle_jsonrpc(&cmd_tx, req_play).await
+        }).expect("Response expected");
+        let resp_play_val = serde_json::to_value(&resp_play).unwrap();
+        assert_eq!(resp_play_val["result"]["data"]["success"], true);
+        assert_eq!(resp_play_val["result"]["data"]["playing"], true);
+
+        rt.block_on(handle).unwrap();
     }
 }

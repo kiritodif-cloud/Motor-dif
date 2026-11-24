@@ -7382,11 +7382,17 @@ impl ApplicationHandler for App {
 }
 
 pub fn resolve_workspace_root() -> std::path::PathBuf {
+    // If current working directory already has assets/, we are in the project root!
+    if std::path::Path::new("assets").is_dir() {
+        return std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    }
+
     if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            // Check 1: if inside target/release or target/debug, check if project root has assets
-            if let Some(parent1) = exe_dir.parent() {
-                if let Some(project_root) = parent1.parent() {
+        // Check if exe is inside a cargo target directory: find ancestor named "target"
+        let mut cur = exe_path.parent();
+        while let Some(dir) = cur {
+            if dir.file_name().map_or(false, |name| name == "target") {
+                if let Some(project_root) = dir.parent() {
                     let dev_assets = project_root.join("assets");
                     if dev_assets.is_dir() {
                         let _ = std::env::set_current_dir(project_root);
@@ -7394,15 +7400,18 @@ pub fn resolve_workspace_root() -> std::path::PathBuf {
                     }
                 }
             }
+            cur = dir.parent();
+        }
 
-            // Check 2: check if <exe_dir>/assets exists
+        if let Some(exe_dir) = exe_path.parent() {
+            // Check if <exe_dir>/assets exists
             let direct_assets = exe_dir.join("assets");
             if direct_assets.is_dir() {
                 let _ = std::env::set_current_dir(exe_dir);
                 return exe_dir.to_path_buf();
             }
 
-            // Check 3: fallback for standalone distribution / new folder
+            // Fallback for standalone distribution / new folder
             let _ = std::env::set_current_dir(exe_dir);
             let _ = std::fs::create_dir_all(direct_assets.join("scripts"));
             return exe_dir.to_path_buf();
