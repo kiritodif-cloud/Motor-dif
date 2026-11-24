@@ -82,7 +82,8 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `get_mouse_world_pos([plane_y]) -> { x, y, z }`, `get_mouse_delta() -> { dx, dy }`
   - `set_pointer_lock(enabled: bool)`, `is_pointer_locked() -> bool`
   - `is_key_down(key) -> bool`, `is_key_just_pressed(key) -> bool` (e.g. `"W"`, `"SPACE"`, `"LSHIFT"`)
-  - `is_action_down(act) -> bool`, `is_action_just_pressed(act) -> bool`, `bind_action(act, key)`
+  - `is_action_pressed(act) -> bool`, `is_action_just_pressed(act) -> bool`, `get_axis(axis) -> f32`, `bind_action(act, key)`
+  - `save_input_config([path])`, `load_input_config([path])`, `set_axis_deadzone(f)`
 - Physics, Spatial Queries & Character Controller:
   - `move_character(id, dx, dy, dz)`: Rapier kinematic controller with auto-step (0.4m), slope limit (45°), ground snap (0.2m), coyote time (0.15s).
   - `is_grounded(id) -> bool`: Robust ground contact test.
@@ -104,8 +105,10 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `trigger_viewmodel_action(action_type, [intensity])`: Triggers procedural animation (`"swing"`, `"recoil"`, `"bob"`).
 
 ## lua_ui
-- Declarative In-Game HUD:
-  - Anchors: `"top_left"`, `"top_center"`, `"top_right"`, `"center"`, `"bottom_left"`, `"bottom_center"`, `"bottom_right"`.
+- Declarative In-Game HUD & Responsive UI:
+  - Anchors (9): `"top_left"`, `"top_center"`, `"top_right"`, `"center_left"`, `"center"`, `"center_right"`, `"bottom_left"`, `"bottom_center"`, `"bottom_right"`.
+  - `tween_ui_property(id, prop, target, duration, [easing])`: Animated UI properties (`"progress"`, `"offset_x"`, `"offset_y"`, `"width"`, `"height"`, `"font_size"`). Easing: `"linear"`, `"ease_in_quad"`, `"ease_out_quad"`, `"ease_in_out_cubic"`, `"bounce_out"`.
+  - Easing helpers: `ease_in_quad(t)`, `ease_out_quad(t)`, `ease_in_out_cubic(t)`, `bounce_out(t)`.
   - `ui_clear()`: Clears all HUD widgets.
   - `ui_panel(id, anchor, x, y, w, h, r, g, b, a)`: Background container card.
   - `ui_bar(id, anchor, x, y, w, h, value_0_to_1, r, g, b, a)`: Dynamic progress/health bar.

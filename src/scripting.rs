@@ -172,6 +172,9 @@ pub struct LuaEngineContext {
     pub grounded_entities: Arc<RwLock<HashMap<String, bool>>>,
     pub pending_collision_groups: Arc<Mutex<Vec<(String, Option<u32>, Option<u32>)>>>,
     pub pending_character_moves: Arc<Mutex<Vec<(String, [f32; 3])>>>,
+    pub gamepad_info: Arc<RwLock<crate::input_map::GamepadState>>,
+    pub pending_ui_tweens: Arc<Mutex<Vec<crate::tweens::UiTween>>>,
+    pub active_ui_tweens: Arc<Mutex<Vec<crate::tweens::UiTween>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -388,8 +391,16 @@ impl LuaEngineContext {
             pending_events: Arc::new(Mutex::new(Vec::new())),
             timers: Arc::new(Mutex::new(Vec::new())),
             next_timer_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
-            input_map: Arc::new(RwLock::new(crate::input_map::InputMap::load_or_default(std::path::Path::new("assets/input_map.json")))),
+            input_map: {
+                let p1 = std::path::Path::new("assets/input_config.json");
+                let p2 = std::path::Path::new("assets/input_map.json");
+                let path = if p1.exists() || !p2.exists() { p1 } else { p2 };
+                Arc::new(RwLock::new(crate::input_map::InputMap::load_or_default(path)))
+            },
             mouse_info: Arc::new(RwLock::new(crate::input_map::MouseInfo::default())),
+            gamepad_info: Arc::new(RwLock::new(crate::input_map::GamepadState::default())),
+            pending_ui_tweens: Arc::new(Mutex::new(Vec::new())),
+            active_ui_tweens: Arc::new(Mutex::new(Vec::new())),
             active_camera: Arc::new(RwLock::new(crate::camera::Camera::new_3d(glam::Vec3::new(0.0, 3.5, 9.0), glam::Vec3::ZERO, 16.0 / 9.0))),
             nav_grid: Arc::new(RwLock::new(crate::nav::NavGrid::new(1.0, 20.0))),
             pending_nav_bake: Arc::new(Mutex::new(None)),
@@ -421,6 +432,12 @@ impl LuaEngineContext {
         }
         if let Ok(mut ui) = self.game_ui_elements.write() {
             ui.clear();
+        }
+        if let Ok(mut pt) = self.pending_ui_tweens.lock() {
+            pt.clear();
+        }
+        if let Ok(mut at) = self.active_ui_tweens.lock() {
+            at.clear();
         }
         if let Ok(mut labels) = self.world_labels.write() {
             labels.clear();
@@ -2483,33 +2500,96 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register clear_timers: {}", e))?;
         lua.globals().set("clear_timers", clear_timers).map_err(|e| e.to_string())?;
 
-        // 52. is_action_down(action) -> bool
+        // 52. is_action_down / is_action_pressed(action) -> bool
         let im_down_ref = ctx.input_map.clone();
         let keys_down_ref = ctx.pressed_keys.clone();
         let mouse_down_ref = ctx.mouse_info.clone();
+        let pad_down_ref = ctx.gamepad_info.clone();
         let is_action_down = lua
             .create_function(move |_, action: String| {
                 let map = im_down_ref.read().unwrap();
                 let keys = keys_down_ref.read().unwrap();
                 let mouse = mouse_down_ref.read().unwrap();
-                Ok(map.is_action_down(&action, &keys, &mouse.buttons_down))
+                let pad = pad_down_ref.read().unwrap();
+                Ok(map.is_action_down(&action, &keys, &mouse.buttons_down, &pad))
             })
             .map_err(|e| format!("Failed to register is_action_down: {}", e))?;
-        lua.globals().set("is_action_down", is_action_down).map_err(|e| e.to_string())?;
+        lua.globals().set("is_action_down", is_action_down.clone()).map_err(|e| e.to_string())?;
+        lua.globals().set("is_action_pressed", is_action_down).map_err(|e| e.to_string())?;
 
         // 53. is_action_just_pressed(action) -> bool
         let im_jp_ref = ctx.input_map.clone();
         let jp_keys_ref = ctx.just_pressed_keys.clone();
         let mouse_jp_ref = ctx.mouse_info.clone();
+        let pad_jp_ref = ctx.gamepad_info.clone();
         let is_action_just_pressed = lua
             .create_function(move |_, action: String| {
                 let map = im_jp_ref.read().unwrap();
                 let keys = jp_keys_ref.read().unwrap();
                 let mouse = mouse_jp_ref.read().unwrap();
-                Ok(map.is_action_just_pressed(&action, &keys, &mouse.buttons_just_pressed))
+                let pad = pad_jp_ref.read().unwrap();
+                Ok(map.is_action_just_pressed(&action, &keys, &mouse.buttons_just_pressed, &pad))
             })
             .map_err(|e| format!("Failed to register is_action_just_pressed: {}", e))?;
         lua.globals().set("is_action_just_pressed", is_action_just_pressed).map_err(|e| e.to_string())?;
+
+        // get_axis(axis_name) -> f32
+        let im_axis_ref = ctx.input_map.clone();
+        let keys_axis_ref = ctx.pressed_keys.clone();
+        let mouse_axis_ref = ctx.mouse_info.clone();
+        let pad_axis_ref = ctx.gamepad_info.clone();
+        let get_axis = lua
+            .create_function(move |_, axis_name: String| {
+                let map = im_axis_ref.read().unwrap();
+                let keys = keys_axis_ref.read().unwrap();
+                let mouse = mouse_axis_ref.read().unwrap();
+                let pad = pad_axis_ref.read().unwrap();
+                Ok(map.get_axis(&axis_name, &keys, &mouse, &pad))
+            })
+            .map_err(|e| format!("Failed to register get_axis: {}", e))?;
+        lua.globals().set("get_axis", get_axis).map_err(|e| e.to_string())?;
+
+        // set_axis_deadzone(deadzone)
+        let pad_deadzone_ref = ctx.gamepad_info.clone();
+        let set_axis_deadzone = lua
+            .create_function(move |_, deadzone: f32| {
+                if let Ok(mut pad) = pad_deadzone_ref.write() {
+                    pad.deadzone = deadzone.clamp(0.0, 0.9);
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register set_axis_deadzone: {}", e))?;
+        lua.globals().set("set_axis_deadzone", set_axis_deadzone).map_err(|e| e.to_string())?;
+
+        // save_input_config([path]) -> bool
+        let im_save_ref = ctx.input_map.clone();
+        let save_input_config = lua
+            .create_function(move |_, path_opt: Option<String>| {
+                let path_str = path_opt.unwrap_or_else(|| "assets/input_config.json".to_string());
+                if let Ok(map) = im_save_ref.read() {
+                    Ok(map.save_to_file(std::path::Path::new(&path_str)).is_ok())
+                } else {
+                    Ok(false)
+                }
+            })
+            .map_err(|e| format!("Failed to register save_input_config: {}", e))?;
+        lua.globals().set("save_input_config", save_input_config).map_err(|e| e.to_string())?;
+
+        // load_input_config([path]) -> bool
+        let im_load_ref = ctx.input_map.clone();
+        let load_input_config = lua
+            .create_function(move |_, path_opt: Option<String>| {
+                let path_str = path_opt.unwrap_or_else(|| "assets/input_config.json".to_string());
+                let loaded = crate::input_map::InputMap::load_or_default(std::path::Path::new(&path_str));
+                if let Ok(mut map) = im_load_ref.write() {
+                    *map = loaded;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .map_err(|e| format!("Failed to register load_input_config: {}", e))?;
+        lua.globals().set("load_input_config", load_input_config).map_err(|e| e.to_string())?;
 
         // 54. bind_action(action, input) -> bool
         let im_bind_ref = ctx.input_map.clone();
@@ -2522,6 +2602,63 @@ impl ScriptComponent {
             })
             .map_err(|e| format!("Failed to register bind_action: {}", e))?;
         lua.globals().set("bind_action", bind_action).map_err(|e| e.to_string())?;
+
+        // tween_ui_property(element_id, property, target_val, duration, [easing]) -> bool
+        let ui_tweens_ref = ctx.pending_ui_tweens.clone();
+        let ui_elements_check_ref = ctx.game_ui_elements.clone();
+        let tween_ui_property = lua
+            .create_function(move |_, (elem_id, prop, target, duration, easing_opt): (String, String, f32, f32, Option<String>)| {
+                let start_val = {
+                    let mut start = 0.0f32;
+                    if let Ok(elems) = ui_elements_check_ref.read() {
+                        for elem in elems.iter() {
+                            if elem.id() == elem_id {
+                                if let Some(v) = crate::tweens::get_ui_element_prop(elem, &prop) {
+                                    start = v;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    start
+                };
+                let easing = crate::tweens::Easing::from_str(&easing_opt.unwrap_or_else(|| "linear".to_string()));
+                if let Ok(mut pending) = ui_tweens_ref.lock() {
+                    pending.push(crate::tweens::UiTween {
+                        element_id: elem_id,
+                        property: prop,
+                        start: start_val,
+                        target,
+                        duration: duration.max(0.001),
+                        elapsed: 0.0,
+                        easing,
+                    });
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register tween_ui_property: {}", e))?;
+        lua.globals().set("tween_ui_property", tween_ui_property).map_err(|e| e.to_string())?;
+
+        // Easing math helpers
+        let ease_in_quad = lua
+            .create_function(|_, t: f32| Ok(crate::tweens::Easing::EaseInQuad.apply(t)))
+            .map_err(|e| format!("Failed to register ease_in_quad: {}", e))?;
+        lua.globals().set("ease_in_quad", ease_in_quad).map_err(|e| e.to_string())?;
+
+        let ease_out_quad = lua
+            .create_function(|_, t: f32| Ok(crate::tweens::Easing::EaseOutQuad.apply(t)))
+            .map_err(|e| format!("Failed to register ease_out_quad: {}", e))?;
+        lua.globals().set("ease_out_quad", ease_out_quad).map_err(|e| e.to_string())?;
+
+        let ease_in_out_cubic = lua
+            .create_function(|_, t: f32| Ok(crate::tweens::Easing::EaseInOutCubic.apply(t)))
+            .map_err(|e| format!("Failed to register ease_in_out_cubic: {}", e))?;
+        lua.globals().set("ease_in_out_cubic", ease_in_out_cubic).map_err(|e| e.to_string())?;
+
+        let bounce_out = lua
+            .create_function(|_, t: f32| Ok(crate::tweens::Easing::BounceOut.apply(t)))
+            .map_err(|e| format!("Failed to register bounce_out: {}", e))?;
+        lua.globals().set("bounce_out", bounce_out).map_err(|e| e.to_string())?;
 
         // 55. get_mouse_world_pos([plane_y]) -> table { hit = bool, x = f32, y = f32, z = f32 }
         let mouse_pos_ref = ctx.mouse_info.clone();
@@ -4577,5 +4714,60 @@ mod tests {
 
         let groups = ctx.pending_collision_groups.lock().unwrap();
         assert_eq!(groups.len(), 2);
+    }
+
+    #[test]
+    fn test_fase33_input_mapping_and_ui_tweens() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys.clone(), audio);
+
+        ctx.game_ui_elements.write().unwrap().push(crate::game_ui::UiElement::Bar {
+            id: "hp_bar".to_string(),
+            anchor: "top_left".to_string(),
+            offset_x: 10.0,
+            offset_y: 10.0,
+            width: 200.0,
+            height: 20.0,
+            progress: 1.0,
+            label: "HP".to_string(),
+            color: [1.0, 0.0, 0.0],
+        });
+
+        pressed_keys.write().unwrap().insert("D".to_string());
+
+        let test_script = r#"
+            assert(is_action_pressed("MoveRight") == true)
+            assert(is_action_down("move_right") == true)
+            assert(is_action_pressed("Jump") == false)
+
+            local axis_h = get_axis("Horizontal")
+            assert(axis_h == 1.0)
+
+            local q = ease_in_quad(0.5)
+            assert(math.abs(q - 0.25) < 0.001)
+
+            local b = bounce_out(1.0)
+            assert(math.abs(b - 1.0) < 0.001)
+
+            local ok_tween = tween_ui_property("hp_bar", "progress", 0.3, 1.5, "ease_out_quad")
+            assert(ok_tween == true)
+        "#;
+        let script_path = "assets/scripts/temp_fase33_test.lua";
+        std::fs::write(script_path, test_script).unwrap();
+
+        let mut comp = ScriptComponent::new(script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        let _ = std::fs::remove_file(script_path);
+        assert!(res.is_ok(), "Fase 33 execution failed: {:?}", res.err());
+
+        let tweens = ctx.pending_ui_tweens.lock().unwrap();
+        assert_eq!(tweens.len(), 1);
+        assert_eq!(tweens[0].element_id, "hp_bar");
+        assert_eq!(tweens[0].property, "progress");
+        assert_eq!(tweens[0].start, 1.0);
+        assert_eq!(tweens[0].target, 0.3);
+        assert_eq!(tweens[0].easing, crate::tweens::Easing::EaseOutQuad);
     }
 }

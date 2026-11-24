@@ -86,36 +86,68 @@ pub fn calculate_anchor_pos(
     height: f32,
     viewport_rect: Rect,
 ) -> Pos2 {
-    match anchor.to_lowercase().as_str() {
-        "top_center" => Pos2::new(
+    let clean = anchor.to_lowercase().replace('-', "_");
+    match clean.as_str() {
+        "top_center" | "topcenter" => Pos2::new(
             viewport_rect.center().x - width * 0.5 + offset_x,
             viewport_rect.min.y + offset_y,
         ),
-        "top_right" => Pos2::new(
+        "top_right" | "topright" => Pos2::new(
             viewport_rect.max.x - width - offset_x,
             viewport_rect.min.y + offset_y,
+        ),
+        "center_left" | "centerleft" => Pos2::new(
+            viewport_rect.min.x + offset_x,
+            viewport_rect.center().y - height * 0.5 + offset_y,
         ),
         "center" => Pos2::new(
             viewport_rect.center().x - width * 0.5 + offset_x,
             viewport_rect.center().y - height * 0.5 + offset_y,
         ),
-        "bottom_left" => Pos2::new(
+        "center_right" | "centerright" => Pos2::new(
+            viewport_rect.max.x - width - offset_x,
+            viewport_rect.center().y - height * 0.5 + offset_y,
+        ),
+        "bottom_left" | "bottomleft" => Pos2::new(
             viewport_rect.min.x + offset_x,
             viewport_rect.max.y - height - offset_y,
         ),
-        "bottom_center" => Pos2::new(
+        "bottom_center" | "bottomcenter" => Pos2::new(
             viewport_rect.center().x - width * 0.5 + offset_x,
             viewport_rect.max.y - height - offset_y,
         ),
-        "bottom_right" => Pos2::new(
+        "bottom_right" | "bottomright" => Pos2::new(
             viewport_rect.max.x - width - offset_x,
             viewport_rect.max.y - height - offset_y,
         ),
         _ => Pos2::new(
             viewport_rect.min.x + offset_x,
             viewport_rect.min.y + offset_y,
-        ), // "top_left"
+        ), // "top_left" | "topleft"
     }
+}
+
+pub fn get_responsive_scale(viewport_rect: Rect) -> f32 {
+    (viewport_rect.height() / 1080.0).clamp(0.5, 3.0)
+}
+
+pub fn calculate_anchor_pos_scaled(
+    anchor: &str,
+    offset_x: f32,
+    offset_y: f32,
+    width: f32,
+    height: f32,
+    viewport_rect: Rect,
+    scale: f32,
+) -> Pos2 {
+    calculate_anchor_pos(
+        anchor,
+        offset_x * scale,
+        offset_y * scale,
+        width * scale,
+        height * scale,
+        viewport_rect,
+    )
 }
 
 pub fn get_or_load_egui_texture(
@@ -364,13 +396,38 @@ mod tests {
         let p_top_left = calculate_anchor_pos("top_left", 10.0, 20.0, 100.0, 50.0, viewport);
         assert_eq!(p_top_left, Pos2::new(10.0, 20.0));
 
+        let p_top_center = calculate_anchor_pos("top_center", 0.0, 10.0, 100.0, 50.0, viewport);
+        assert_eq!(p_top_center, Pos2::new(450.0, 10.0));
+
         let p_top_right = calculate_anchor_pos("top_right", 10.0, 20.0, 100.0, 50.0, viewport);
         assert_eq!(p_top_right, Pos2::new(890.0, 20.0));
+
+        let p_center_left = calculate_anchor_pos("center_left", 15.0, 0.0, 100.0, 60.0, viewport);
+        assert_eq!(p_center_left, Pos2::new(15.0, 270.0));
 
         let p_center = calculate_anchor_pos("center", 0.0, 0.0, 200.0, 100.0, viewport);
         assert_eq!(p_center, Pos2::new(400.0, 250.0));
 
+        let p_center_right = calculate_anchor_pos("center_right", 15.0, 0.0, 100.0, 60.0, viewport);
+        assert_eq!(p_center_right, Pos2::new(885.0, 270.0));
+
+        let p_bottom_left = calculate_anchor_pos("bottom_left", 10.0, 10.0, 100.0, 40.0, viewport);
+        assert_eq!(p_bottom_left, Pos2::new(10.0, 550.0));
+
         let p_bottom_center = calculate_anchor_pos("bottom_center", 0.0, 10.0, 200.0, 40.0, viewport);
         assert_eq!(p_bottom_center, Pos2::new(400.0, 550.0));
+
+        let p_bottom_right = calculate_anchor_pos("bottom_right", 10.0, 10.0, 100.0, 40.0, viewport);
+        assert_eq!(p_bottom_right, Pos2::new(890.0, 550.0));
+
+        // Test responsive scale
+        let scale_1080 = get_responsive_scale(Rect::from_min_size(Pos2::ZERO, Vec2::new(1920.0, 1080.0)));
+        assert!((scale_1080 - 1.0).abs() < 1e-4);
+
+        let scale_720 = get_responsive_scale(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 720.0)));
+        assert!((scale_720 - (720.0 / 1080.0)).abs() < 1e-4);
+
+        let p_scaled = calculate_anchor_pos_scaled("top_left", 10.0, 20.0, 100.0, 50.0, viewport, 2.0);
+        assert_eq!(p_scaled, Pos2::new(20.0, 40.0));
     }
 }

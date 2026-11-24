@@ -3400,6 +3400,23 @@ impl EngineState {
                 }
             }
 
+            // Update active UI tweens from Lua
+            {
+                let pending = if let Ok(mut p) = self.lua_ctx.pending_ui_tweens.lock() {
+                    std::mem::take(&mut *p)
+                } else {
+                    Vec::new()
+                };
+                if let Ok(mut active) = self.lua_ctx.active_ui_tweens.lock() {
+                    active.extend(pending);
+                    if !active.is_empty() {
+                        if let Ok(mut elements) = self.lua_ctx.game_ui_elements.write() {
+                            crate::tweens::update_ui_tweens(&mut *active, &mut *elements, sim_dt);
+                        }
+                    }
+                }
+            }
+
             // 1. Sync entity positions to LuaEngineContext for get_entity(id)
             if let Ok(mut we) = self.lua_ctx.world_entities.write() {
                 we.clear();
