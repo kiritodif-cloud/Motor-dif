@@ -42,7 +42,7 @@ use glam::{EulerRot, Quat, Vec3};
 use hot_reload::{HotReloadEvent, HotReloadManager};
 use mcp_server::{EngineLogsResponse, McpCommand, WorldInspection};
 use wgpu::util::DeviceExt;
-use physics::{PhysicsEngine, RigidBodyComponent};
+use physics::{CharacterControllerComponent, PhysicsEngine, RigidBodyComponent};
 use renderer::{create_instance_buffer, GpuContext, InstanceRaw, LightsUniform};
 use scripting::ScriptComponent;
 use tweens::TweenManager;
@@ -1012,6 +1012,8 @@ impl EngineState {
                     mass,
                     restitution: 0.5,
                     is_sensor: None,
+                    collision_layer: None,
+                    collision_mask: None,
                 };
                 let handle = self.physics.add_body(&new_trans, &phys_def);
                 let _ = self.world.insert_one(new_e, RigidBodyComponent { handle });
@@ -1192,6 +1194,8 @@ impl EngineState {
                     mass: 0.0,
                     restitution: 0.0,
                     is_sensor: Some(false),
+                    collision_layer: None,
+                    collision_mask: None,
                 };
                 let handle = self.physics.add_body(&transform, &phys_def);
                 self.world.spawn((meta, transform, mesh, RigidBodyComponent { handle }));
@@ -1228,6 +1232,8 @@ impl EngineState {
                     mass: 0.0,
                     restitution: 0.0,
                     is_sensor: Some(false),
+                    collision_layer: None,
+                    collision_mask: None,
                 };
                 let handle = self.physics.add_body(&transform, &phys_def);
                 self.world.spawn((meta, transform, mesh, RigidBodyComponent { handle }));
@@ -3056,6 +3062,8 @@ impl EngineState {
                         mass: 1.0,
                         restitution: 0.0,
                         is_sensor: None,
+                        collision_layer: None,
+                        collision_mask: None,
                     };
                     if let Ok(t) = self.world.get::<&Transform>(e).map(|t| *t) {
                         let handle = self.physics.add_body(&t, &phys_def);
@@ -3460,6 +3468,70 @@ impl EngineState {
                 }
             }
 
+            // Apply pending collision layer/mask changes from Lua
+            let pending_groups = if let Ok(mut lock) = self.lua_ctx.pending_collision_groups.lock() {
+                std::mem::take(&mut *lock)
+            } else {
+                Vec::new()
+            };
+            if !pending_groups.is_empty() {
+                let mut id_to_handle = HashMap::new();
+                for entity_ref in self.world.iter() {
+                    if let (Some(meta), Some(rb)) = (entity_ref.get::<&EntityMeta>(), entity_ref.get::<&RigidBodyComponent>()) {
+                        id_to_handle.insert(meta.id.clone(), rb.handle);
+                    }
+                }
+                for (ent_id, layer_opt, mask_opt) in pending_groups {
+                    if let Some(&rb_handle) = id_to_handle.get(&ent_id) {
+                        if let Some(body) = self.physics.rigid_body_set.get(rb_handle) {
+                            if let Some(&c_handle) = body.colliders().first() {
+                                if let Some(collider) = self.physics.collider_set.get(c_handle) {
+                                    let current_layer = collider.collision_groups().memberships.bits();
+                                    let current_mask = collider.collision_groups().filter.bits();
+                                    let new_layer = layer_opt.unwrap_or(current_layer);
+                                    let new_mask = mask_opt.unwrap_or(current_mask);
+                                    self.physics.set_collision_groups(c_handle, new_layer, new_mask);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Process pending character controller moves from Lua
+            let pending_char_moves = if let Ok(mut lock) = self.lua_ctx.pending_character_moves.lock() {
+                std::mem::take(&mut *lock)
+            } else {
+                Vec::new()
+            };
+            for (char_id, [dx, dy, dz]) in pending_char_moves {
+                let target_opt = {
+                    let mut found = None;
+                    for entity_ref in self.world.iter() {
+                        if let (Some(meta), Some(rb)) = (entity_ref.get::<&EntityMeta>(), entity_ref.get::<&RigidBodyComponent>()) {
+                            if meta.id == char_id {
+                                let cc = entity_ref.get::<&CharacterControllerComponent>().map(|c| (*c).clone()).unwrap_or_default();
+                                found = Some((entity_ref.entity(), rb.handle, cc));
+                                break;
+                            }
+                        }
+                    }
+                    found
+                };
+
+                if let Some((entity, rb_handle, mut cc)) = target_opt {
+                    if let Some(body) = self.physics.rigid_body_set.get(rb_handle) {
+                        if let Some(&c_handle) = body.colliders().first() {
+                            self.physics.move_character(rb_handle, c_handle, &mut cc, Vec3::new(dx, dy, dz), sim_dt);
+                            if let Ok(mut grounded_map) = self.lua_ctx.grounded_entities.write() {
+                                grounded_map.insert(char_id.clone(), cc.is_grounded);
+                            }
+                            let _ = self.world.insert_one(entity, cc);
+                        }
+                    }
+                }
+            }
+
             // 4. Step Physics
             self.physics.step(sim_dt);
             self.physics.sync_to_ecs(&mut self.world);
@@ -3481,9 +3553,6 @@ impl EngineState {
                 }
 
                 for col in collisions {
-                    if !col.started {
-                        continue;
-                    }
                     let body_a = self.physics.collider_set.get(col.collider_1).and_then(|c| c.parent());
                     let body_b = self.physics.collider_set.get(col.collider_2).and_then(|c| c.parent());
 
@@ -3496,28 +3565,57 @@ impl EngineState {
                             let is_sensor_b = self.physics.collider_set.get(col.collider_2).map(|c| c.is_sensor()).unwrap_or(false);
 
                             if is_sensor_a || is_sensor_b || col.is_sensor {
-                                if is_sensor_a {
-                                    if let Ok(script) = self.world.get::<&ScriptComponent>(e_a) {
-                                        if let Err(e) = script.on_trigger_enter(&id_a, &id_b) {
-                                            self.logs.push(format!("Trigger error on '{}': {}", id_a, e));
+                                if col.started {
+                                    if is_sensor_a {
+                                        if let Ok(script) = self.world.get::<&ScriptComponent>(e_a) {
+                                            if let Err(e) = script.on_trigger_enter(&id_a, &id_b) {
+                                                self.logs.push(format!("Trigger error on '{}': {}", id_a, e));
+                                            }
+                                        }
+                                    }
+                                    if is_sensor_b {
+                                        if let Ok(script) = self.world.get::<&ScriptComponent>(e_b) {
+                                            if let Err(e) = script.on_trigger_enter(&id_b, &id_a) {
+                                                self.logs.push(format!("Trigger error on '{}': {}", id_b, e));
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    if is_sensor_a {
+                                        if let Ok(script) = self.world.get::<&ScriptComponent>(e_a) {
+                                            if let Err(e) = script.on_trigger_exit(&id_a, &id_b) {
+                                                self.logs.push(format!("Trigger error on '{}': {}", id_a, e));
+                                            }
+                                        }
+                                    }
+                                    if is_sensor_b {
+                                        if let Ok(script) = self.world.get::<&ScriptComponent>(e_b) {
+                                            if let Err(e) = script.on_trigger_exit(&id_b, &id_a) {
+                                                self.logs.push(format!("Trigger error on '{}': {}", id_b, e));
+                                            }
                                         }
                                     }
                                 }
-                                if is_sensor_b {
-                                    if let Ok(script) = self.world.get::<&ScriptComponent>(e_b) {
-                                        if let Err(e) = script.on_trigger_enter(&id_b, &id_a) {
-                                            self.logs.push(format!("Trigger error on '{}': {}", id_b, e));
-                                        }
-                                    }
-                                }
-                            } else {
+                            } else if col.started {
+                                let norm = if let (Some(b_a), Some(b_b)) = (
+                                    self.physics.rigid_body_set.get(h_a),
+                                    self.physics.rigid_body_set.get(h_b),
+                                ) {
+                                    let diff = b_b.translation() - b_a.translation();
+                                    let n = diff.normalize_or_zero();
+                                    [n.x, n.y, n.z]
+                                } else {
+                                    [0.0, 1.0, 0.0]
+                                };
+
                                 if let Ok(script) = self.world.get::<&ScriptComponent>(e_a) {
-                                    if let Err(e) = script.on_collision(&id_a, &id_b) {
+                                    if let Err(e) = script.on_collision(&id_a, &id_b, norm) {
                                         self.logs.push(format!("Collision error on '{}': {}", id_a, e));
                                     }
                                 }
                                 if let Ok(script) = self.world.get::<&ScriptComponent>(e_b) {
-                                    if let Err(e) = script.on_collision(&id_b, &id_a) {
+                                    let inv_norm = [-norm[0], -norm[1], -norm[2]];
+                                    if let Err(e) = script.on_collision(&id_b, &id_a, inv_norm) {
                                         self.logs.push(format!("Collision error on '{}': {}", id_b, e));
                                     }
                                 }
@@ -5708,6 +5806,8 @@ impl EngineState {
                                                         mass: 1.0,
                                                         restitution: 0.4,
                                                         is_sensor: None,
+                                                        collision_layer: None,
+                                                        collision_mask: None,
                                                     };
                                                     let handle = self.physics.add_body(&trans, &phys_def);
                                                     let _ = self.world.insert_one(entity, RigidBodyComponent { handle });

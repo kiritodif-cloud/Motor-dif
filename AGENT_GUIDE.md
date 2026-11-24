@@ -83,9 +83,15 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `set_pointer_lock(enabled: bool)`, `is_pointer_locked() -> bool`
   - `is_key_down(key) -> bool`, `is_key_just_pressed(key) -> bool` (e.g. `"W"`, `"SPACE"`, `"LSHIFT"`)
   - `is_action_down(act) -> bool`, `is_action_just_pressed(act) -> bool`, `bind_action(act, key)`
-- Physics & Raycast:
+- Physics, Spatial Queries & Character Controller:
+  - `move_character(id, dx, dy, dz)`: Rapier kinematic controller with auto-step (0.4m), slope limit (45°), ground snap (0.2m), coyote time (0.15s).
+  - `is_grounded(id) -> bool`: Robust ground contact test.
+  - `set_collision_layer(id, layer)`, `set_collision_mask(id, mask)`: Dynamic layer/mask filter.
+  - `CollisionLayer`: `{ DEFAULT=1, PLAYER=2, ENEMY=4, WORLD=8, PROJECTILE=16, TRIGGER=32, ALL=0xFFFFFFFF }`.
+  - `raycast(ox, oy, oz, dx, dy, dz, max_dist, [layer_mask]) -> { hit=bool, entity_id=str, distance=f, point={x,y,z}, normal={x,y,z} }`.
+  - `overlap_sphere(cx, cy, cz, radius, [layer_mask]) -> { count=n, entity_ids={ ... } }`.
   - `apply_force(fx, fy, fz)`, `apply_impulse(ix, iy, iz)`: Operates on self entity rigid body.
-  - `raycast(ox, oy, oz, dx, dy, dz, max_dist) -> { hit=bool, entity_id=str, point={x,y,z}, normal={x,y,z}, distance=f }|nil`
+  - Callbacks in scripts: `on_collision(self, other_id, nx, ny, nz)`, `on_trigger_enter(other_id, self)`, `on_trigger_exit(other_id, self)`.
 - Timers & Events:
   - `after(delay_secs, callback_name) -> timer_id`, `every(interval_secs, callback_name) -> timer_id`
   - `cancel_timer(timer_id)`, `clear_timers()`

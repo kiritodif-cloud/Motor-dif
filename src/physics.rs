@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 use rapier3d::prelude::*;
+use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
 use glam::{EulerRot, Vec3};
 
 pub use rapier3d::prelude::RigidBodyHandle;
@@ -10,6 +11,47 @@ use crate::ecs::Transform;
 #[derive(Debug, Clone, Copy)]
 pub struct RigidBodyComponent {
     pub handle: RigidBodyHandle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CollisionLayer;
+impl CollisionLayer {
+    pub const DEFAULT: u32 = 1 << 0;
+    pub const PLAYER: u32 = 1 << 1;
+    pub const ENEMY: u32 = 1 << 2;
+    pub const WORLD: u32 = 1 << 3;
+    pub const PROJECTILE: u32 = 1 << 4;
+    pub const TRIGGER: u32 = 1 << 5;
+    pub const ALL: u32 = 0xFFFFFFFF;
+}
+
+#[derive(Debug, Clone)]
+pub struct CharacterControllerComponent {
+    pub controller: KinematicCharacterController,
+    pub is_grounded: bool,
+    pub coyote_timer: f32,
+    pub max_coyote_time: f32,
+}
+
+impl Default for CharacterControllerComponent {
+    fn default() -> Self {
+        let mut controller = KinematicCharacterController::default();
+        controller.autostep = Some(CharacterAutostep {
+            max_height: CharacterLength::Absolute(0.4),
+            min_width: CharacterLength::Relative(0.5),
+            include_dynamic_bodies: false,
+        });
+        controller.max_slope_climb_angle = 45.0_f32.to_radians();
+        controller.min_slope_slide_angle = 45.0_f32.to_radians();
+        controller.snap_to_ground = Some(CharacterLength::Absolute(0.2));
+
+        Self {
+            controller,
+            is_grounded: true,
+            coyote_timer: 0.15,
+            max_coyote_time: 0.15,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -132,9 +174,11 @@ impl PhysicsEngine {
         transform: &Transform,
         physics_def: &PhysicsDef,
     ) -> RigidBodyHandle {
-        let is_dynamic = physics_def.body.to_lowercase() == "dynamic";
-        let rb_builder = if is_dynamic {
+        let btype = physics_def.body.to_lowercase();
+        let rb_builder = if btype == "dynamic" {
             RigidBodyBuilder::dynamic()
+        } else if btype == "kinematic" {
+            RigidBodyBuilder::kinematic_position_based()
         } else {
             RigidBodyBuilder::fixed()
         };
@@ -150,6 +194,10 @@ impl PhysicsEngine {
         let collider_builder = if collider_type == "ball" || collider_type == "sphere" {
             let radius = (transform.scale.x * 0.5).max(0.05);
             ColliderBuilder::ball(radius)
+        } else if collider_type == "capsule" {
+            let r = (transform.scale.x * 0.5).max(0.05);
+            let hh = (transform.scale.y * 0.5 - r).max(0.05);
+            ColliderBuilder::capsule_y(hh, r)
         } else {
             // Default cuboid half-extents
             let hx = (transform.scale.x * 0.5).max(0.05);
@@ -158,11 +206,18 @@ impl PhysicsEngine {
             ColliderBuilder::cuboid(hx, hy, hz)
         };
 
+        let layer = physics_def.collision_layer.unwrap_or(CollisionLayer::DEFAULT);
+        let mask = physics_def.collision_mask.unwrap_or(CollisionLayer::ALL);
+        let groups = InteractionGroups::all()
+            .with_memberships(Group::from_bits_truncate(layer))
+            .with_filter(Group::from_bits_truncate(mask));
+
         let is_sensor = physics_def.is_sensor.unwrap_or(false);
         let collider = collider_builder
             .restitution(physics_def.restitution)
             .mass(physics_def.mass)
             .sensor(is_sensor)
+            .collision_groups(groups)
             .active_events(ActiveEvents::COLLISION_EVENTS)
             .build();
 
@@ -227,6 +282,111 @@ impl PhysicsEngine {
         }
     }
 
+    pub fn raycast(
+        &self,
+        origin: Vec3,
+        dir: Vec3,
+        max_dist: f32,
+        layer_mask: u32,
+    ) -> Option<(ColliderHandle, RayIntersection)> {
+        let dir_norm = dir.normalize_or_zero();
+        if dir_norm.length_squared() < 0.001 {
+            return None;
+        }
+        let ray = Ray::new(origin, dir_norm);
+        let groups = InteractionGroups::all()
+            .with_memberships(Group::ALL)
+            .with_filter(Group::from_bits_truncate(layer_mask));
+        let filter = QueryFilter::default().groups(groups);
+        let query_pipeline = self.broad_phase.as_query_pipeline(
+            self.narrow_phase.query_dispatcher(),
+            &self.rigid_body_set,
+            &self.collider_set,
+            filter,
+        );
+        query_pipeline.cast_ray_and_get_normal(&ray, max_dist, true)
+    }
+
+    pub fn overlap_sphere(
+        &self,
+        center: Vec3,
+        radius: f32,
+        layer_mask: u32,
+    ) -> Vec<ColliderHandle> {
+        let shape = Ball::new(radius.max(0.01));
+        let shape_pos = Pose::from_translation(center);
+        let groups = InteractionGroups::all()
+            .with_memberships(Group::ALL)
+            .with_filter(Group::from_bits_truncate(layer_mask));
+        let filter = QueryFilter::default().groups(groups);
+        let query_pipeline = self.broad_phase.as_query_pipeline(
+            self.narrow_phase.query_dispatcher(),
+            &self.rigid_body_set,
+            &self.collider_set,
+            filter,
+        );
+        query_pipeline
+            .intersect_shape(shape_pos, &shape)
+            .map(|(handle, _)| handle)
+            .collect()
+    }
+
+    pub fn set_collision_groups(&mut self, collider_handle: ColliderHandle, layer: u32, mask: u32) {
+        if let Some(collider) = self.collider_set.get_mut(collider_handle) {
+            collider.set_collision_groups(
+                InteractionGroups::all()
+                    .with_memberships(Group::from_bits_truncate(layer))
+                    .with_filter(Group::from_bits_truncate(mask)),
+            );
+        }
+    }
+
+    pub fn move_character(
+        &mut self,
+        body_handle: RigidBodyHandle,
+        collider_handle: ColliderHandle,
+        controller: &mut CharacterControllerComponent,
+        desired_translation: Vec3,
+        dt: f32,
+    ) -> Vec3 {
+        let Some(collider) = self.collider_set.get(collider_handle) else {
+            return desired_translation;
+        };
+        let shape = collider.shape();
+        let shape_pos = *collider.position();
+        let filter = QueryFilter::default().exclude_rigid_body(body_handle);
+        let query_pipeline = self.broad_phase.as_query_pipeline(
+            self.narrow_phase.query_dispatcher(),
+            &self.rigid_body_set,
+            &self.collider_set,
+            filter,
+        );
+
+        let movement = controller.controller.move_shape(
+            dt,
+            &query_pipeline,
+            shape,
+            &shape_pos,
+            desired_translation,
+            |_| {},
+        );
+
+        if movement.grounded {
+            controller.is_grounded = true;
+            controller.coyote_timer = controller.max_coyote_time;
+        } else {
+            controller.coyote_timer -= dt;
+            controller.is_grounded = controller.coyote_timer > 0.0;
+        }
+
+        if let Some(body) = self.rigid_body_set.get_mut(body_handle) {
+            let new_pos = body.translation() + movement.translation;
+            body.set_next_kinematic_translation(new_pos);
+        }
+
+        movement.translation
+    }
+
     pub fn sync_to_ecs(&self, world: &mut hecs::World) {
         for (transform, rb_comp) in world.query_mut::<(&mut Transform, &RigidBodyComponent)>() {
             if let Some(rb) = self.rigid_body_set.get(rb_comp.handle) {
@@ -275,5 +435,108 @@ impl PhysicsEngine {
 impl Default for PhysicsEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_character_controller_component_defaults_and_coyote_time() {
+        let mut cc = CharacterControllerComponent::default();
+        assert!(cc.is_grounded);
+        assert!((cc.coyote_timer - 0.15).abs() < 1e-4);
+
+        // Simulate coyote time countdown when airborne
+        cc.coyote_timer -= 0.10;
+        assert!(cc.coyote_timer > 0.0);
+        cc.coyote_timer -= 0.10;
+        assert!(cc.coyote_timer <= 0.0);
+    }
+
+    #[test]
+    fn test_collision_layers_and_spatial_queries() {
+        let mut engine = PhysicsEngine::new();
+
+        // Floor (WORLD)
+        let floor_trans = Transform::new(Vec3::new(0.0, 0.0, 0.0), Vec3::ZERO, Vec3::new(20.0, 0.2, 20.0));
+        let floor_def = PhysicsDef {
+            body: "fixed".to_string(),
+            collider: "cuboid".to_string(),
+            mass: 0.0,
+            restitution: 0.0,
+            is_sensor: None,
+            collision_layer: Some(CollisionLayer::WORLD),
+            collision_mask: Some(CollisionLayer::ALL),
+        };
+        engine.add_body(&floor_trans, &floor_def);
+
+        // Player (PLAYER)
+        let player_trans = Transform::new(Vec3::new(0.0, 2.0, 0.0), Vec3::ZERO, Vec3::new(1.0, 2.0, 1.0));
+        let player_def = PhysicsDef {
+            body: "dynamic".to_string(),
+            collider: "capsule".to_string(),
+            mass: 1.0,
+            restitution: 0.0,
+            is_sensor: None,
+            collision_layer: Some(CollisionLayer::PLAYER),
+            collision_mask: Some(CollisionLayer::WORLD | CollisionLayer::ENEMY),
+        };
+        let p_handle = engine.add_body(&player_trans, &player_def);
+        assert!(engine.rigid_body_set.get(p_handle).is_some());
+
+        // Step physics once
+        engine.step(0.05);
+
+        // Raycast hitting world
+        let hit_world = engine.raycast(Vec3::new(5.0, 5.0, 5.0), Vec3::new(0.0, -1.0, 0.0), 10.0, CollisionLayer::WORLD);
+        assert!(hit_world.is_some());
+
+        // Raycast filtered out by layer mask (only PROJECTILE)
+        let hit_proj = engine.raycast(Vec3::new(5.0, 5.0, 5.0), Vec3::new(0.0, -1.0, 0.0), 10.0, CollisionLayer::PROJECTILE);
+        assert!(hit_proj.is_none());
+
+        // Overlap sphere around origin
+        let overlaps = engine.overlap_sphere(Vec3::new(0.0, 0.1, 0.0), 2.0, CollisionLayer::ALL);
+        assert!(!overlaps.is_empty());
+    }
+
+    #[test]
+    fn test_character_controller_move_and_grounding() {
+        let mut engine = PhysicsEngine::new();
+
+        // Fixed floor
+        let floor_trans = Transform::new(Vec3::new(0.0, 0.0, 0.0), Vec3::ZERO, Vec3::new(10.0, 0.2, 10.0));
+        let floor_def = PhysicsDef {
+            body: "fixed".to_string(),
+            collider: "cuboid".to_string(),
+            mass: 0.0,
+            restitution: 0.0,
+            is_sensor: None,
+            collision_layer: Some(CollisionLayer::WORLD),
+            collision_mask: Some(CollisionLayer::ALL),
+        };
+        engine.add_body(&floor_trans, &floor_def);
+
+        // Kinematic character
+        let char_trans = Transform::new(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO, Vec3::new(1.0, 1.8, 1.0));
+        let char_def = PhysicsDef {
+            body: "kinematic".to_string(),
+            collider: "capsule".to_string(),
+            mass: 1.0,
+            restitution: 0.0,
+            is_sensor: None,
+            collision_layer: Some(CollisionLayer::PLAYER),
+            collision_mask: Some(CollisionLayer::WORLD),
+        };
+        let body_handle = engine.add_body(&char_trans, &char_def);
+        let collider_handle = engine.rigid_body_set.get(body_handle).unwrap().colliders()[0];
+
+        let mut controller = CharacterControllerComponent::default();
+        // Move downwards into floor
+        let moved = engine.move_character(body_handle, collider_handle, &mut controller, Vec3::new(0.0, -1.5, 0.0), 0.016);
+        assert!(controller.is_grounded);
+        assert!(moved.y < 0.0);
     }
 }

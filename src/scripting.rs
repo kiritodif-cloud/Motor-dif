@@ -169,6 +169,9 @@ pub struct LuaEngineContext {
     pub pending_entity_transforms: Arc<Mutex<Vec<(String, [f32; 4])>>>,
     pub time_scale: Arc<std::sync::atomic::AtomicU32>,
     pub hitstop_timer: Arc<std::sync::atomic::AtomicU32>,
+    pub grounded_entities: Arc<RwLock<HashMap<String, bool>>>,
+    pub pending_collision_groups: Arc<Mutex<Vec<(String, Option<u32>, Option<u32>)>>>,
+    pub pending_character_moves: Arc<Mutex<Vec<(String, [f32; 3])>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -403,6 +406,9 @@ impl LuaEngineContext {
             pending_entity_transforms: Arc::new(Mutex::new(Vec::new())),
             time_scale: Arc::new(std::sync::atomic::AtomicU32::new(1.0f32.to_bits())),
             hitstop_timer: Arc::new(std::sync::atomic::AtomicU32::new(0.0f32.to_bits())),
+            grounded_entities: Arc::new(RwLock::new(HashMap::new())),
+            pending_collision_groups: Arc::new(Mutex::new(Vec::new())),
+            pending_character_moves: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -580,6 +586,8 @@ impl ScriptComponent {
                         mass: pt.get("mass").unwrap_or(1.0),
                         restitution: pt.get("restitution").unwrap_or(0.4),
                         is_sensor: pt.get("is_sensor").ok(),
+                        collision_layer: pt.get("collision_layer").ok(),
+                        collision_mask: pt.get("collision_mask").ok(),
                     })
                 } else {
                     None
@@ -1722,12 +1730,12 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register get_time_of_day: {}", e))?;
         lua.globals().set("get_time_of_day", get_time_of_day).map_err(|e| e.to_string())?;
 
-        // 35. raycast(ox, oy, oz, dx, dy, dz, max_dist)
+        // 35. raycast(ox, oy, oz, dx, dy, dz, max_dist, [layer_mask])
         let raycaster_arc = ctx.physics_raycaster.clone();
         let raycast = lua
             .create_function(
                 move |lua,
-                      (ox, oy, oz, dx, dy, dz, max_dist): (
+                      (ox, oy, oz, dx, dy, dz, max_dist, layer_mask): (
                     f32,
                     f32,
                     f32,
@@ -1735,6 +1743,7 @@ impl ScriptComponent {
                     f32,
                     f32,
                     f32,
+                    Option<u32>,
                 )| {
                     let hit_table = lua.create_table()?;
                     if let Ok(guard) = raycaster_arc.read() {
@@ -1742,11 +1751,15 @@ impl ScriptComponent {
                             let dir = glam::Vec3::new(dx, dy, dz);
                             let dir_norm = dir.normalize_or_zero();
                             if dir_norm.length_squared() >= 0.0001 {
+                                let mask = layer_mask.unwrap_or(0xFFFFFFFF);
+                                let groups = rapier3d::geometry::InteractionGroups::all()
+                                    .with_memberships(rapier3d::geometry::Group::ALL)
+                                    .with_filter(rapier3d::geometry::Group::from_bits_truncate(mask));
                                 let query_pipeline = raycaster.broad_phase.as_query_pipeline(
                                     raycaster.narrow_phase.query_dispatcher(),
                                     &raycaster.rigid_body_set,
                                     &raycaster.collider_set,
-                                    rapier3d::pipeline::QueryFilter::default().exclude_sensors(),
+                                    rapier3d::pipeline::QueryFilter::default().exclude_sensors().groups(groups),
                                 );
                                 let ray = rapier3d::geometry::Ray::new(
                                     glam::Vec3::new(ox, oy, oz),
@@ -1760,12 +1773,27 @@ impl ScriptComponent {
                                         .get(&col_handle)
                                         .cloned()
                                         .unwrap_or_default();
+                                    let hit_pt = glam::Vec3::new(ox, oy, oz) + dir_norm * hit.time_of_impact;
+                                    let pt_table = lua.create_table()?;
+                                    pt_table.set("x", hit_pt.x)?;
+                                    pt_table.set("y", hit_pt.y)?;
+                                    pt_table.set("z", hit_pt.z)?;
+
+                                    let norm_table = lua.create_table()?;
+                                    norm_table.set("x", hit.normal.x)?;
+                                    norm_table.set("y", hit.normal.y)?;
+                                    norm_table.set("z", hit.normal.z)?;
+
                                     hit_table.set("hit", true)?;
-                                    hit_table.set("entity", entity_id)?;
+                                    hit_table.set("entity", entity_id.clone())?;
+                                    hit_table.set("entity_id", entity_id)?;
                                     hit_table.set("dist", hit.time_of_impact)?;
+                                    hit_table.set("distance", hit.time_of_impact)?;
                                     hit_table.set("nx", hit.normal.x)?;
                                     hit_table.set("ny", hit.normal.y)?;
                                     hit_table.set("nz", hit.normal.z)?;
+                                    hit_table.set("point", pt_table)?;
+                                    hit_table.set("normal", norm_table)?;
                                     return Ok(hit_table);
                                 }
                             }
@@ -1773,7 +1801,9 @@ impl ScriptComponent {
                     }
                     hit_table.set("hit", false)?;
                     hit_table.set("entity", "")?;
+                    hit_table.set("entity_id", "")?;
                     hit_table.set("dist", 0.0)?;
+                    hit_table.set("distance", 0.0)?;
                     hit_table.set("nx", 0.0)?;
                     hit_table.set("ny", 0.0)?;
                     hit_table.set("nz", 0.0)?;
@@ -1782,6 +1812,109 @@ impl ScriptComponent {
             )
             .map_err(|e| format!("Failed to register raycast: {}", e))?;
         lua.globals().set("raycast", raycast).map_err(|e| e.to_string())?;
+
+        // overlap_sphere(cx, cy, cz, radius, [layer_mask]) -> { count = n, entity_ids = { ... } }
+        let overlap_raycaster_arc = ctx.physics_raycaster.clone();
+        let overlap_sphere = lua
+            .create_function(
+                move |lua, (cx, cy, cz, radius, layer_mask): (f32, f32, f32, f32, Option<u32>)| {
+                    let result_tbl = lua.create_table()?;
+                    let entity_ids_tbl = lua.create_table()?;
+                    let mut count = 0;
+
+                    if let Ok(guard) = overlap_raycaster_arc.read() {
+                        if let Some(raycaster) = guard.as_ref() {
+                            let mask = layer_mask.unwrap_or(0xFFFFFFFF);
+                            let groups = rapier3d::geometry::InteractionGroups::all()
+                                .with_memberships(rapier3d::geometry::Group::ALL)
+                                .with_filter(rapier3d::geometry::Group::from_bits_truncate(mask));
+                            let filter = rapier3d::pipeline::QueryFilter::default().groups(groups);
+                            let query_pipeline = raycaster.broad_phase.as_query_pipeline(
+                                raycaster.narrow_phase.query_dispatcher(),
+                                &raycaster.rigid_body_set,
+                                &raycaster.collider_set,
+                                filter,
+                            );
+
+                            let shape = rapier3d::geometry::Ball::new((radius as f32).max(0.01));
+                            let shape_pos = rapier3d::math::Pose::from_translation(glam::Vec3::new(cx, cy, cz));
+
+                            for (col_handle, _) in query_pipeline.intersect_shape(shape_pos, &shape) {
+                                if let Some(ent_id) = raycaster.collider_to_entity.get(&col_handle) {
+                                    count += 1;
+                                    entity_ids_tbl.set(count, ent_id.clone())?;
+                                }
+                            }
+                        }
+                    }
+
+                    result_tbl.set("count", count)?;
+                    result_tbl.set("entity_ids", entity_ids_tbl)?;
+                    Ok(result_tbl)
+                },
+            )
+            .map_err(|e| format!("Failed to register overlap_sphere: {}", e))?;
+        lua.globals().set("overlap_sphere", overlap_sphere).map_err(|e| e.to_string())?;
+
+        // is_grounded(entity_id: string) -> bool
+        let grounded_ref = ctx.grounded_entities.clone();
+        let is_grounded_fn = lua
+            .create_function(move |_, entity_id: String| {
+                if let Ok(lock) = grounded_ref.read() {
+                    Ok(lock.get(&entity_id).copied().unwrap_or(false))
+                } else {
+                    Ok(false)
+                }
+            })
+            .map_err(|e| format!("Failed to register is_grounded: {}", e))?;
+        lua.globals().set("is_grounded", is_grounded_fn).map_err(|e| e.to_string())?;
+
+        // move_character(entity_id: string, dx: number, dy: number, dz: number)
+        let char_moves_ref = ctx.pending_character_moves.clone();
+        let move_character_fn = lua
+            .create_function(move |_, (entity_id, dx, dy, dz): (String, f32, f32, f32)| {
+                if let Ok(mut lock) = char_moves_ref.lock() {
+                    lock.push((entity_id, [dx, dy, dz]));
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register move_character: {}", e))?;
+        lua.globals().set("move_character", move_character_fn).map_err(|e| e.to_string())?;
+
+        // set_collision_layer(entity_id: string, layer: integer)
+        let col_groups_ref1 = ctx.pending_collision_groups.clone();
+        let set_collision_layer_fn = lua
+            .create_function(move |_, (entity_id, layer): (String, u32)| {
+                if let Ok(mut lock) = col_groups_ref1.lock() {
+                    lock.push((entity_id, Some(layer), None));
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register set_collision_layer: {}", e))?;
+        lua.globals().set("set_collision_layer", set_collision_layer_fn).map_err(|e| e.to_string())?;
+
+        // set_collision_mask(entity_id: string, mask: integer)
+        let col_groups_ref2 = ctx.pending_collision_groups.clone();
+        let set_collision_mask_fn = lua
+            .create_function(move |_, (entity_id, mask): (String, u32)| {
+                if let Ok(mut lock) = col_groups_ref2.lock() {
+                    lock.push((entity_id, None, Some(mask)));
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register set_collision_mask: {}", e))?;
+        lua.globals().set("set_collision_mask", set_collision_mask_fn).map_err(|e| e.to_string())?;
+
+        // CollisionLayer constants table
+        let col_layer_tbl = lua.create_table().map_err(|e| e.to_string())?;
+        col_layer_tbl.set("DEFAULT", crate::physics::CollisionLayer::DEFAULT).map_err(|e| e.to_string())?;
+        col_layer_tbl.set("PLAYER", crate::physics::CollisionLayer::PLAYER).map_err(|e| e.to_string())?;
+        col_layer_tbl.set("ENEMY", crate::physics::CollisionLayer::ENEMY).map_err(|e| e.to_string())?;
+        col_layer_tbl.set("WORLD", crate::physics::CollisionLayer::WORLD).map_err(|e| e.to_string())?;
+        col_layer_tbl.set("PROJECTILE", crate::physics::CollisionLayer::PROJECTILE).map_err(|e| e.to_string())?;
+        col_layer_tbl.set("TRIGGER", crate::physics::CollisionLayer::TRIGGER).map_err(|e| e.to_string())?;
+        col_layer_tbl.set("ALL", crate::physics::CollisionLayer::ALL).map_err(|e| e.to_string())?;
+        lua.globals().set("CollisionLayer", col_layer_tbl).map_err(|e| e.to_string())?;
 
         // 36. play_tone(f_start, f_end, wave_type, duration, vol)
         let audio_tone_ref = ctx.audio.clone();
@@ -3084,7 +3217,7 @@ impl ScriptComponent {
         Ok(())
     }
 
-    pub fn on_collision(&self, self_id: &str, other_id: &str) -> Result<(), String> {
+    pub fn on_collision(&self, self_id: &str, other_id: &str, normal: [f32; 3]) -> Result<(), String> {
         if self.has_error {
             return Ok(());
         }
@@ -3095,7 +3228,7 @@ impl ScriptComponent {
             if let Ok(func) = on_col_fn {
                 let entity_tbl = lua.create_table().map_err(|e| e.to_string())?;
                 entity_tbl.set("id", self_id).map_err(|e| e.to_string())?;
-                func.call::<()>((entity_tbl, other_id))
+                func.call::<()>((entity_tbl, other_id, normal[0], normal[1], normal[2]))
                     .map_err(|e| format!("Lua on_collision error on '{}': {}", self_id, e))?;
             }
         }
@@ -3115,6 +3248,24 @@ impl ScriptComponent {
                 entity_tbl.set("id", self_id).map_err(|e| e.to_string())?;
                 func.call::<()>((other_id, entity_tbl))
                     .map_err(|e| format!("Lua on_trigger_enter error on '{}': {}", self_id, e))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn on_trigger_exit(&self, self_id: &str, other_id: &str) -> Result<(), String> {
+        if self.has_error {
+            return Ok(());
+        }
+
+        if let Some(lua_arc) = &self.lua {
+            let lua = lua_arc.lock().map_err(|e| e.to_string())?;
+            let on_trigger_fn: mlua::Result<mlua::Function> = lua.globals().get("on_trigger_exit");
+            if let Ok(func) = on_trigger_fn {
+                let entity_tbl = lua.create_table().map_err(|e| e.to_string())?;
+                entity_tbl.set("id", self_id).map_err(|e| e.to_string())?;
+                func.call::<()>((other_id, entity_tbl))
+                    .map_err(|e| format!("Lua on_trigger_exit error on '{}': {}", self_id, e))?;
             }
         }
         Ok(())
@@ -4387,5 +4538,44 @@ mod tests {
         assert_eq!(update.normal_map, Some(Some("assets/textures/golem_norm.png".to_string())));
         assert_eq!(update.metallic_roughness_map, Some(Some("assets/textures/golem_mr.png".to_string())));
         assert_eq!(update.emissive_map, Some(Some("assets/textures/golem_emit.png".to_string())));
+    }
+
+    #[test]
+    fn test_physics_fase32_lua_bindings() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        ctx.grounded_entities.write().unwrap().insert("player".to_string(), true);
+
+        let test_script = r#"
+            assert(CollisionLayer.PLAYER ~= nil)
+            assert(CollisionLayer.WORLD ~= nil)
+            assert(is_grounded("player") == true)
+            assert(is_grounded("airborne_enemy") == false)
+
+            move_character("player", 1.0, 0.0, 2.0)
+            set_collision_layer("player", CollisionLayer.PLAYER)
+            set_collision_mask("player", CollisionLayer.WORLD)
+
+            local sphere_res = overlap_sphere(0, 0, 0, 5.0)
+            assert(sphere_res.count == 0)
+        "#;
+        let script_path = "assets/scripts/temp_physics_lua_test.lua";
+        std::fs::write(script_path, test_script).unwrap();
+
+        let mut comp = ScriptComponent::new(script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        let _ = std::fs::remove_file(script_path);
+        assert!(res.is_ok(), "Physics lua execution failed: {:?}", res.err());
+
+        let moves = ctx.pending_character_moves.lock().unwrap();
+        assert_eq!(moves.len(), 1);
+        assert_eq!(moves[0].0, "player");
+        assert_eq!(moves[0].1, [1.0, 0.0, 2.0]);
+
+        let groups = ctx.pending_collision_groups.lock().unwrap();
+        assert_eq!(groups.len(), 2);
     }
 }

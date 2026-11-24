@@ -42,6 +42,10 @@ pub struct PhysicsDef {
     pub restitution: f32,
     #[serde(default)]
     pub is_sensor: Option<bool>,
+    #[serde(default)]
+    pub collision_layer: Option<u32>,
+    #[serde(default)]
+    pub collision_mask: Option<u32>,
 }
 
 fn default_mass() -> f32 {
@@ -360,13 +364,19 @@ pub fn extract_scene_from_world(
                     }).unwrap_or_else(|| "cuboid".to_string());
 
                     let is_sensor = body.colliders().first().and_then(|h| physics.collider_set.get(*h)).map(|c| c.is_sensor());
+                    let (layer, mask) = body.colliders().first()
+                        .and_then(|h| physics.collider_set.get(*h))
+                        .map(|c| (Some(c.collision_groups().memberships.bits()), Some(c.collision_groups().filter.bits())))
+                        .unwrap_or((None, None));
 
                     PhysicsDef {
-                        body: if body.is_dynamic() { "dynamic".to_string() } else { "fixed".to_string() },
+                        body: if body.is_dynamic() { "dynamic".to_string() } else if body.is_kinematic() { "kinematic".to_string() } else { "fixed".to_string() },
                         collider: collider_shape,
                         mass: body.mass(),
                         restitution: 0.5,
                         is_sensor,
+                        collision_layer: layer,
+                        collision_mask: mask,
                     }
                 })
             });
@@ -632,10 +642,14 @@ pub fn extract_entity_def(
                 0.4
             };
 
-            let is_sensor = if let Some(&c_handle) = body.colliders().first() {
-                physics.collider_set.get(c_handle).map(|c| c.is_sensor())
+            let (is_sensor, collision_layer, collision_mask) = if let Some(&c_handle) = body.colliders().first() {
+                if let Some(c) = physics.collider_set.get(c_handle) {
+                    (Some(c.is_sensor()), Some(c.collision_groups().memberships.bits()), Some(c.collision_groups().filter.bits()))
+                } else {
+                    (None, None, None)
+                }
             } else {
-                None
+                (None, None, None)
             };
 
             Some(PhysicsDef {
@@ -644,6 +658,8 @@ pub fn extract_entity_def(
                 mass: body.mass(),
                 restitution,
                 is_sensor,
+                collision_layer,
+                collision_mask,
             })
         } else {
             None
