@@ -25,6 +25,9 @@ pub mod tweens;
 pub mod ui_theme;
 pub mod vfx_forge;
 pub mod voxel_forge;
+pub mod day_night;
+
+use day_night::*;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -169,6 +172,10 @@ pub struct EngineState {
     pub is_standalone_play: bool,
     pub post_process_settings: assets::PostProcessDef,
     pub environment_settings: assets::EnvironmentDef,
+    pub active_sun_dir: glam::Vec3,
+    pub active_sun_color: glam::Vec3,
+    pub active_sun_intensity: f32,
+    pub active_stars_vis: f32,
     pub total_time: f32,
 
     // Editor State
@@ -427,6 +434,9 @@ impl EngineState {
         if let Ok(mut lock) = lua_ctx.environment_settings.write() {
             *lock = loaded_env.clone();
         }
+        if let Ok(mut tod) = lua_ctx.time_of_day.write() {
+            *tod = loaded_env.time_of_day;
+        }
 
         let hot_reload = match HotReloadManager::new("assets") {
             Ok(hr) => {
@@ -497,6 +507,10 @@ impl EngineState {
             is_standalone_play,
             post_process_settings: loaded_pp,
             environment_settings: loaded_env,
+            active_sun_dir: glam::Vec3::new(0.5, 0.8, 0.4).normalize(),
+            active_sun_color: glam::Vec3::new(1.0, 0.98, 0.92),
+            active_sun_intensity: 1.0,
+            active_stars_vis: 0.0,
             total_time: 0.0,
 
             workspace: EditorWorkspace::Scene,
@@ -653,6 +667,9 @@ impl EngineState {
                     if let Ok(mut lock) = self.lua_ctx.environment_settings.write() {
                         *lock = env.clone();
                     }
+                    if let Ok(mut tod) = self.lua_ctx.time_of_day.write() {
+                        *tod = env.time_of_day;
+                    }
                 }
                 self.selected_entity = None;
                 self.hot_reload.last_reload_error = None;
@@ -717,6 +734,9 @@ impl EngineState {
             self.environment_settings = env.clone();
             if let Ok(mut lock) = self.lua_ctx.environment_settings.write() {
                 *lock = env.clone();
+            }
+            if let Ok(mut tod) = self.lua_ctx.time_of_day.write() {
+                *tod = env.time_of_day;
             }
         }
 
@@ -3845,6 +3865,20 @@ impl EngineState {
         // Update camera shake
         self.camera.update_shake(dt);
 
+        // Check if day/night cycle is active (from Lua or scene environment)
+        let tod_from_lua = self.lua_ctx.time_of_day.read().ok().and_then(|t| *t);
+        let active_tod = tod_from_lua.or(self.environment_settings.time_of_day);
+        if let Some(hour) = active_tod {
+            let cycle = compute_day_night(hour, self.environment_settings.fog_density);
+            self.environment_settings.zenith_color = cycle.zenith_color;
+            self.environment_settings.horizon_color = cycle.horizon_color;
+            self.environment_settings.fog_color = cycle.fog_color;
+            self.active_sun_dir = glam::Vec3::from(cycle.sun_dir);
+            self.active_sun_color = glam::Vec3::from(cycle.sun_color);
+            self.active_sun_intensity = cycle.sun_intensity;
+            self.active_stars_vis = cycle.stars_visibility;
+        }
+
         // Update camera in GPU with simulation time and environment settings
         self.gpu.update_camera_with_environment(
             &self.camera,
@@ -3854,6 +3888,10 @@ impl EngineState {
             self.environment_settings.horizon_color,
             self.environment_settings.fog_color,
             self.environment_settings.fog_density,
+            self.active_sun_dir.to_array(),
+            self.active_sun_color.to_array(),
+            self.active_sun_intensity,
+            self.active_stars_vis,
         );
 
         // Collect active point lights into GPU uniform
@@ -7557,7 +7595,7 @@ impl EngineState {
         );
 
         // 0. Directional Shadow Pass (Depth Only, 2048x2048)
-        self.gpu.update_shadow_camera(self.camera.target);
+        self.gpu.update_shadow_camera(self.camera.target, self.active_sun_dir, self.active_sun_color, self.active_sun_intensity);
         {
             let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Shadow Pass"),

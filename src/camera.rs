@@ -395,6 +395,8 @@ pub struct CameraUniform {
     pub fog_color: [f32; 4],
     pub zenith_color: [f32; 4],
     pub horizon_color: [f32; 4],
+    pub sun_dir: [f32; 4],
+    pub sun_color: [f32; 4],
 }
 
 impl CameraUniform {
@@ -406,6 +408,8 @@ impl CameraUniform {
             fog_color: [0.071, 0.082, 0.118, 0.0],
             zenith_color: [0.071, 0.082, 0.118, 1.0],
             horizon_color: [0.133, 0.153, 0.212, 0.0],
+            sun_dir: [0.5, 0.8, 0.4, 1.0],
+            sun_color: [1.0, 0.98, 0.92, 0.0],
         }
     }
 
@@ -430,6 +434,10 @@ impl CameraUniform {
         horizon: [f32; 3],
         fog_color: [f32; 3],
         fog_density: f32,
+        sun_dir: [f32; 3],
+        sun_color: [f32; 3],
+        sun_intensity: f32,
+        stars_visibility: f32,
     ) {
         self.update_with_time(camera, time);
         let mode_val = match sky_mode.to_lowercase().as_str() {
@@ -440,6 +448,8 @@ impl CameraUniform {
         self.fog_color = [fog_color[0], fog_color[1], fog_color[2], fog_density];
         self.zenith_color = [zenith[0], zenith[1], zenith[2], mode_val];
         self.horizon_color = [horizon[0], horizon[1], horizon[2], 0.0];
+        self.sun_dir = [sun_dir[0], sun_dir[1], sun_dir[2], sun_intensity];
+        self.sun_color = [sun_color[0], sun_color[1], sun_color[2], stars_visibility];
     }
 }
 

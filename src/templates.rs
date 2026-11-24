@@ -35,6 +35,7 @@ fn template_empty_3d() -> SceneDef {
             horizon_color: [0.133, 0.153, 0.212],
             fog_color: [0.08, 0.09, 0.13],
             fog_density: 0.008,
+            time_of_day: None,
         }),
         entities: vec![
             EntityDef {
@@ -138,6 +139,7 @@ fn template_top_down_2d() -> SceneDef {
             horizon_color: [0.05, 0.06, 0.09],
             fog_color: [0.05, 0.06, 0.09],
             fog_density: 0.0,
+            time_of_day: None,
         }),
         entities: vec![
             EntityDef {
@@ -239,6 +241,7 @@ fn template_platformer_3d() -> SceneDef {
             horizon_color: [0.25, 0.32, 0.45],
             fog_color: [0.20, 0.26, 0.38],
             fog_density: 0.007,
+            time_of_day: None,
         }),
         entities: vec![
             EntityDef {
@@ -404,6 +407,7 @@ fn template_space_arena() -> SceneDef {
             horizon_color: [0.015, 0.02, 0.05],
             fog_color: [0.03, 0.04, 0.12],
             fog_density: 0.01,
+            time_of_day: None,
         }),
         entities: vec![
             EntityDef {

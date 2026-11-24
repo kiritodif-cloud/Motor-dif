@@ -1520,6 +1520,7 @@ mod tests {
                 horizon_color: [0.12, 0.16, 0.24],
                 fog_color: [0.06, 0.08, 0.14],
                 fog_density: 0.005,
+                time_of_day: None,
             }),
             entities,
         };

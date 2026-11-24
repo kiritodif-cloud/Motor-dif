@@ -159,6 +159,8 @@ pub struct EnvironmentDef {
     pub fog_color: [f32; 3],
     #[serde(default)]
     pub fog_density: f32,
+    #[serde(default)]
+    pub time_of_day: Option<f32>,
 }
 
 fn default_sky_mode() -> String { "gradient".to_string() }
@@ -174,6 +176,7 @@ impl Default for EnvironmentDef {
             horizon_color: default_horizon(),
             fog_color: default_fog_color(),
             fog_density: 0.0,
+            time_of_day: None,
         }
     }
 }
@@ -751,11 +754,13 @@ mod tests {
             horizon_color: [0.01, 0.01, 0.03],
             fog_color: [0.02, 0.02, 0.04],
             fog_density: 0.015,
+            time_of_day: Some(14.5),
         };
         let json = serde_json::to_string(&env).unwrap();
         let decoded: EnvironmentDef = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.sky_mode, "space");
         assert_eq!(decoded.fog_density, 0.015);
+        assert_eq!(decoded.time_of_day, Some(14.5));
 
         let def_env = EnvironmentDef::default();
         assert_eq!(def_env.sky_mode, "gradient");

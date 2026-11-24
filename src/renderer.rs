@@ -12,6 +12,8 @@ use crate::camera::{Camera, CameraUniform};
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct ShadowUniform {
     pub light_view_proj: [[f32; 4]; 4],
+    pub light_dir: [f32; 4],
+    pub light_color: [f32; 4],
 }
 
 #[repr(C)]
@@ -318,6 +320,8 @@ pub struct GpuContext {
 const SHADOW_SHADER_SOURCE: &str = r#"
 struct ShadowUniform {
     light_view_proj: mat4x4<f32>,
+    light_dir: vec4<f32>,
+    light_color: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -390,6 +394,8 @@ struct CameraUniform {
     fog_color: vec4<f32>,
     zenith_color: vec4<f32>,
     horizon_color: vec4<f32>,
+    sun_dir: vec4<f32>,
+    sun_color: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -420,6 +426,8 @@ var<uniform> lights: LightsUniform;
 
 struct ShadowUniform {
     light_view_proj: mat4x4<f32>,
+    light_dir: vec4<f32>,
+    light_color: vec4<f32>,
 };
 
 @group(3) @binding(0)
@@ -569,18 +577,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let ambient = mix(ground_ambient, sky_ambient, hemi_factor);
 
     // 2. Directional Diffuse Lighting with PCF Soft Shadows
-    let light_dir = normalize(vec3<f32>(0.5, 0.8, 0.4));
+    var light_dir = shadow_uniform.light_dir.xyz;
+    if (dot(light_dir, light_dir) < 0.001) {
+        light_dir = normalize(vec3<f32>(0.5, 0.8, 0.4));
+    } else {
+        light_dir = normalize(light_dir);
+    }
+    let light_color = shadow_uniform.light_color.rgb;
+    let light_intensity = max(shadow_uniform.light_color.w, 0.01);
     let n_dot_l = max(dot(in.world_normal, light_dir), 0.0);
-    let light_color = vec3<f32>(1.0, 0.98, 0.92);
     let shadow_factor = fetch_shadow(in.shadow_pos, n_dot_l);
-    let diffuse = light_color * n_dot_l * 0.70 * shadow_factor;
+    let diffuse = light_color * n_dot_l * (0.70 * light_intensity) * shadow_factor;
 
     // 3. Blinn-Phong Specular
     let view_dir = normalize(camera.camera_pos.xyz - in.world_pos);
     let half_dir = normalize(light_dir + view_dir);
     let n_dot_h = max(dot(in.world_normal, half_dir), 0.0);
-    let spec_factor = pow(n_dot_h, 32.0) * step(0.001, n_dot_l) * 0.35 * shadow_factor;
-    let specular = vec3<f32>(1.0, 1.0, 1.0) * spec_factor;
+    let spec_factor = pow(n_dot_h, 32.0) * step(0.001, n_dot_l) * (0.35 * light_intensity) * shadow_factor;
+    let specular = light_color * spec_factor;
 
     // 4. Point Lights Accumulation
     var point_diffuse = vec3<f32>(0.0);
@@ -655,17 +669,23 @@ fn fs_translucent(in: VertexOutput) -> @location(0) vec4<f32> {
     let ground_ambient = mix(vec3<f32>(0.11, 0.12, 0.14), camera.horizon_color.rgb * 0.25, 0.5);
     let ambient = mix(ground_ambient, sky_ambient, hemi_factor);
 
-    let light_dir = normalize(vec3<f32>(0.5, 0.8, 0.4));
+    var light_dir = shadow_uniform.light_dir.xyz;
+    if (dot(light_dir, light_dir) < 0.001) {
+        light_dir = normalize(vec3<f32>(0.5, 0.8, 0.4));
+    } else {
+        light_dir = normalize(light_dir);
+    }
+    let light_color = shadow_uniform.light_color.rgb;
+    let light_intensity = max(shadow_uniform.light_color.w, 0.01);
     let n_dot_l = max(dot(in.world_normal, light_dir), 0.0);
-    let light_color = vec3<f32>(1.0, 0.98, 0.92);
     let shadow_factor = fetch_shadow(in.shadow_pos, n_dot_l);
-    let diffuse = light_color * n_dot_l * 0.70 * shadow_factor;
+    let diffuse = light_color * n_dot_l * (0.70 * light_intensity) * shadow_factor;
 
     let view_dir = normalize(camera.camera_pos.xyz - in.world_pos);
     let half_dir = normalize(light_dir + view_dir);
     let n_dot_h = max(dot(in.world_normal, half_dir), 0.0);
-    let spec_factor = pow(n_dot_h, 32.0) * step(0.001, n_dot_l) * 0.40 * shadow_factor;
-    let specular = vec3<f32>(1.0, 1.0, 1.0) * spec_factor;
+    let spec_factor = pow(n_dot_h, 32.0) * step(0.001, n_dot_l) * (0.40 * light_intensity) * shadow_factor;
+    let specular = light_color * spec_factor;
 
     var fresnel_contrib = vec3<f32>(0.0);
     if (in.fresnel.w > 0.0) {
@@ -696,6 +716,8 @@ struct CameraUniform {
     fog_color: vec4<f32>,
     zenith_color: vec4<f32>,
     horizon_color: vec4<f32>,
+    sun_dir: vec4<f32>,
+    sun_color: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -901,6 +923,8 @@ struct CameraUniform {
     fog_color: vec4<f32>,
     zenith_color: vec4<f32>,
     horizon_color: vec4<f32>,
+    sun_dir: vec4<f32>,
+    sun_color: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -940,10 +964,40 @@ fn fs_sky(in: SkyVertexOutput) -> @location(0) vec4<f32> {
         // Solid color
         return vec4<f32>(camera.horizon_color.rgb, 1.0);
     } else if (sky_mode == 1) {
-        // Smooth zenith / horizon gradient
+        // Smooth zenith / horizon gradient with sun/moon and stars
         let h = clamp(ray_dir.y * 0.5 + 0.5, 0.0, 1.0);
         let grad = mix(camera.horizon_color.rgb, camera.zenith_color.rgb, pow(h, 0.7));
-        return vec4<f32>(grad, 1.0);
+        var color = grad;
+
+        let sun_dir = normalize(camera.sun_dir.xyz);
+        let sun_intensity = camera.sun_dir.w;
+        let sun_dot = max(dot(ray_dir, sun_dir), 0.0);
+        let sun_disk = pow(sun_dot, 800.0) * 4.0 * sun_intensity;
+        let sun_glow = pow(sun_dot, 16.0) * 0.6 * sun_intensity;
+        let sun_color = camera.sun_color.rgb;
+
+        let moon_dir = -sun_dir;
+        let moon_dot = max(dot(ray_dir, moon_dir), 0.0);
+        let night_factor = 1.0 - clamp(sun_intensity * 1.5, 0.0, 1.0);
+        let moon_disk = pow(moon_dot, 900.0) * 2.5 * night_factor;
+        let moon_glow = pow(moon_dot, 20.0) * 0.3 * night_factor;
+        let moon_color = vec3<f32>(0.75, 0.85, 1.0);
+
+        let stars_vis = camera.sun_color.w;
+        if (stars_vis > 0.01) {
+            let star_cell = floor(ray_dir * 180.0);
+            let star_rand = hash31(star_cell);
+            if (star_rand > 0.985) {
+                let star_pos = (star_cell + 0.5) / 180.0;
+                let dist_to_center = length(ray_dir - normalize(star_pos)) * 180.0;
+                let twinkle = 0.6 + 0.4 * sin(time * 3.5 + star_rand * 62.8);
+                let intensity = exp(-dist_to_center * dist_to_center * 16.0) * twinkle * stars_vis;
+                color += vec3<f32>(0.9, 0.95, 1.0) * intensity * 1.8;
+            }
+        }
+
+        color += (sun_disk + sun_glow) * sun_color + (moon_disk + moon_glow) * moon_color;
+        return vec4<f32>(color, 1.0);
     } else {
         // Space with 3D starfield & faint nebula
         let h = clamp(ray_dir.y * 0.5 + 0.5, 0.0, 1.0);
@@ -1299,6 +1353,8 @@ impl GpuContext {
 
         let shadow_uniform = ShadowUniform {
             light_view_proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            light_dir: [0.5, 0.8, 0.4, 0.0],
+            light_color: [1.0, 0.98, 0.92, 1.0],
         };
         let shadow_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("shadow_buffer"),
@@ -1776,15 +1832,23 @@ impl GpuContext {
         }
     }
 
-    pub fn update_shadow_camera(&self, camera_target: Vec3) {
-        let light_dir = Vec3::new(0.5, 0.8, 0.4).normalize();
+    pub fn update_shadow_camera(&self, camera_target: Vec3, light_dir: Vec3, light_color: Vec3, light_intensity: f32) {
+        let norm_light_dir = if light_dir.length_squared() > 0.001 {
+            light_dir.normalize()
+        } else {
+            Vec3::new(0.5, 0.8, 0.4).normalize()
+        };
         let target_xz = Vec3::new(camera_target.x, 0.0, camera_target.z);
-        let light_pos = target_xz + light_dir * 50.0;
+        let light_pos = target_xz + norm_light_dir * 50.0;
         let view = rh::view::look_at_mat4(light_pos, target_xz, Vec3::Y);
         let proj = rh::proj::directx::orthographic(-45.0, 45.0, -45.0, 45.0, 1.0, 120.0);
         let light_view_proj = (proj * view).to_cols_array_2d();
 
-        let uniform = ShadowUniform { light_view_proj };
+        let uniform = ShadowUniform {
+            light_view_proj,
+            light_dir: [norm_light_dir.x, norm_light_dir.y, norm_light_dir.z, 0.0],
+            light_color: [light_color.x, light_color.y, light_color.z, light_intensity],
+        };
         self.queue.write_buffer(&self.shadow_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
 
@@ -1947,9 +2011,25 @@ impl GpuContext {
         horizon: [f32; 3],
         fog_color: [f32; 3],
         fog_density: f32,
+        sun_dir: [f32; 3],
+        sun_color: [f32; 3],
+        sun_intensity: f32,
+        stars_visibility: f32,
     ) {
         let mut uniform = CameraUniform::new();
-        uniform.update_with_environment(camera, time, sky_mode, zenith, horizon, fog_color, fog_density);
+        uniform.update_with_environment(
+            camera,
+            time,
+            sky_mode,
+            zenith,
+            horizon,
+            fog_color,
+            fog_density,
+            sun_dir,
+            sun_color,
+            sun_intensity,
+            stars_visibility,
+        );
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
@@ -3241,7 +3321,9 @@ mod tests {
         assert_eq!(size_of::<LightsUniform>() % 16, 0);
         assert_eq!(size_of::<PostProcessUniform>(), 32);
         assert_eq!(size_of::<PostProcessUniform>() % 16, 0);
-        assert_eq!(size_of::<ShadowUniform>(), 64);
+        assert_eq!(size_of::<ShadowUniform>(), 96);
         assert_eq!(size_of::<ShadowUniform>() % 16, 0);
+        assert_eq!(size_of::<CameraUniform>(), 224);
+        assert_eq!(size_of::<CameraUniform>() % 16, 0);
     }
 }

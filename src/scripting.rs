@@ -144,6 +144,7 @@ pub struct LuaEngineContext {
     pub pointer_locked: Arc<std::sync::atomic::AtomicBool>,
     pub pointer_lock_command: Arc<std::sync::atomic::AtomicI8>,
     pub active_voxel_world: Arc<RwLock<Option<crate::voxel_forge::VoxelWorld>>>,
+    pub time_of_day: Arc<RwLock<Option<f32>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -345,6 +346,7 @@ impl LuaEngineContext {
             pointer_locked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pointer_lock_command: Arc::new(std::sync::atomic::AtomicI8::new(0)),
             active_voxel_world: Arc::new(RwLock::new(None)),
+            time_of_day: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -1490,6 +1492,28 @@ impl ScriptComponent {
             })
             .map_err(|e| format!("Failed to register get_environment: {}", e))?;
         lua.globals().set("get_environment", get_environment).map_err(|e| e.to_string())?;
+
+        // 34b. set_time_of_day(hour)
+        let tod_set_ref = ctx.time_of_day.clone();
+        let set_time_of_day = lua
+            .create_function(move |_, hour: f32| {
+                if let Ok(mut lock) = tod_set_ref.write() {
+                    *lock = Some(crate::day_night::normalize_hour(hour));
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("Failed to register set_time_of_day: {}", e))?;
+        lua.globals().set("set_time_of_day", set_time_of_day).map_err(|e| e.to_string())?;
+
+        // 34c. get_time_of_day() -> f32
+        let tod_get_ref = ctx.time_of_day.clone();
+        let get_time_of_day = lua
+            .create_function(move |_, ()| {
+                let hour = tod_get_ref.read().ok().and_then(|h| *h).unwrap_or(12.0);
+                Ok(hour)
+            })
+            .map_err(|e| format!("Failed to register get_time_of_day: {}", e))?;
+        lua.globals().set("get_time_of_day", get_time_of_day).map_err(|e| e.to_string())?;
 
         // 35. raycast(ox, oy, oz, dx, dy, dz, max_dist)
         let raycaster_arc = ctx.physics_raycaster.clone();

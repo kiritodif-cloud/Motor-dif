@@ -37,7 +37,8 @@
       0.08,
       0.14
     ],
-    "fog_density": 0.005
+    "fog_density": 0.005,
+    "time_of_day": null
   },
   "entities": [
     {
