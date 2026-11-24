@@ -7352,7 +7352,40 @@ impl ApplicationHandler for App {
     }
 }
 
+pub fn resolve_workspace_root() -> std::path::PathBuf {
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            // Check 1: if inside target/release or target/debug, check if project root has assets
+            if let Some(parent1) = exe_dir.parent() {
+                if let Some(project_root) = parent1.parent() {
+                    let dev_assets = project_root.join("assets");
+                    if dev_assets.is_dir() {
+                        let _ = std::env::set_current_dir(project_root);
+                        return project_root.to_path_buf();
+                    }
+                }
+            }
+
+            // Check 2: check if <exe_dir>/assets exists
+            let direct_assets = exe_dir.join("assets");
+            if direct_assets.is_dir() {
+                let _ = std::env::set_current_dir(exe_dir);
+                return exe_dir.to_path_buf();
+            }
+
+            // Check 3: fallback for standalone distribution / new folder
+            let _ = std::env::set_current_dir(exe_dir);
+            let _ = std::fs::create_dir_all(direct_assets.join("scripts"));
+            return exe_dir.to_path_buf();
+        }
+    }
+    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+}
+
 fn main() {
+    let workspace_root = resolve_workspace_root();
+    println!("Workspace root resolved: {}", workspace_root.display());
+
     let args: Vec<String> = std::env::args().collect();
     let mut is_play_mode = false;
     let mut target_scene = "assets/scene.json".to_string();
@@ -7535,5 +7568,11 @@ mod tests {
                 assert!(script.lua.is_none(), "Script must be reset to None on Stop!");
             }
         }
+    }
+
+    #[test]
+    fn test_resolve_workspace_root() {
+        let root = resolve_workspace_root();
+        assert!(root.join("assets").is_dir(), "Resolved root must have assets directory");
     }
 }
