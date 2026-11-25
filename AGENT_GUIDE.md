@@ -221,5 +221,7 @@ MCP Tools Directory:
 - `spawn_prefab({ name, position })`: Instantiates `.prefab.json` or `.json` prefab hierarchy with root and children.
 - `save_prefab({ entity_id, path })`: Exports entity hierarchy to `assets/prefabs/<name>.prefab.json`.
 - `find_path({ from, to, max_steps })`: Computes 3D A* path between coordinates.
-- Editor Shortcuts: `F3` (Profiler CPU/GPU breakdown, sparkline & VRAM), `F11` (Fullscreen), `Ctrl+Z` (Undo), `Ctrl+Y` (Redo), `Ctrl+S` (Save), `W`/`E`/`R` (Gizmos), `🧲 Snap`.
+- `configure_rtt({ target_id, width, height, camera_entity, display_entity, fov, update_hz, as_emissive })`: Configures RTT target and camera projection.
+- `net_status()`: Inspects network role, peer count, RTT latency, throughput TX/RX, and replicated entities.
+- Editor Shortcuts: `F3` (Profiler CPU/GPU, RTT & Net metrics), `F11` (Fullscreen), `Ctrl+Z` (Undo), `Ctrl+Y` (Redo), `Ctrl+S` (Save), `W`/`E`/`R` (Gizmos), `🧲 Snap`. CLI: `--server [port]`, `--port <p>`, `--connect <ip:p>`.
 - Auth: Optional `--mcp-token <TOKEN>` (or `MOTOR_MCP_TOKEN`), requires `Authorization: Bearer <TOKEN>` header.

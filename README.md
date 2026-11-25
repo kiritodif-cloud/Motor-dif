@@ -1,4 +1,4 @@
-# Motor-dif v0.2.0
+# Motor-dif v0.3.0
 
 **Motor-dif** es un motor de videojuegos 2D/3D ligero y **nativo para IA** escrito en **Rust**, diseñado para crear, iterar y exportar juegos completos conversando en lenguaje natural con agentes de IA a través de **MCP (Model Context Protocol)**, sin sacrificar rendimiento en gráficas integradas.
 
@@ -18,6 +18,41 @@ La mayoría de los motores tradicionales fueron diseñados para flujos manuales 
 - **Núcleo nativo en Rust (`wgpu` + `Rapier3D` + `mlua` + `egui`):** Compila a un único ejecutable ligero y corre fluido (> 60-75 FPS en modo *Release* con sombras `2048x2048`, PBR, 16 luces y HDR en gráficas integradas).
 - **Servidor MCP integrado (`http://127.0.0.1:3030/mcp`):** Permite que cualquier agente (Antigravity, Claude Desktop, Cursor, OpenCode, etc.) inspeccione la documentación del motor, construya mundos, capture el visor en vivo, lea errores de consola y pruebe el juego en tiempo real con autenticación opcional por token (`--mcp-token`).
 - **Forges nativas en Rust:** Generadores procedurales integrados para modelos, texturas, mapas de altura, mundos voxel, audio adaptativo, sistemas de partículas y controladores de jugador.
+
+---
+
+## Novedades Principales en Motor-dif v0.3.0
+
+### 1. Render-To-Texture (RTT) y Cámaras Secundarias
+- **Arquitectura de Pases RTT:** Registro de texturas de renderizado (`RenderTargetRegistry`) y planificador round-robin con presupuesto por frame (`RttScheduler`) para mantener > 60 FPS en tarjetas integradas (iGPU).
+- **Proyección 3D y 2D:**
+  - Cámaras de seguridad CCTV, retrovisores y pantallas in-game sobre mallas 3D sin E/S de disco (`set_material_rtt`).
+  - Elementos de UI nativos (`UiElement::RttView` / `ui_draw_rtt`) para minimapas, visores tácticos y picture-in-picture en HUD.
+- **Herramienta MCP `configure_rtt`:** Configuración remota de objetivos de textura y asignación a entidades de cámara y pantalla.
+
+### 2. Netcode UDP Nativo con Renet y 3 Canales
+- **Protocolo de Transporte UDP:** Handshake y enrutamiento con Renet sobre 3 canales configurados:
+  - Canal 0 (`Unreliable`): Sincronización de alta frecuencia de transformaciones y snapshots de mundo.
+  - Canal 1 (`ReliableOrdered`): Spawns, eventos críticos de gameplay y chat.
+  - Canal 2 (`ReliableUnordered`): Confirmaciones discretas y pings.
+- **Replicación Automática ECS:** Componentes `NetworkId` y `NetworkSync` para empaquetado de snapshots binarios y sincronización configurable en hercios (`rate_hz`).
+- **Interpolación Suave en Cliente:** Amortiguación LERP para traslación y SLERP para rotación de cuaterniones, eliminando jitter en la simulación.
+- **API Completa en Lua:** `net_host(port)`, `net_connect(ip_port)`, `net_disconnect()`, `net_is_server()`, `net_is_client()`, `net_client_id()`, `net_send(ch, msg)`, `net_broadcast(ch, msg)` y callbacks `on_net_connect`, `on_net_disconnect`, `on_net_message`.
+
+### 3. Modo Servidor Headless y CI-Friendly
+- **Servidor Dedicado en 1 Comando:** Ejecución sin GPU ni ventana mediante CLI:
+  ```bash
+  # Servidor dedicado en puerto 5000
+  motor_dif --server 5000
+  # Cliente auto-conectándose al servidor
+  motor_dif --connect 127.0.0.1:5000
+  ```
+- **Compatibilidad 100% Headless:** Todos los tests unitarios desacoplados de dispositivos de audio o GPU física, garantizando ejecución limpia en CI/CD de GitHub Actions.
+
+### 4. Herramientas MCP de Red, Profiler F3 y Fallback de Assets
+- **Herramienta MCP `net_status`:** Retorna el rol activo, cantidad de clientes/peers conectados, latencia RTT promedio (ms), rendimiento TX/RX en bytes/s y total de entidades replicadas.
+- **Métricas F3 en Tiempo Real:** Filas dedicadas en el overlay del Profiler para pases RTT y telemetría de Red (`Net: [Role] | Peers: [N] | RTT: [ms] | TX/RX: [KB/s]`).
+- **Resolución Inteligente de Assets:** Búsqueda recursiva con fallback automático a `../../assets` cuando el ejecutable se ejecuta desde subcarpetas (ej. `dist/`).
 
 ---
 
@@ -81,7 +116,7 @@ La mayoría de los motores tradicionales fueron diseñados para flujos manuales 
 git clone https://github.com/tu-usuario/Motor-dif.git
 cd Motor-dif
 
-# Ejecutar pruebas unitarias (142 tests pasando al 100%)
+# Ejecutar pruebas unitarias (155 tests pasando al 100%)
 cargo test --bin motor_dif
 
 # Compilar en modo Release optimizado

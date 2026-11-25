@@ -47,6 +47,16 @@ pub struct PerformanceStatsResponse {
     pub physics_bodies: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetStatusResponse {
+    pub role: String,
+    pub peer_count: usize,
+    pub rtt_ms: f64,
+    pub tx_bytes_sec: f64,
+    pub rx_bytes_sec: f64,
+    pub active_replicated_entities: usize,
+}
+
 pub enum McpCommand {
     InspectWorld {
         respond_to: oneshot::Sender<WorldInspection>,
@@ -215,6 +225,9 @@ pub enum McpCommand {
         update_hz: Option<f32>,
         as_emissive: Option<bool>,
         respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
+    GetNetStatus {
+        respond_to: oneshot::Sender<NetStatusResponse>,
     },
 }
 
@@ -840,6 +853,32 @@ pub async fn handle_jsonrpc(
                                     }
                                 },
                                 "required": ["from", "to"]
+                            }
+                        },
+                        {
+                            "name": "configure_rtt",
+                            "description": "Configure off-screen Render-To-Texture (RTT) target and optionally attach to camera and/or display entity.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "target_id": { "type": "string", "description": "Unique identifier for the render target" },
+                                    "width": { "type": "integer", "description": "Width in pixels (default: 320)" },
+                                    "height": { "type": "integer", "description": "Height in pixels (default: 240)" },
+                                    "camera_entity": { "type": "string", "description": "Entity ID of camera to render to this target" },
+                                    "display_entity": { "type": "string", "description": "Entity ID of mesh to display this target on" },
+                                    "fov": { "type": "number", "description": "Field of view for RTT camera (default: 60.0)" },
+                                    "update_hz": { "type": "number", "description": "Render update frequency in Hz (default: 30.0)" },
+                                    "as_emissive": { "type": "boolean", "description": "Whether to map texture to emissive channel (default: false)" }
+                                },
+                                "required": ["target_id"]
+                            }
+                        },
+                        {
+                            "name": "net_status",
+                            "description": "Inspect network role, connected peers, RTT latency, TX/RX throughput, and active replicated ECS entities.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {}
                             }
                         }
                     ]
@@ -1846,6 +1885,25 @@ pub async fn handle_jsonrpc(
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Engine dropped response")),
                     }
                 }
+                                "net_status" => {
+                    let (tx, rx) = oneshot::channel();
+                    if cmd_tx.send(McpCommand::GetNetStatus { respond_to: tx }).await.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Motor no disponible"));
+                    }
+                    match rx.await {
+                        Ok(status) => Some(JsonRpcResponse::success(
+                            id,
+                            json!({
+                                "content": [{
+                                    "type": "text",
+                                    "text": serde_json::to_string_pretty(&status).unwrap_or_default()
+                                }],
+                                "data": status
+                            }),
+                        )),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Timeout al consultar net_status")),
+                    }
+                }
                 _ => Some(JsonRpcResponse::error(id, -32601, format!("Herramienta desconocida: {}", tool_name))),
             }
         }
@@ -2549,5 +2607,46 @@ mod tests {
         assert_eq!(val["result"]["target_id"], "cctv_plaza");
 
         rt.block_on(handle).unwrap();
+    }
+#[test]
+    fn test_mcp_net_status_dispatch() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(101)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "net_status",
+                "arguments": {}
+            })),
+        };
+
+        let handle_task = rt.spawn(async move {
+            handle_jsonrpc(&cmd_tx, req).await
+        });
+
+        let cmd = rt.block_on(async { cmd_rx.recv().await }).unwrap();
+        match cmd {
+            McpCommand::GetNetStatus { respond_to } => {
+                let _ = respond_to.send(NetStatusResponse {
+                    role: "Server".to_string(),
+                    peer_count: 2,
+                    rtt_ms: 18.5,
+                    tx_bytes_sec: 1024.0,
+                    rx_bytes_sec: 512.0,
+                    active_replicated_entities: 4,
+                });
+            }
+            _ => panic!("Expected GetNetStatus command"),
+        }
+
+        let resp = rt.block_on(handle_task).unwrap().unwrap();
+        assert_eq!(resp.id, Some(json!(101)));
+        assert!(resp.result.is_some());
+        let res_json = resp.result.unwrap();
+        assert!(res_json.to_string().contains("Server"));
+        assert!(res_json.to_string().contains("18.5"));
     }
 }

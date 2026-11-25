@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 pub mod animation;
 pub mod assets;
 pub mod audio;
@@ -744,6 +746,17 @@ impl EngineState {
 
                             ui.label(egui::RichText::new("Draw Calls (Batches):").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
                             ui.label(egui::RichText::new(format!("{}", self.last_draw_calls)).size(11.0).strong().color(egui::Color32::from_rgb(56, 189, 248)));
+                            ui.end_row();
+
+let role_str = match self.net.role {
+                                net::NetworkRole::Server => "Server",
+                                net::NetworkRole::Client => "Client",
+                                net::NetworkRole::Disconnected => "Offline",
+                            };
+                            let (tx, rx) = self.net.tx_rx_stats();
+                            let rtt_ms = self.net.rtt(None);
+                            ui.label(egui::RichText::new("Net (Role/Peers/RTT):").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                            ui.label(egui::RichText::new(format!("{} | {} peers | {:.0}ms | {:.1}/{:.1} KB/s", role_str, self.net.peer_count(), rtt_ms, tx / 1024.0, rx / 1024.0)).size(11.0).strong().color(egui::Color32::from_rgb(56, 189, 248)));
                             ui.end_row();
 
                             ui.label(egui::RichText::new("RTT Passes / Targets:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
@@ -3353,6 +3366,30 @@ impl EngineState {
                         "camera_attached": cam_attached,
                         "display_attached": disp_attached,
                     })));
+                }
+                McpCommand::GetNetStatus { respond_to } => {
+                    let role = match self.net.role {
+                        net::NetworkRole::Server => "Server",
+                        net::NetworkRole::Client => "Client",
+                        net::NetworkRole::Disconnected => "Disconnected",
+                    };
+                    let peer_count = self.net.peer_count();
+                    let rtt_ms = self.net.rtt(None);
+                    let (tx_bytes_sec, rx_bytes_sec) = self.net.tx_rx_stats();
+                    let mut active_replicated_entities = 0;
+                    for er in self.world.iter() {
+                        if er.get::<&ecs::NetworkId>().is_some() {
+                            active_replicated_entities += 1;
+                        }
+                    }
+                    let _ = respond_to.send(mcp_server::NetStatusResponse {
+                        role: role.to_string(),
+                        peer_count,
+                        rtt_ms,
+                        tx_bytes_sec,
+                        rx_bytes_sec,
+                        active_replicated_entities,
+                    });
                 }
             }
         }
