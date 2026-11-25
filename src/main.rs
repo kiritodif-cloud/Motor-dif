@@ -9038,6 +9038,14 @@ let role_str = match self.net.role {
             .handle_platform_output(&self.window, platform_output);
         if self.pointer_locked {
             self.window.set_cursor_visible(false);
+            if self.viewport_rect.is_positive() {
+                let scale = self.window.scale_factor() as f32;
+                let c = self.viewport_rect.center();
+                let _ = self.window.set_cursor_position(winit::dpi::PhysicalPosition::new(
+                    (c.x * scale) as f64,
+                    (c.y * scale) as f64,
+                ));
+            }
         }
 
         let pixels_per_point = self.window.scale_factor() as f32;
