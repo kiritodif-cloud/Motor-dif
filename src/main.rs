@@ -250,6 +250,7 @@ pub struct EngineState {
     pub mouse_pos: [f32; 2],
     pub pointer_locked: bool,
     pub pointer_lock_requested: bool,
+    pub is_paused: bool,
     pub is_right_mouse_down: bool,
     pub is_middle_mouse_down: bool,
     pub is_left_mouse_down: bool,
@@ -615,6 +616,7 @@ impl EngineState {
             mouse_pos: [0.0, 0.0],
             pointer_locked: false,
             pointer_lock_requested: false,
+            is_paused: false,
             is_right_mouse_down: false,
             is_middle_mouse_down: false,
             is_left_mouse_down: false,
@@ -1007,6 +1009,9 @@ let role_str = match self.net.role {
             self.play_snapshot = Some(assets::extract_scene_from_world(&self.world, &self.camera, &self.physics));
         }
         self.play_mode = PlayMode::Play;
+        self.is_paused = false;
+        self.pointer_lock_requested = true;
+        self.set_pointer_lock(true);
         self.was_cursor_in_viewport = false;
         self.just_pressed_mouse = [false; 3];
         if let Ok(mut minfo) = self.lua_ctx.mouse_info.write() {
@@ -1045,6 +1050,7 @@ let role_str = match self.net.role {
         }
         self.active_gizmo_axis = None;
         self.hovered_gizmo_axis = None;
+        self.is_paused = false;
         self.pointer_lock_requested = false;
         self.set_pointer_lock(false);
         self.was_cursor_in_viewport = false;
@@ -1074,6 +1080,14 @@ let role_str = match self.net.role {
         self.pointer_locked = locked;
         self.lua_ctx.pointer_locked.store(locked, std::sync::atomic::Ordering::SeqCst);
         if locked {
+            if self.viewport_rect.is_positive() {
+                let scale = self.window.scale_factor() as f32;
+                let c = self.viewport_rect.center();
+                let _ = self.window.set_cursor_position(winit::dpi::PhysicalPosition::new(
+                    (c.x * scale) as f64,
+                    (c.y * scale) as f64,
+                ));
+            }
             let res = self.window.set_cursor_grab(winit::window::CursorGrabMode::Locked);
             if res.is_err() {
                 let _ = self.window.set_cursor_grab(winit::window::CursorGrabMode::Confined);
@@ -1634,6 +1648,20 @@ let role_str = match self.net.role {
                         _ => false,
                     };
                     if is_escape {
+                        if self.play_mode == PlayMode::Play && !self.is_paused {
+                            if !self.is_paused {
+                                self.is_paused = true;
+                                self.set_pointer_lock(false);
+                                if let Ok(mut minfo) = self.lua_ctx.mouse_info.write() {
+                                    minfo.delta = [0.0, 0.0];
+                                }
+                            } else {
+                                self.is_paused = false;
+                                self.pointer_lock_requested = true;
+                                self.set_pointer_lock(true);
+                            }
+                            return;
+                        }
                         if self.pointer_locked {
                             self.set_pointer_lock(false);
                             return;
@@ -1796,7 +1824,7 @@ let role_str = match self.net.role {
                 match button {
                     winit::event::MouseButton::Left => {
                         if is_pressed {
-                            if is_play_mode && in_viewport && self.pointer_lock_requested && !self.pointer_locked {
+                            if is_play_mode && !self.is_paused && in_viewport && !self.pointer_locked {
                                 self.set_pointer_lock(true);
                             }
                             if !self.is_left_mouse_down {
@@ -3718,7 +3746,7 @@ let role_str = match self.net.role {
                 )
             };
 
-            let (buttons_down, buttons_just_pressed) = if is_play_mode && !in_viewport {
+            let (buttons_down, buttons_just_pressed) = if is_play_mode && !in_viewport && !self.pointer_locked {
                 ([false; 3], [false; 3])
             } else {
                 (
@@ -3732,7 +3760,7 @@ let role_str = match self.net.role {
                 m.screen_size = screen_size;
                 m.buttons_down = buttons_down;
                 m.buttons_just_pressed = buttons_just_pressed;
-                if is_play_mode && !in_viewport {
+                if is_play_mode && !in_viewport && !self.pointer_locked {
                     m.delta = [0.0, 0.0];
                 }
             }
@@ -7691,6 +7719,33 @@ let role_str = match self.net.role {
                                     }
                                 });
                             }
+                        }
+
+                        // 5b. Pause Overlay (Escape in Play Mode)
+                        if self.play_mode == PlayMode::Play && self.is_paused {
+                            let pause_center = viewport_rect.center();
+                            egui::Area::new(ui.make_persistent_id("pause_overlay_ed"))
+                                .pivot(egui::Align2::CENTER_CENTER)
+                                .fixed_pos(pause_center)
+                                .show(ui.ctx(), |ui| {
+                                    egui::Frame::new()
+                                        .fill(egui::Color32::from_rgba_unmultiplied(15, 23, 42, 235))
+                                        .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(56, 189, 248)))
+                                        .corner_radius(10.0)
+                                        .inner_margin(20.0)
+                                        .show(ui, |ui| {
+                                            ui.vertical_centered(|ui| {
+                                                ui.heading(egui::RichText::new("PAUSED").color(egui::Color32::WHITE).strong());
+                                                ui.label(egui::RichText::new("Cursor released — Press Esc or Resume to lock camera").color(egui::Color32::LIGHT_GRAY).size(12.0));
+                                                ui.add_space(10.0);
+                                                if ui.button("Resume (Esc)").clicked() {
+                                                    self.is_paused = false;
+                                                    self.pointer_lock_requested = true;
+                                                    self.set_pointer_lock(true);
+                                                }
+                                            });
+                                        });
+                                });
                         }
 
                         // 5b. Declarative In-Game UI from Lua (game_ui)
