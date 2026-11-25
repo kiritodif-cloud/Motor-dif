@@ -162,7 +162,7 @@ pub struct LuaEngineContext {
     pub pending_rig_commands: Arc<Mutex<Vec<RigCommand>>>,
     pub pending_vfx_commands: Arc<Mutex<Vec<VfxCommand>>>,
     pub pointer_locked: Arc<std::sync::atomic::AtomicBool>,
-    pub pointer_lock_command: Arc<std::sync::atomic::AtomicI8>,
+    pub pointer_lock_command: Arc<std::sync::atomic::AtomicI32>,
     pub active_voxel_world: Arc<RwLock<Option<crate::voxel_forge::VoxelWorld>>>,
     pub time_of_day: Arc<RwLock<Option<f32>>>,
     pub active_viewmodel: Arc<RwLock<Option<ViewModelDef>>>,
@@ -473,7 +473,7 @@ impl LuaEngineContext {
             pending_rig_commands: Arc::new(Mutex::new(Vec::new())),
             pending_vfx_commands: Arc::new(Mutex::new(Vec::new())),
             pointer_locked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            pointer_lock_command: Arc::new(std::sync::atomic::AtomicI8::new(0)),
+            pointer_lock_command: Arc::new(std::sync::atomic::AtomicI32::new(0)),
             active_voxel_world: Arc::new(RwLock::new(None)),
             time_of_day: Arc::new(RwLock::new(None)),
             active_viewmodel: Arc::new(RwLock::new(None)),
@@ -3309,8 +3309,13 @@ impl ScriptComponent {
         // 68. set_pointer_lock(enabled: bool)
         let pl_cmd_ref = ctx.pointer_lock_command.clone();
         let set_pointer_lock = lua
-            .create_function(move |_, enabled: bool| {
-                pl_cmd_ref.store(if enabled { 1 } else { -1 }, std::sync::atomic::Ordering::SeqCst);
+            .create_function(move |lua, enabled: bool| {
+                if enabled {
+                    pl_cmd_ref.store(1, std::sync::atomic::Ordering::SeqCst);
+                } else {
+                    let line = lua.inspect_stack(1, |d| d.current_line()).flatten().unwrap_or(1).max(1) as i32;
+                    pl_cmd_ref.store(-line, std::sync::atomic::Ordering::SeqCst);
+                }
                 Ok(())
             })
             .map_err(|e| format!("Failed to register set_pointer_lock: {}", e))?;

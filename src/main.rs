@@ -3639,10 +3639,10 @@ let role_str = match self.net.role {
         if pl_cmd == 1 {
             self.pointer_lock_requested = true;
             self.set_pointer_lock(true);
-        } else if pl_cmd == -1 {
+        } else if pl_cmd < 0 {
             self.pointer_lock_requested = false;
             self.set_pointer_lock(false);
-            self.logs.push("[PointerLock] Unlocked by Lua set_pointer_lock(false)".to_string());
+            self.logs.push(format!("[PointerLock] Unlocked by Lua set_pointer_lock(false) at line {}", -pl_cmd));
         }
 
         self.frametime_history.push_back(dt * 1000.0);
