@@ -6864,9 +6864,12 @@ let role_str = match self.net.role {
                     });
 
                 // 4. BOTTOM PANEL: CONSOLE, ASSETS BROWSER, SCRIPT EDITOR
+                let max_bottom_h = (ui.available_height() * 0.40).max(180.0);
                 Panel::bottom("bottom_panel")
                     .resizable(true)
                     .default_size(200.0)
+                    .min_size(110.0)
+                    .max_size(max_bottom_h)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.selectable_value(&mut self.bottom_tab, BottomTab::Console, "[_] Console & MCP");
@@ -6899,7 +6902,10 @@ let role_str = match self.net.role {
                                     }
                                 });
                                 ui.separator();
+                                let scroll_h = (ui.available_height() - 34.0).max(50.0);
                                 egui::ScrollArea::vertical()
+                                    .max_height(scroll_h)
+                                    .auto_shrink([false, false])
                                     .stick_to_bottom(true)
                                     .show(ui, |ui| {
                                         for log in &self.logs {
