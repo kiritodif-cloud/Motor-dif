@@ -118,6 +118,10 @@ impl NavGrid {
     }
 
     pub fn add_obstacle_box(&mut self, min_x: f32, min_z: f32, max_x: f32, max_z: f32) {
+        self.set_rect_blocked(min_x, min_z, max_x, max_z, true);
+    }
+
+    pub fn set_rect_blocked(&mut self, min_x: f32, min_z: f32, max_x: f32, max_z: f32, blocked: bool) {
         let g_min = self.world_to_grid(min_x, min_z).unwrap_or((0, 0));
         let g_max = self.world_to_grid(max_x, max_z).unwrap_or((self.width - 1, self.height - 1));
 
@@ -128,7 +132,7 @@ impl NavGrid {
 
         for gz in start_z..=end_z {
             for gx in start_x..=end_x {
-                self.set_blocked(gx, gz, true);
+                self.set_blocked(gx, gz, blocked);
             }
         }
     }
@@ -138,7 +142,12 @@ impl NavGrid {
     }
 
     pub fn bake_from_world(&mut self, world: &hecs::World) {
+        self.bake_from_world_opts(world, 0.0, None);
+    }
+
+    pub fn bake_from_world_opts(&mut self, world: &hecs::World, agent_radius: f32, max_floor_y: Option<f32>) {
         self.clear();
+        let pad = agent_radius.max(0.0);
         for (meta, transform) in world.query::<(&crate::ecs::EntityMeta, &crate::ecs::Transform)>().iter() {
             let id_low = meta.id.to_lowercase();
             // Ignore ground/floor/plane/player/camera/lights/particles/sky
@@ -153,6 +162,13 @@ impl NavGrid {
                 continue;
             }
 
+            if let Some(max_y) = max_floor_y {
+                let bottom_y = transform.position.y - transform.scale.y.abs() * 0.5;
+                if bottom_y > max_y {
+                    continue;
+                }
+            }
+
             // Treat any entity identified as wall, pillar, obstacle, box, rock, tree or barrier as a nav obstacle
             let is_obstacle = id_low.contains("wall")
                 || id_low.contains("pillar")
@@ -164,8 +180,8 @@ impl NavGrid {
 
             if is_obstacle {
                 let pos = transform.position;
-                let half_sx = (transform.scale.x * 0.5).max(0.2);
-                let half_sz = (transform.scale.z * 0.5).max(0.2);
+                let half_sx = (transform.scale.x * 0.5).max(0.2) + pad;
+                let half_sz = (transform.scale.z * 0.5).max(0.2) + pad;
                 self.add_obstacle_box(
                     pos.x - half_sx,
                     pos.z - half_sz,
@@ -177,7 +193,17 @@ impl NavGrid {
     }
 
     pub fn bake_from_entities_map(&mut self, entities: &std::collections::HashMap<String, [f32; 9]>) {
+        self.bake_from_entities_map_opts(entities, 0.0, None);
+    }
+
+    pub fn bake_from_entities_map_opts(
+        &mut self,
+        entities: &std::collections::HashMap<String, [f32; 9]>,
+        agent_radius: f32,
+        max_floor_y: Option<f32>,
+    ) {
         self.clear();
+        let pad = agent_radius.max(0.0);
         for (id, data) in entities {
             let id_low = id.to_lowercase();
             if id_low.contains("plane")
@@ -189,6 +215,13 @@ impl NavGrid {
                 || id_low.contains("trigger")
             {
                 continue;
+            }
+
+            if let Some(max_y) = max_floor_y {
+                let bottom_y = data[1] - data[7].abs() * 0.5;
+                if bottom_y > max_y {
+                    continue;
+                }
             }
 
             let is_obstacle = id_low.contains("wall")
@@ -204,8 +237,8 @@ impl NavGrid {
                 let pz = data[2];
                 let sx = data[6];
                 let sz = data[8];
-                let half_sx = (sx * 0.5).max(0.2);
-                let half_sz = (sz * 0.5).max(0.2);
+                let half_sx = (sx * 0.5).max(0.2) + pad;
+                let half_sz = (sz * 0.5).max(0.2) + pad;
                 self.add_obstacle_box(
                     px - half_sx,
                     pz - half_sz,
@@ -630,5 +663,20 @@ mod tests {
             Some(&|_x, _y, _z| true), // Everything solid
         );
         assert!(blocked_by_voxel.is_none(), "Expected path to be blocked by voxels");
+    }
+
+    #[test]
+    fn test_nav_rect_blocked_and_bake_opts() {
+        let mut grid = NavGrid::new(1.0, 10.0);
+        grid.set_rect_blocked(-1.0, -1.0, 1.0, 1.0, true);
+        assert!(grid.is_world_blocked(0.0, 0.0));
+        grid.set_rect_blocked(-1.0, -1.0, 1.0, 1.0, false);
+        assert!(!grid.is_world_blocked(0.0, 0.0));
+
+        let mut entities = std::collections::HashMap::new();
+        // High ceiling cube at y=6.0 (bottom=5.5), should be ignored when max_floor_y=2.5
+        entities.insert("roof_cube".to_string(), [0.0, 6.0, 0.0, 0.0, 0.0, 0.0, 2.0, 1.0, 2.0]);
+        grid.bake_from_entities_map_opts(&entities, 0.5, Some(2.5));
+        assert!(!grid.is_world_blocked(0.0, 0.0));
     }
 }

@@ -63,6 +63,10 @@ La mayoría de los motores tradicionales fueron diseñados para flujos manuales 
 - **Físicas y Animación:** Colliders `heightfield` y `trimesh`, `Joints` (`fixed`, `revolute`, `spherical` + `create_joint` en Lua), **Skinning esquelético** (`compute_skinned_vertices`) y `AnimStateMachine`.
 - **Editor y Red:** Gizmos visuales para `PointLight`/`SpotLight`, **Lua REPL** integrado en Consola, Drag & Drop de assets al Viewport, `GamepadBackend` seguro para CI y serialización de RPCs en Renet.
 
+### 7. Fase 43: Light Culling, Navegación Multi-Planta, `move_and_slide`, UI & RTT Freeze
+- **Renderizado:** **Light Culling por distancia/frustum** para seleccionar automáticamente las 16 luces más cercanas y visibles en escenas grandes, más `set_rtt_frozen(target_id, bool)` para congelar cámaras RTT.
+- **Gameplay, Navegación y UI:** `move_and_slide` en Lua, `nav_bake` con `agent_radius` / `max_floor_y` + `nav_set_rect_blocked`, `ui_remove` / `ui_set_visible`, `is_pointer_over_ui()` y `get_mouse_button_down` / `just_pressed`.
+
 ---
 
 ## Novedades de Producción en Motor-dif v0.2.0

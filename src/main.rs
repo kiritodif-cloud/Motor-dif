@@ -1848,7 +1848,8 @@ let role_str = match self.net.role {
                 match button {
                     winit::event::MouseButton::Left => {
                         if is_pressed {
-                            if is_play_mode && !self.is_paused && in_viewport && !self.pointer_locked {
+                            let over_ui = self.lua_ctx.pointer_over_ui.load(std::sync::atomic::Ordering::SeqCst);
+                            if is_play_mode && !self.is_paused && in_viewport && !self.pointer_locked && !over_ui {
                                 self.set_pointer_lock(true);
                             }
                             if !self.is_left_mouse_down {
@@ -4248,10 +4249,24 @@ let role_str = match self.net.role {
             } else {
                 None
             };
-            if let Some((cs, extent)) = pending_bake {
+            if let Some((cs, extent, agent_radius, max_y_opt)) = pending_bake {
                 if let Ok(mut grid) = self.lua_ctx.nav_grid.write() {
                     *grid = nav::NavGrid::new(cs, extent);
-                    grid.bake_from_world(&self.world);
+                    grid.bake_from_world_opts(&self.world, agent_radius, max_y_opt);
+                }
+            }
+
+            // Handle pending RTT freeze/unfreeze from Lua
+            let pending_frozen = if let Ok(mut q) = self.lua_ctx.pending_rtt_frozen.lock() {
+                std::mem::take(&mut *q)
+            } else {
+                Vec::new()
+            };
+            for (target_id, frozen) in pending_frozen {
+                for rtt_cam in self.world.query_mut::<&mut ecs::CameraTarget>() {
+                    if rtt_cam.target_id == target_id {
+                        rtt_cam.enabled = !frozen;
+                    }
                 }
             }
 
@@ -5031,48 +5046,55 @@ let role_str = match self.net.role {
         );
 
         // Collect active point and spot lights into GPU uniform
-        let mut lights_uniform = LightsUniform::default();
-        let mut light_count = 0u32;
+        let light_frustum = camera::Frustum::from_view_proj(self.camera.build_view_projection_matrix());
+        let mut light_candidates: Vec<(f32, renderer::LightRaw)> = Vec::new();
         for entity_ref in self.world.iter() {
-            if light_count >= 16 {
-                break;
-            }
             let entity = entity_ref.entity();
-            let world_pos = if let Some((_, pos)) = world_transforms.get(&entity) {
-                [pos.x, pos.y, pos.z]
+            let world_pos_v = if let Some((_, pos)) = world_transforms.get(&entity) {
+                *pos
             } else if let Some(t) = entity_ref.get::<&Transform>() {
-                [t.position.x, t.position.y, t.position.z]
+                t.position
             } else {
-                [0.0, 0.0, 0.0]
+                Vec3::ZERO
             };
+            let world_pos = [world_pos_v.x, world_pos_v.y, world_pos_v.z];
+            let dist_sq = (world_pos_v - self.camera.eye).length_squared();
 
             if let Some(light) = entity_ref.get::<&ecs::PointLight>() {
-                lights_uniform.lights[light_count as usize] = renderer::LightRaw {
-                    position: world_pos,
-                    radius: light.radius,
-                    color: light.color,
-                    intensity: light.intensity,
-                    direction: [0.0, -1.0, 0.0],
-                    inner_cone: 0.0,
-                    outer_cone: 0.0,
-                    light_type: 0.0,
-                    _pad: [0.0; 2],
-                };
-                light_count += 1;
+                if light_frustum.intersects_sphere(world_pos_v, light.radius) || dist_sq < light.radius * light.radius {
+                    light_candidates.push((dist_sq, renderer::LightRaw {
+                        position: world_pos,
+                        radius: light.radius,
+                        color: light.color,
+                        intensity: light.intensity,
+                        direction: [0.0, -1.0, 0.0],
+                        inner_cone: 0.0,
+                        outer_cone: 0.0,
+                        light_type: 0.0,
+                        _pad: [0.0; 2],
+                    }));
+                }
             } else if let Some(spot) = entity_ref.get::<&ecs::SpotLight>() {
-                lights_uniform.lights[light_count as usize] = renderer::LightRaw {
-                    position: world_pos,
-                    radius: spot.radius,
-                    color: spot.color,
-                    intensity: spot.intensity,
-                    direction: spot.direction,
-                    inner_cone: spot.inner_angle.cos(),
-                    outer_cone: spot.outer_angle.cos(),
-                    light_type: 1.0,
-                    _pad: [0.0; 2],
-                };
-                light_count += 1;
+                if light_frustum.intersects_sphere(world_pos_v, spot.radius) || dist_sq < spot.radius * spot.radius {
+                    light_candidates.push((dist_sq, renderer::LightRaw {
+                        position: world_pos,
+                        radius: spot.radius,
+                        color: spot.color,
+                        intensity: spot.intensity,
+                        direction: spot.direction,
+                        inner_cone: spot.inner_angle.cos(),
+                        outer_cone: spot.outer_angle.cos(),
+                        light_type: 1.0,
+                        _pad: [0.0; 2],
+                    }));
+                }
             }
+        }
+        light_candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut lights_uniform = LightsUniform::default();
+        let light_count = light_candidates.len().min(16) as u32;
+        for (idx, (_, raw)) in light_candidates.into_iter().take(16).enumerate() {
+            lights_uniform.lights[idx] = raw;
         }
         lights_uniform.num_lights = light_count;
         self.gpu.update_lights(&lights_uniform);
@@ -5471,7 +5493,11 @@ let role_str = match self.net.role {
 
                             // Declarative In-Game UI from Lua (game_ui)
                             if let Ok(elements) = self.lua_ctx.game_ui_elements.read() {
-                                game_ui::render_declarative_ui(ui.ctx(), &painter, viewport_rect, &elements, &self.lua_ctx.pending_button_clicks, &mut self.ui_texture_cache, Some(&self.gpu.rtt_registry));
+                                let hidden = self.lua_ctx.hidden_ui_ids.read().map(|h| h.clone()).unwrap_or_default();
+                                let visible_elems: Vec<_> = elements.iter().filter(|el| !hidden.contains(el.id())).cloned().collect();
+                                let ptr_over = ui.ctx().input(|i| i.pointer.hover_pos()).map(|p| game_ui::hit_test_ui(&visible_elems, &hidden, viewport_rect, p)).unwrap_or(false);
+                                self.lua_ctx.pointer_over_ui.store(ptr_over, std::sync::atomic::Ordering::SeqCst);
+                                game_ui::render_declarative_ui(ui.ctx(), &painter, viewport_rect, &visible_elems, &self.lua_ctx.pending_button_clicks, &mut self.ui_texture_cache, Some(&self.gpu.rtt_registry));
                             }
 
                             if let Ok(labels) = self.lua_ctx.world_labels.read() {
@@ -7780,7 +7806,11 @@ let role_str = match self.net.role {
                         // 5b. Declarative In-Game UI from Lua (game_ui)
                         if self.play_mode == PlayMode::Play {
                             if let Ok(elements) = self.lua_ctx.game_ui_elements.read() {
-                                game_ui::render_declarative_ui(ui.ctx(), &painter.with_clip_rect(viewport_rect), viewport_rect, &elements, &self.lua_ctx.pending_button_clicks, &mut self.ui_texture_cache, Some(&self.gpu.rtt_registry));
+                                let hidden = self.lua_ctx.hidden_ui_ids.read().map(|h| h.clone()).unwrap_or_default();
+                                let visible_elems: Vec<_> = elements.iter().filter(|el| !hidden.contains(el.id())).cloned().collect();
+                                let ptr_over = ui.ctx().input(|i| i.pointer.hover_pos()).map(|p| game_ui::hit_test_ui(&visible_elems, &hidden, viewport_rect, p)).unwrap_or(false);
+                                self.lua_ctx.pointer_over_ui.store(ptr_over, std::sync::atomic::Ordering::SeqCst);
+                                game_ui::render_declarative_ui(ui.ctx(), &painter.with_clip_rect(viewport_rect), viewport_rect, &visible_elems, &self.lua_ctx.pending_button_clicks, &mut self.ui_texture_cache, Some(&self.gpu.rtt_registry));
                             }
                         }
 

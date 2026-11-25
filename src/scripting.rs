@@ -147,6 +147,8 @@ pub struct LuaEngineContext {
     pub environment_settings: Arc<RwLock<crate::assets::EnvironmentDef>>,
     pub physics_raycaster: Arc<RwLock<Option<PhysicsRaycaster>>>,
     pub game_ui_elements: Arc<RwLock<Vec<crate::game_ui::UiElement>>>,
+    pub hidden_ui_ids: Arc<RwLock<HashSet<String>>>,
+    pub pointer_over_ui: Arc<std::sync::atomic::AtomicBool>,
     pub pending_anims: Arc<Mutex<Vec<AnimationCommand>>>,
     pub anim_playing_states: Arc<RwLock<HashMap<String, bool>>>,
     pub event_listeners: Arc<RwLock<HashMap<String, Vec<String>>>>,
@@ -157,7 +159,7 @@ pub struct LuaEngineContext {
     pub mouse_info: Arc<RwLock<crate::input_map::MouseInfo>>,
     pub active_camera: Arc<RwLock<crate::camera::Camera>>,
     pub nav_grid: Arc<RwLock<crate::nav::NavGrid>>,
-    pub pending_nav_bake: Arc<Mutex<Option<(f32, f32)>>>,
+    pub pending_nav_bake: Arc<Mutex<Option<(f32, f32, f32, Option<f32>)>>>,
     pub active_terrain: Arc<RwLock<Option<crate::level_forge::TerrainHeightmap>>>,
     pub pending_rig_commands: Arc<Mutex<Vec<RigCommand>>>,
     pub pending_vfx_commands: Arc<Mutex<Vec<VfxCommand>>>,
@@ -180,6 +182,7 @@ pub struct LuaEngineContext {
     pub pending_rtt_targets: Arc<Mutex<Vec<(String, u32, u32)>>>,
     pub pending_rtt_cameras: Arc<Mutex<Vec<(String, String, f32, f32)>>>,
     pub pending_rtt_materials: Arc<Mutex<Vec<(String, String, bool)>>>,
+    pub pending_rtt_frozen: Arc<Mutex<Vec<(String, bool)>>>,
     pub pending_net_commands: Arc<Mutex<Vec<NetCommand>>>,
     pub net_state: Arc<RwLock<NetState>>,
 }
@@ -445,6 +448,8 @@ impl LuaEngineContext {
             environment_settings: Arc::new(RwLock::new(crate::assets::EnvironmentDef::default())),
             physics_raycaster: Arc::new(RwLock::new(None)),
             game_ui_elements: Arc::new(RwLock::new(Vec::new())),
+            hidden_ui_ids: Arc::new(RwLock::new(HashSet::new())),
+            pointer_over_ui: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pending_anims: Arc::new(Mutex::new(Vec::new())),
             anim_playing_states: Arc::new(RwLock::new(HashMap::new())),
             event_listeners: Arc::new(RwLock::new(HashMap::new())),
@@ -464,6 +469,7 @@ impl LuaEngineContext {
             pending_rtt_targets: Arc::new(Mutex::new(Vec::new())),
             pending_rtt_cameras: Arc::new(Mutex::new(Vec::new())),
             pending_rtt_materials: Arc::new(Mutex::new(Vec::new())),
+            pending_rtt_frozen: Arc::new(Mutex::new(Vec::new())),
             pending_net_commands: Arc::new(Mutex::new(Vec::new())),
             net_state: Arc::new(RwLock::new(NetState::default())),
             active_camera: Arc::new(RwLock::new(crate::camera::Camera::new_3d(glam::Vec3::new(0.0, 3.5, 9.0), glam::Vec3::ZERO, 16.0 / 9.0))),
@@ -2084,6 +2090,32 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register move_character: {}", e))?;
         lua.globals().set("move_character", move_character_fn).map_err(|e| e.to_string())?;
 
+        // move_and_slide(entity_id, vx, vy, vz, dt, [gravity]) -> { x, y, z, grounded }
+        let mas_moves_ref = ctx.pending_character_moves.clone();
+        let mas_we_ref = ctx.world_entities.clone();
+        let mas_gr_ref = ctx.grounded_entities.clone();
+        let move_and_slide_fn = lua
+            .create_function(move |lua, (entity_id, vx, vy, vz, dt, gravity_opt): (String, f32, f32, f32, f32, Option<f32>)| {
+                let grounded = mas_gr_ref.read().ok().and_then(|g| g.get(&entity_id).copied()).unwrap_or(false);
+                let g = gravity_opt.unwrap_or(0.0);
+                let vy_eff = if grounded && vy <= 0.0 { -0.05 } else { vy - g * dt };
+                let dx = vx * dt;
+                let dy = vy_eff * dt;
+                let dz = vz * dt;
+                if let Ok(mut lock) = mas_moves_ref.lock() {
+                    lock.push((entity_id.clone(), [dx, dy, dz]));
+                }
+                let pos = mas_we_ref.read().ok().and_then(|w| w.get(&entity_id).copied()).unwrap_or([0.0; 9]);
+                let tbl = lua.create_table()?;
+                tbl.set("x", pos[0] + dx)?;
+                tbl.set("y", pos[1] + dy)?;
+                tbl.set("z", pos[2] + dz)?;
+                tbl.set("grounded", grounded)?;
+                Ok(tbl)
+            })
+            .map_err(|e| format!("Failed to register move_and_slide: {}", e))?;
+        lua.globals().set("move_and_slide", move_and_slide_fn).map_err(|e| e.to_string())?;
+
         // set_collision_layer(entity_id: string, layer: integer)
         let col_groups_ref1 = ctx.pending_collision_groups.clone();
         let set_collision_layer_fn = lua
@@ -2894,22 +2926,37 @@ impl ScriptComponent {
         let we_bake_ref = ctx.world_entities.clone();
         let pending_bake_ref = ctx.pending_nav_bake.clone();
         let nav_bake = lua
-            .create_function(move |_, (cs_opt, extent_opt): (Option<f32>, Option<f32>)| {
+            .create_function(move |_, (cs_opt, extent_opt, radius_opt, max_y_opt): (Option<f32>, Option<f32>, Option<f32>, Option<f32>)| {
                 let cs = cs_opt.unwrap_or(1.0);
                 let extent = extent_opt.unwrap_or(20.0);
+                let agent_radius = radius_opt.unwrap_or(0.0);
                 if let Ok(mut pending) = pending_bake_ref.lock() {
-                    *pending = Some((cs, extent));
+                    *pending = Some((cs, extent, agent_radius, max_y_opt));
                 }
                 if let Ok(mut grid) = nav_grid_bake_ref.write() {
                     *grid = crate::nav::NavGrid::new(cs, extent);
                     if let Ok(entities) = we_bake_ref.read() {
-                        grid.bake_from_entities_map(&entities);
+                        grid.bake_from_entities_map_opts(&entities, agent_radius, max_y_opt);
                     }
                 }
                 Ok(true)
             })
             .map_err(|e| format!("Failed to register nav_bake: {}", e))?;
         lua.globals().set("nav_bake", nav_bake).map_err(|e| e.to_string())?;
+
+        // 56b. nav_set_rect_blocked(x0, z0, x1, z1, is_blocked)
+        let nav_rect_ref = ctx.nav_grid.clone();
+        let nav_set_rect_blocked = lua
+            .create_function(move |_, (x0, z0, x1, z1, blocked): (f32, f32, f32, f32, bool)| {
+                if let Ok(mut grid) = nav_rect_ref.write() {
+                    grid.set_rect_blocked(x0, z0, x1, z1, blocked);
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .map_err(|e| format!("Failed to register nav_set_rect_blocked: {}", e))?;
+        lua.globals().set("nav_set_rect_blocked", nav_set_rect_blocked).map_err(|e| e.to_string())?;
 
         // 57. find_path(start_x, [start_y], start_z, goal_x, [goal_y], goal_z, [max_steps]) -> table or nil
         let nav_grid_find_ref = ctx.nav_grid.clone();
@@ -3569,6 +3616,82 @@ impl ScriptComponent {
             })
             .map_err(|e| format!("Failed to register set_material_rtt: {}", e))?;
         lua.globals().set("set_material_rtt", set_material_rtt).map_err(|e| e.to_string())?;
+
+        // 80b. set_rtt_frozen(target_id, frozen)
+        let rtt_frozen_ref = ctx.pending_rtt_frozen.clone();
+        let set_rtt_frozen = lua
+            .create_function(move |_, (target_id, frozen): (String, bool)| {
+                if let Ok(mut q) = rtt_frozen_ref.lock() {
+                    q.push((target_id, frozen));
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register set_rtt_frozen: {}", e))?;
+        lua.globals().set("set_rtt_frozen", set_rtt_frozen).map_err(|e| e.to_string())?;
+
+        // 81. ui_remove(id) & ui_set_visible(id, visible)
+        let ui_rem_elems = ctx.game_ui_elements.clone();
+        let ui_rem_hidden = ctx.hidden_ui_ids.clone();
+        let ui_remove = lua
+            .create_function(move |_, id: String| {
+                if let Ok(mut elems) = ui_rem_elems.write() {
+                    elems.retain(|el| el.id() != id);
+                }
+                if let Ok(mut h) = ui_rem_hidden.write() {
+                    h.remove(&id);
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register ui_remove: {}", e))?;
+        lua.globals().set("ui_remove", ui_remove).map_err(|e| e.to_string())?;
+
+        let ui_vis_hidden = ctx.hidden_ui_ids.clone();
+        let ui_set_visible = lua
+            .create_function(move |_, (id, visible): (String, bool)| {
+                if let Ok(mut h) = ui_vis_hidden.write() {
+                    if visible { h.remove(&id); } else { h.insert(id); }
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register ui_set_visible: {}", e))?;
+        lua.globals().set("ui_set_visible", ui_set_visible).map_err(|e| e.to_string())?;
+
+        // 82. is_pointer_over_ui(), get_mouse_button_down(btn), get_mouse_button_just_pressed(btn)
+        let over_ui_ref = ctx.pointer_over_ui.clone();
+        let is_pointer_over_ui = lua
+            .create_function(move |_, ()| Ok(over_ui_ref.load(std::sync::atomic::Ordering::SeqCst)))
+            .map_err(|e| format!("Failed to register is_pointer_over_ui: {}", e))?;
+        lua.globals().set("is_pointer_over_ui", is_pointer_over_ui).map_err(|e| e.to_string())?;
+
+        let parse_btn = |v: mlua::Value| -> usize {
+            match v {
+                mlua::Value::Integer(i) => (i.clamp(0, 2)) as usize,
+                mlua::Value::Number(n) => (n.clamp(0.0, 2.0)) as usize,
+                mlua::Value::String(s) => match s.to_str().map(|b| b.to_lowercase()).unwrap_or_default().as_str() {
+                    "right" | "1" => 1,
+                    "middle" | "2" => 2,
+                    _ => 0,
+                },
+                _ => 0,
+            }
+        };
+        let mb_down_ref = ctx.mouse_info.clone();
+        let get_mouse_button_down = lua
+            .create_function(move |_, btn: mlua::Value| {
+                let idx = parse_btn(btn);
+                Ok(mb_down_ref.read().map(|m| m.buttons_down[idx]).unwrap_or(false))
+            })
+            .map_err(|e| format!("Failed to register get_mouse_button_down: {}", e))?;
+        lua.globals().set("get_mouse_button_down", get_mouse_button_down).map_err(|e| e.to_string())?;
+
+        let mb_jp_ref = ctx.mouse_info.clone();
+        let get_mouse_button_just_pressed = lua
+            .create_function(move |_, btn: mlua::Value| {
+                let idx = parse_btn(btn);
+                Ok(mb_jp_ref.read().map(|m| m.buttons_just_pressed[idx]).unwrap_or(false))
+            })
+            .map_err(|e| format!("Failed to register get_mouse_button_just_pressed: {}", e))?;
+        lua.globals().set("get_mouse_button_just_pressed", get_mouse_button_just_pressed).map_err(|e| e.to_string())?;
 
         // 81. ui_draw_rtt(target_id, x, y, width, height)
         let ui_rtt_ref = ctx.game_ui_elements.clone();
@@ -5343,5 +5466,44 @@ mod tests {
                 assert_eq!(txt, "ping payload");
             }
         }
+    }
+
+    #[test]
+    fn test_fase43_gameplay_nav_ui_and_rtt_bindings() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        ctx.pointer_over_ui.store(true, std::sync::atomic::Ordering::SeqCst);
+        {
+            let mut m = ctx.mouse_info.write().unwrap();
+            m.buttons_down[1] = true;
+            m.buttons_just_pressed[0] = true;
+        }
+
+        let mut comp = ScriptComponent::new("<test_fase43>".to_string());
+        let code = r#"
+            over = is_pointer_over_ui()
+            rdown = get_mouse_button_down("right")
+            ljp = get_mouse_button_just_pressed("left")
+            res = move_and_slide("hero", 4.0, 0.0, 0.0, 0.5, 9.8)
+            ui_panel("p1", "top_left", 0, 0, 100, 40, 0, 0, 0, 1)
+            ui_set_visible("p1", false)
+            ui_remove("p1")
+            nav_bake(1.0, 10.0, 0.4, 2.5)
+            nav_set_rect_blocked(-1.0, -1.0, 1.0, 1.0, true)
+            set_rtt_frozen("cam_1", true)
+        "#;
+        comp.init_from_source(ctx.clone(), code).expect("Fase 43 Lua script failed");
+        let lua_arc = comp.lua.unwrap();
+        let lua = lua_arc.lock().unwrap();
+        assert!(lua.globals().get::<bool>("over").unwrap());
+        assert!(lua.globals().get::<bool>("rdown").unwrap());
+        assert!(lua.globals().get::<bool>("ljp").unwrap());
+        let res_tbl: mlua::Table = lua.globals().get("res").unwrap();
+        assert!((res_tbl.get::<f32>("x").unwrap() - 2.0).abs() < 1e-4);
+        assert!(ctx.nav_grid.read().unwrap().is_world_blocked(0.0, 0.0));
+        assert_eq!(ctx.pending_rtt_frozen.lock().unwrap().as_slice(), &[("cam_1".to_string(), true)]);
     }
 }

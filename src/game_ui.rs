@@ -159,6 +159,39 @@ pub fn calculate_anchor_pos_scaled(
     )
 }
 
+pub fn hit_test_ui(
+    elements: &[UiElement],
+    hidden_ids: &std::collections::HashSet<String>,
+    viewport_rect: Rect,
+    pointer_pos: Pos2,
+) -> bool {
+    let scale = get_responsive_scale(viewport_rect);
+    for el in elements {
+        if hidden_ids.contains(el.id()) {
+            continue;
+        }
+        let rect = match el {
+            UiElement::Button { anchor, offset_x, offset_y, width, height, .. } => {
+                let p = calculate_anchor_pos_scaled(anchor, *offset_x, *offset_y, *width, *height, viewport_rect, scale);
+                Rect::from_min_size(p, Vec2::new(*width * scale, *height * scale))
+            }
+            UiElement::Panel { anchor, offset_x, offset_y, width, height, .. } => {
+                let p = calculate_anchor_pos_scaled(anchor, *offset_x, *offset_y, *width, *height, viewport_rect, scale);
+                Rect::from_min_size(p, Vec2::new(*width * scale, *height * scale))
+            }
+            UiElement::Slot { x, y, size, .. } => {
+                let p = Pos2::new(viewport_rect.min.x + *x * scale, viewport_rect.min.y + *y * scale);
+                Rect::from_min_size(p, Vec2::splat(*size * scale))
+            }
+            _ => continue,
+        };
+        if rect.contains(pointer_pos) {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn get_or_load_egui_texture(
     ctx: &egui::Context,
     texture_cache: &mut HashMap<String, egui::TextureHandle>,

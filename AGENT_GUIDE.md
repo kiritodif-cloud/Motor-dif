@@ -84,13 +84,14 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `set_time_scale(scale)`, `get_time_scale() -> f32`, `hitstop(duration)`: Slow-mo / micro-freezes.
   - `set_vignette(intensity)`, `set_chromatic_aberration(intensity)`: Real-time WGSL Post-FX.
   - `camera_orbit_target(id, distance, pitch_deg, yaw_speed)`
-  - `get_mouse_world_pos([plane_y]) -> { x, y, z }`, `get_mouse_delta() -> { dx, dy }`
+  - `get_mouse_world_pos([plane_y]) -> { x, y, z }`, `get_mouse_delta() -> { dx, dy }`, `is_pointer_over_ui() -> bool`
+  - `get_mouse_button_down(btn) -> bool`, `get_mouse_button_just_pressed(btn) -> bool` (`"left"|"right"|"middle"` or `0..2`)
   - `set_pointer_lock(enabled: bool)`, `is_pointer_locked() -> bool`
   - `is_key_down(key) -> bool`, `is_key_just_pressed(key) -> bool` (e.g. `"W"`, `"SPACE"`, `"LSHIFT"`)
   - `is_action_pressed(act) -> bool`, `is_action_just_pressed(act) -> bool`, `get_axis(axis) -> f32`, `bind_action(act, key)`
   - `save_input_config([path])`, `load_input_config([path])`, `set_axis_deadzone(f)`
 - Physics, Spatial Queries & Character Controller:
-  - `move_character(id, dx, dy, dz)`: Rapier kinematic controller with auto-step (0.4m), slope limit (45°), ground snap (0.2m), coyote time (0.15s).
+  - `move_character(id, dx, dy, dz)`, `move_and_slide(id, vx, vy, vz, dt, [gravity]) -> { x, y, z, grounded }`: Rapier kinematic controller.
   - `is_grounded(id) -> bool`: Robust ground contact test.
   - `set_collision_layer(id, layer)`, `set_collision_mask(id, mask)`: Dynamic layer/mask filter.
   - `CollisionLayer`: `{ DEFAULT=1, PLAYER=2, ENEMY=4, WORLD=8, PROJECTILE=16, TRIGGER=32, ALL=0xFFFFFFFF }`.
@@ -115,7 +116,8 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - Anchors (9): `"top_left"`, `"top_center"`, `"top_right"`, `"center_left"`, `"center"`, `"center_right"`, `"bottom_left"`, `"bottom_center"`, `"bottom_right"`.
   - `tween_ui_property(id, prop, target, duration, [easing])`: Animated UI properties (`"progress"`, `"offset_x"`, `"offset_y"`, `"width"`, `"height"`, `"font_size"`). Easing: `"linear"`, `"ease_in_quad"`, `"ease_out_quad"`, `"ease_in_out_cubic"`, `"bounce_out"`.
   - Easing helpers: `ease_in_quad(t)`, `ease_out_quad(t)`, `ease_in_out_cubic(t)`, `bounce_out(t)`.
-  - `ui_clear()`: Clears all HUD widgets.
+  - `ui_clear()`, `ui_remove(id)`, `ui_set_visible(id, visible)`: Manage HUD widgets.
+  - `set_rtt_frozen(target_id, frozen)`: Freeze/unfreeze RTT camera updates.
   - `ui_panel(id, anchor, x, y, w, h, r, g, b, a)`: Background container card.
   - `ui_bar(id, anchor, x, y, w, h, value_0_to_1, r, g, b, a)`: Dynamic progress/health bar.
   - `ui_label(id, anchor, x, y, text, size, r, g, b, a)`: Text label (re-call with same ID to update text).
@@ -150,7 +152,8 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
 
 ## lua_ai_rig
 - Navigation & Pathfinding:
-  - `nav_bake([cell_size], [extent])`: Bakes 2D collision grid over colliders.
+  - `nav_bake([cell_size], [extent], [agent_radius], [max_floor_y])`: Bakes 2D collision grid over colliders.
+  - `nav_set_rect_blocked(x0, z0, x1, z1, blocked)`: Toggle dynamic rectangular obstacles (doors).
   - `find_path(sx, [sy], sz, gx, [gy], gz, [budget]) -> { {x, y, z}, ... }|nil`: 2D/3D voxel & terrain-aware A* path with step budget.
   - `steer_towards(entity_or_id, tx, ty, tz, speed, [turn_speed], [dt]) -> bool`: Moves entity towards target at `speed*dt` with smooth yaw rotation. Returns `true` if arrived (<0.2m).
   - `draw_path(waypoints, [r, g, b, a])`: Renders 3D path debug lines in viewport.
