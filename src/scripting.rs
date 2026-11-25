@@ -137,6 +137,7 @@ pub struct LuaEngineContext {
     pub pending_materials: Arc<Mutex<Vec<MaterialUpdate>>>,
     pub pending_pbr_materials: Arc<Mutex<Vec<PbrMaterialUpdate>>>,
     pub pending_spot_lights: Arc<Mutex<Vec<SpotLightUpdate>>>,
+    pub pending_joints: Arc<Mutex<Vec<JointCommand>>>,
     pub pending_trails: Arc<Mutex<Vec<TrailCommand>>>,
     pub debug_lines: Arc<Mutex<Vec<DebugLine3D>>>,
     pub debug_rings: Arc<Mutex<Vec<DebugRing3D>>>,
@@ -342,6 +343,15 @@ pub struct MaterialUpdate {
 }
 
 #[derive(Debug, Clone)]
+pub struct JointCommand {
+    pub entity_a: String,
+    pub entity_b: String,
+    pub joint_type: String,
+    pub anchor_a: [f32; 3],
+    pub anchor_b: [f32; 3],
+    pub axis: [f32; 3],
+}
+
 pub struct SpotLightUpdate {
     pub entity_id: String,
     pub color: [f32; 3],
@@ -425,6 +435,7 @@ impl LuaEngineContext {
             pending_materials: Arc::new(Mutex::new(Vec::new())),
             pending_pbr_materials: Arc::new(Mutex::new(Vec::new())),
             pending_spot_lights: Arc::new(Mutex::new(Vec::new())),
+            pending_joints: Arc::new(Mutex::new(Vec::new())),
             pending_trails: Arc::new(Mutex::new(Vec::new())),
             debug_lines: Arc::new(Mutex::new(Vec::new())),
             debug_rings: Arc::new(Mutex::new(Vec::new())),
@@ -540,7 +551,10 @@ impl ScriptComponent {
 
         let code = fs::read_to_string(path)
             .map_err(|e| format!("Error reading script '{}': {}", self.path, e))?;
+        self.init_from_source(ctx, &code)
+    }
 
+    pub fn init_from_source(&mut self, ctx: LuaEngineContext, code: &str) -> Result<(), String> {
         let lua = mlua::Lua::new();
 
         // 1. is_key_down(key)
@@ -1166,6 +1180,41 @@ impl ScriptComponent {
         lua.globals()
             .set("set_spot_light", set_spot_light)
             .map_err(|e| e.to_string())?;
+
+        // 14c. create_joint(entity_a, entity_b, joint_type, [ax,ay,az], [bx,by,bz], [axis_x,axis_y,axis_z])
+        let joints_ref = ctx.pending_joints.clone();
+        let create_joint = lua
+            .create_function(move |_, args: mlua::MultiValue| {
+                let mut iter = args.into_iter();
+                let entity_a = match iter.next() {
+                    Some(mlua::Value::String(s)) => s.to_str().map(|b| b.to_string()).unwrap_or_default(),
+                    _ => return Err(mlua::Error::runtime("Expected: create_joint(entity_a, entity_b, joint_type)")),
+                };
+                let entity_b = match iter.next() {
+                    Some(mlua::Value::String(s)) => s.to_str().map(|b| b.to_string()).unwrap_or_default(),
+                    _ => return Err(mlua::Error::runtime("Expected: create_joint(entity_a, entity_b, joint_type)")),
+                };
+                let joint_type = match iter.next() {
+                    Some(mlua::Value::String(s)) => s.to_str().map(|b| b.to_string()).unwrap_or_else(|_| "fixed".to_string()),
+                    _ => "fixed".to_string(),
+                };
+                let read_vec3 = |v: Option<mlua::Value>, def: [f32; 3]| -> [f32; 3] {
+                    if let Some(mlua::Value::Table(t)) = v {
+                        [t.get(1).unwrap_or(def[0]), t.get(2).unwrap_or(def[1]), t.get(3).unwrap_or(def[2])]
+                    } else {
+                        def
+                    }
+                };
+                let anchor_a = read_vec3(iter.next(), [0.0, 0.0, 0.0]);
+                let anchor_b = read_vec3(iter.next(), [0.0, 0.0, 0.0]);
+                let axis = read_vec3(iter.next(), [0.0, 1.0, 0.0]);
+                if let Ok(mut list) = joints_ref.lock() {
+                    list.push(JointCommand { entity_a, entity_b, joint_type, anchor_a, anchor_b, axis });
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register create_joint: {}", e))?;
+        lua.globals().set("create_joint", create_joint).map_err(|e| e.to_string())?;
 
         // 15. set_camera(x, y, z, tx, ty, tz)
         let cam_set_ref = ctx.pending_camera_sets.clone();
@@ -3648,7 +3697,7 @@ impl ScriptComponent {
 
 
         // Execute the script chunk to define on_update, on_collision, and globals
-        lua.load(&code)
+        lua.load(code)
             .exec()
             .map_err(|e| format!("Lua syntax/runtime error in '{}': {}", self.path, e))?;
 
@@ -3656,6 +3705,11 @@ impl ScriptComponent {
         self.last_error = None;
         self.has_error = false;
         Ok(())
+    }
+
+    pub fn run_repl_snippet(ctx: LuaEngineContext, code: &str) -> Result<(), String> {
+        let mut comp = ScriptComponent::new("<repl>".to_string());
+        comp.init_from_source(ctx, code)
     }
 
     pub fn on_collision(&self, self_id: &str, other_id: &str, normal: [f32; 3]) -> Result<(), String> {

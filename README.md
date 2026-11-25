@@ -58,6 +58,11 @@ La mayoría de los motores tradicionales fueron diseñados para flujos manuales 
 - **Materiales PBR & `uv_scale`:** Serialización completa de `pbr_material`, `uv_scale` y `spot_light` en escenas/prefabs, Inspector, Lua (`set_uv_scale`, `set_spot_light`) y MCP (`upsert_entity`).
 - **Mipmaps CPU & Muestreo Anisotrópico:** Generación automática de cadena de mipmaps en CPU y filtrado anisotrópico `16x` para texturas PBR, además de extracción/desduplicación de texturas embebidas en `.glb`/`.gltf` y hot-reload de modelos 3D.
 
+### 6. Fase 42: IBL Procedural, Frustum Culling, Físicas Avanzadas, Skinning y REPL
+- **Renderizado:** Mapas `normal` y `metallic_roughness` en formato lineal `Rgba8Unorm`, IBL procedural de cielo para reflejos metálicos y **Frustum Culling en CPU**.
+- **Físicas y Animación:** Colliders `heightfield` y `trimesh`, `Joints` (`fixed`, `revolute`, `spherical` + `create_joint` en Lua), **Skinning esquelético** (`compute_skinned_vertices`) y `AnimStateMachine`.
+- **Editor y Red:** Gizmos visuales para `PointLight`/`SpotLight`, **Lua REPL** integrado en Consola, Drag & Drop de assets al Viewport, `GamepadBackend` seguro para CI y serialización de RPCs en Renet.
+
 ---
 
 ## Novedades de Producción en Motor-dif v0.2.0

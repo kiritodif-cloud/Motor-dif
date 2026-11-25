@@ -13,6 +13,30 @@ pub const CHANNEL_RELIABLE_UNORDERED: u8 = 2;
 const MAGIC_CONNECT_REQ: &[u8] = b"MD_CONNECT_REQ";
 const MAGIC_CONNECT_ACK: &[u8] = b"MD_CONNECT_ACK:";
 const MAGIC_DISCONNECT: &[u8] = b"MD_DISCONNECT";
+const RPC_MAGIC_PREFIX: &[u8] = b"MDRPC:";
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RpcMessage {
+    pub fn_name: String,
+    pub args_json: String,
+}
+
+pub fn encode_rpc(fn_name: &str, args_json: &str) -> Vec<u8> {
+    let msg = RpcMessage {
+        fn_name: fn_name.to_string(),
+        args_json: args_json.to_string(),
+    };
+    let mut out = RPC_MAGIC_PREFIX.to_vec();
+    if let Ok(json_bytes) = serde_json::to_vec(&msg) {
+        out.extend_from_slice(&json_bytes);
+    }
+    out
+}
+
+pub fn decode_rpc(data: &[u8]) -> Option<RpcMessage> {
+    let payload = data.strip_prefix(RPC_MAGIC_PREFIX)?;
+    serde_json::from_slice::<RpcMessage>(payload).ok()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkRole {
@@ -570,5 +594,14 @@ mod tests {
         server.disconnect();
         assert!(!client.is_connected());
         assert!(!server.is_connected());
+    }
+
+    #[test]
+    fn test_rpc_encode_decode_roundtrip() {
+        let packet = encode_rpc("on_damage", "[10, \"fire\"]");
+        let decoded = decode_rpc(&packet).expect("RPC packet should decode");
+        assert_eq!(decoded.fn_name, "on_damage");
+        assert_eq!(decoded.args_json, "[10, \"fire\"]");
+        assert!(decode_rpc(b"not_an_rpc").is_none());
     }
 }

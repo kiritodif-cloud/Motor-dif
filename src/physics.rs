@@ -252,6 +252,69 @@ impl PhysicsEngine {
         }
     }
 
+    pub fn add_heightfield_body(
+        &mut self,
+        transform: &Transform,
+        heights: &[f32],
+        nrows: usize,
+        ncols: usize,
+        scale: Vec3,
+    ) -> Option<RigidBodyHandle> {
+        if nrows < 2 || ncols < 2 || heights.len() < nrows * ncols {
+            return None;
+        }
+        let body = RigidBodyBuilder::fixed()
+            .translation(transform.position)
+            .rotation(transform.rotation)
+            .build();
+        let handle = self.rigid_body_set.insert(body);
+        let mat = rapier3d::parry::utils::Array2::from_fn(nrows, ncols, |r, c| heights[r * ncols + c]);
+        let collider = ColliderBuilder::heightfield(mat, scale)
+            .active_events(ActiveEvents::COLLISION_EVENTS)
+            .build();
+        self.collider_set
+            .insert_with_parent(collider, handle, &mut self.rigid_body_set);
+        Some(handle)
+    }
+
+    pub fn add_joint(
+        &mut self,
+        body_a: RigidBodyHandle,
+        body_b: RigidBodyHandle,
+        joint_type: &str,
+        local_anchor_a: Vec3,
+        local_anchor_b: Vec3,
+        axis: Vec3,
+    ) -> Option<ImpulseJointHandle> {
+        let jtype = joint_type.trim().to_lowercase();
+        let joint: GenericJoint = match jtype.as_str() {
+            "fixed" => FixedJointBuilder::new()
+                .local_anchor1(local_anchor_a)
+                .local_anchor2(local_anchor_b)
+                .build()
+                .into(),
+            "revolute" | "hinge" => {
+                let ax = if axis.length_squared() > 1e-6 {
+                    axis.normalize()
+                } else {
+                    Vec3::Y
+                };
+                RevoluteJointBuilder::new(ax)
+                    .local_anchor1(local_anchor_a)
+                    .local_anchor2(local_anchor_b)
+                    .build()
+                    .into()
+            }
+            "spherical" | "ball" => SphericalJointBuilder::new()
+                .local_anchor1(local_anchor_a)
+                .local_anchor2(local_anchor_b)
+                .build()
+                .into(),
+            _ => return None,
+        };
+        Some(self.impulse_joint_set.insert(body_a, body_b, joint, true))
+    }
+
     pub fn step(&mut self, dt: f32) {
         if !self.enabled {
             return;
@@ -538,5 +601,33 @@ mod tests {
         let moved = engine.move_character(body_handle, collider_handle, &mut controller, Vec3::new(0.0, -1.5, 0.0), 0.016);
         assert!(controller.is_grounded);
         assert!(moved.y < 0.0);
+    }
+
+    #[test]
+    fn test_heightfield_and_joints() {
+        let mut engine = PhysicsEngine::new();
+        let heights = vec![0.0_f32; 9];
+        let hf_handle = engine.add_heightfield_body(
+            &Transform::default(),
+            &heights,
+            3,
+            3,
+            Vec3::new(10.0, 1.0, 10.0),
+        );
+        assert!(hf_handle.is_some());
+
+        let dyn_def = PhysicsDef {
+            body: "dynamic".to_string(),
+            collider: "cuboid".to_string(),
+            mass: 1.0,
+            restitution: 0.2,
+            is_sensor: None,
+            collision_layer: None,
+            collision_mask: None,
+        };
+        let b1 = engine.add_body(&Transform::from_xyz(0.0, 2.0, 0.0), &dyn_def);
+        let b2 = engine.add_body(&Transform::from_xyz(1.0, 2.0, 0.0), &dyn_def);
+        let j = engine.add_joint(b1, b2, "revolute", Vec3::ZERO, Vec3::new(-1.0, 0.0, 0.0), Vec3::Y);
+        assert!(j.is_some());
     }
 }

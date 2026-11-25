@@ -201,6 +201,8 @@ pub struct EngineState {
     pub hierarchy_search: String,
     pub bottom_tab: BottomTab,
     pub console_filter: ConsoleFilter,
+    pub repl_input: String,
+    pub dragging_asset: Option<String>,
     pub script_editor_path: Option<String>,
     pub script_editor_content: String,
     pub script_editor_original_content: String,
@@ -565,6 +567,8 @@ impl EngineState {
             hierarchy_search: String::new(),
             bottom_tab: BottomTab::Console,
             console_filter: ConsoleFilter::All,
+            repl_input: String::new(),
+            dragging_asset: None,
             script_editor_path: initial_script_path,
             script_editor_content: initial_script_content.clone(),
             script_editor_original_content: initial_script_content,
@@ -4452,6 +4456,33 @@ let role_str = match self.net.role {
             }
         }
 
+        // Drain and apply physics joints from Lua
+        let pending_joints = if let Ok(mut j) = self.lua_ctx.pending_joints.lock() {
+            std::mem::take(&mut *j)
+        } else {
+            Vec::new()
+        };
+        for jcmd in pending_joints {
+            let mut body_a = None;
+            let mut body_b = None;
+            for er in self.world.iter() {
+                if let (Some(meta), Some(rb)) = (er.get::<&EntityMeta>(), er.get::<&RigidBodyComponent>()) {
+                    if meta.id == jcmd.entity_a { body_a = Some(rb.handle); }
+                    if meta.id == jcmd.entity_b { body_b = Some(rb.handle); }
+                }
+            }
+            if let (Some(ba), Some(bb)) = (body_a, body_b) {
+                let _ = self.physics.add_joint(
+                    ba,
+                    bb,
+                    &jcmd.joint_type,
+                    Vec3::from(jcmd.anchor_a),
+                    Vec3::from(jcmd.anchor_b),
+                    Vec3::from(jcmd.axis),
+                );
+            }
+        }
+
         // Drain and apply spot light updates from Lua
         let pending_spots = if let Ok(mut s) = self.lua_ctx.pending_spot_lights.lock() {
             std::mem::take(&mut *s)
@@ -5159,10 +5190,24 @@ let role_str = match self.net.role {
         }
 
         // Collect instances by mesh type, material key, and blend mode
+        let frustum = camera::Frustum::from_view_proj(self.camera.build_view_projection_matrix());
         let mut instances_by_batch: HashMap<(String, renderer::MaterialKey, String), Vec<InstanceRaw>> = HashMap::new();
         for entity_ref in self.world.iter() {
             let entity = entity_ref.entity();
             if let (Some(transform), Some(mesh)) = (entity_ref.get::<&Transform>(), entity_ref.get::<&MeshRender>()) {
+                let is_known_unit = matches!(
+                    mesh.mesh_type.as_str(),
+                    "cube" | "sphere" | "cylinder" | "quad" | "plane" | "torus" | "ring" | "cone"
+                    | "icosphere" | "sword" | "pickaxe" | "basalt_pillar" | "jagged_rock"
+                    | "crystal_cluster" | "sci_fi_crate"
+                );
+                if is_known_unit {
+                    let world_pos = if let Some((_, wp)) = world_transforms.get(&entity) { *wp } else { transform.position };
+                    let max_s = transform.scale.x.abs().max(transform.scale.y.abs()).max(transform.scale.z.abs()).max(0.1);
+                    if !frustum.intersects_sphere(world_pos, max_s * 1.85) {
+                        continue;
+                    }
+                }
                 let model_mat = if let Some((mat, _)) = world_transforms.get(&entity) {
                     mat.to_cols_array_2d()
                 } else {
@@ -6880,6 +6925,28 @@ let role_str = match self.net.role {
                                             }
                                         }
                                     });
+                                ui.separator();
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("Lua>").strong().color(egui::Color32::from_rgb(130, 210, 255)));
+                                    let resp = ui.add(
+                                        egui::TextEdit::singleline(&mut self.repl_input)
+                                            .desired_width(ui.available_width() - 65.0)
+                                            .hint_text("e.g. set_time_of_day(18.5) or spawn_vfx('fire', 0, 1, 0)"),
+                                    );
+                                    let run_clicked = ui.button("Run").clicked();
+                                    let enter_pressed = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                    if (run_clicked || enter_pressed) && !self.repl_input.trim().is_empty() {
+                                        let code = self.repl_input.trim().to_string();
+                                        self.logs.push(format!("Lua> {}", code));
+                                        if let Err(e) = ScriptComponent::run_repl_snippet(self.lua_ctx.clone(), &code) {
+                                            self.logs.push(format!("Lua REPL Error: {}", e));
+                                        } else {
+                                            self.logs.push("=> OK".to_string());
+                                        }
+                                        self.repl_input.clear();
+                                        if enter_pressed { resp.request_focus(); }
+                                    }
+                                });
                             }
                             BottomTab::Assets => {
                                 ui.horizontal(|ui| {
@@ -6892,6 +6959,11 @@ let role_str = match self.net.role {
                                 egui::ScrollArea::vertical().show(ui, |ui| {
                                     for path in &self.assets_cache.clone() {
                                         ui.horizontal(|ui| {
+                                            let drag_lbl = ui.add(egui::Label::new("::").sense(egui::Sense::drag()))
+                                                .on_hover_text("Drag onto Viewport");
+                                            if drag_lbl.drag_started() {
+                                                self.dragging_asset = Some(path.clone());
+                                            }
                                             if path.contains("prefabs") && path.ends_with(".json") {
                                                 ui.label(format!("[prefab] {}", path));
                                                 if ui.button("[+] Spawn Prefab").clicked() {
@@ -7460,6 +7532,119 @@ let role_str = match self.net.role {
                                         }
                                     }
                                 }
+                            }
+                        }
+
+                        // 3b. Editor Light & Camera Gizmos (hidden in Play mode)
+                        if !is_playing {
+                            for er in self.world.iter() {
+                                let ent = er.entity();
+                                let wpos = if let Some((_, wp)) = world_transforms.get(&ent) {
+                                    *wp
+                                } else if let Some(t) = er.get::<&Transform>() {
+                                    t.position
+                                } else {
+                                    continue;
+                                };
+                                if let Some(pl) = er.get::<&ecs::PointLight>() {
+                                    let col = egui::Color32::from_rgb(
+                                        (pl.color[0].clamp(0.0, 1.0) * 255.0) as u8,
+                                        (pl.color[1].clamp(0.0, 1.0) * 255.0) as u8,
+                                        (pl.color[2].clamp(0.0, 1.0) * 255.0) as u8,
+                                    );
+                                    let stroke = egui::Stroke::new(1.2, col);
+                                    let r = pl.radius.clamp(0.5, 6.0);
+                                    if let Some(cp) = self.camera.world_to_screen(wpos, screen_size) {
+                                        painter.circle_filled(egui::pos2(cp[0], cp[1]), 4.5, col);
+                                    }
+                                    for seg in 0..16 {
+                                        let a0 = (seg as f32 / 16.0) * std::f32::consts::TAU;
+                                        let a1 = ((seg + 1) as f32 / 16.0) * std::f32::consts::TAU;
+                                        let p0 = wpos + Vec3::new(a0.cos() * r, 0.0, a0.sin() * r);
+                                        let p1 = wpos + Vec3::new(a1.cos() * r, 0.0, a1.sin() * r);
+                                        if let (Some(s0), Some(s1)) = (self.camera.world_to_screen(p0, screen_size), self.camera.world_to_screen(p1, screen_size)) {
+                                            painter.line_segment([egui::pos2(s0[0], s0[1]), egui::pos2(s1[0], s1[1])], stroke);
+                                        }
+                                    }
+                                }
+                                if let Some(sl) = er.get::<&ecs::SpotLight>() {
+                                    let col = egui::Color32::from_rgb(
+                                        (sl.color[0].clamp(0.0, 1.0) * 255.0) as u8,
+                                        (sl.color[1].clamp(0.0, 1.0) * 255.0) as u8,
+                                        (sl.color[2].clamp(0.0, 1.0) * 255.0) as u8,
+                                    );
+                                    let stroke = egui::Stroke::new(1.4, col);
+                                    let dir = Vec3::from(sl.direction).normalize_or_zero();
+                                    let dir = if dir.length_squared() > 0.0 { dir } else { -Vec3::Y };
+                                    let up_ref = if dir.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
+                                    let right = dir.cross(up_ref).normalize_or_zero();
+                                    let up = right.cross(dir).normalize_or_zero();
+                                    let len = sl.radius.clamp(1.0, 8.0);
+                                    let cone_r = len * sl.outer_angle.tan().clamp(0.05, 1.5);
+                                    let tip_center = wpos + dir * len;
+                                    if let Some(cp) = self.camera.world_to_screen(wpos, screen_size) {
+                                        painter.circle_filled(egui::pos2(cp[0], cp[1]), 4.5, col);
+                                    }
+                                    for k in 0..8 {
+                                        let a0 = (k as f32 / 8.0) * std::f32::consts::TAU;
+                                        let a1 = ((k + 1) as f32 / 8.0) * std::f32::consts::TAU;
+                                        let rp0 = tip_center + (right * a0.cos() + up * a0.sin()) * cone_r;
+                                        let rp1 = tip_center + (right * a1.cos() + up * a1.sin()) * cone_r;
+                                        if let (Some(s0), Some(s1)) = (self.camera.world_to_screen(rp0, screen_size), self.camera.world_to_screen(rp1, screen_size)) {
+                                            painter.line_segment([egui::pos2(s0[0], s0[1]), egui::pos2(s1[0], s1[1])], stroke);
+                                        }
+                                        if k % 2 == 0 {
+                                            if let (Some(sa), Some(sb)) = (self.camera.world_to_screen(wpos, screen_size), self.camera.world_to_screen(rp0, screen_size)) {
+                                                painter.line_segment([egui::pos2(sa[0], sa[1]), egui::pos2(sb[0], sb[1])], stroke);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3c. Asset Browser Drag & Drop onto Viewport
+                        if let Some(drag_path) = self.dragging_asset.clone() {
+                            if let Some(cursor) = pointer_pos {
+                                if viewport_rect.contains(cursor) {
+                                    painter.rect_stroke(
+                                        viewport_rect,
+                                        0.0,
+                                        egui::Stroke::new(2.0, egui::Color32::from_rgb(56, 189, 248)),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                    if ui.ctx().input(|i| i.pointer.any_released()) {
+                                        let lower = drag_path.to_lowercase();
+                                        if lower.ends_with(".glb") || lower.ends_with(".gltf") {
+                                            self.entity_counter += 1;
+                                            let stem = std::path::Path::new(&drag_path).file_stem().and_then(|s| s.to_str()).unwrap_or("model");
+                                            let id = format!("{}_{}", stem, self.entity_counter);
+                                            let e = self.world.spawn((
+                                                EntityMeta { id: id.clone(), name: id.clone(), parent: None },
+                                                Transform::from_xyz(0.0, 1.0, 0.0),
+                                                MeshRender::new(drag_path.clone(), [1.0, 1.0, 1.0, 1.0], 0.0),
+                                            ));
+                                            self.selected_entity = Some(e);
+                                            self.add_toast(format!("Spawned '{}'", id), egui::Color32::from_rgb(56, 189, 248));
+                                        } else if lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+                                            if let Some(sel) = self.selected_entity {
+                                                let mut assigned = false;
+                                                if let Ok(mut mesh) = self.world.get::<&mut MeshRender>(sel) {
+                                                    mesh.texture = Some(drag_path.clone());
+                                                    assigned = true;
+                                                }
+                                                if assigned {
+                                                    self.add_toast("Assigned texture to selected entity".to_string(), egui::Color32::from_rgb(34, 197, 94));
+                                                }
+                                            }
+                                        }
+                                        self.dragging_asset = None;
+                                    }
+                                } else if ui.ctx().input(|i| i.pointer.any_released()) {
+                                    self.dragging_asset = None;
+                                }
+                            } else if ui.ctx().input(|i| i.pointer.any_released()) {
+                                self.dragging_asset = None;
                             }
                         }
 

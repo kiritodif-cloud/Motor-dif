@@ -562,4 +562,54 @@ mod tests {
         let forward_after_left = (cam_left.target - cam_left.eye).normalize();
         assert!(forward_after_left.x < 0.0, "Expected forward vector x < 0 when turning left, got {}", forward_after_left.x);
     }
+
+    #[test]
+    fn test_frustum_culling_sphere() {
+        let cam = Camera::new_3d(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, 16.0 / 9.0);
+        let frustum = Frustum::from_view_proj(cam.build_view_projection_matrix());
+        assert!(frustum.intersects_sphere(Vec3::ZERO, 1.0));
+        assert!(frustum.intersects_sphere(Vec3::new(1.5, 0.0, 0.0), 1.0));
+        // Far behind camera (+Z > 10)
+        assert!(!frustum.intersects_sphere(Vec3::new(0.0, 0.0, 25.0), 1.0));
+        // Far to the side
+        assert!(!frustum.intersects_sphere(Vec3::new(50.0, 0.0, 0.0), 1.0));
+    }
+}
+
+pub struct Frustum {
+    pub planes: [glam::Vec4; 6],
+}
+
+impl Frustum {
+    pub fn from_view_proj(vp: Mat4) -> Self {
+        let r0 = vp.row(0);
+        let r1 = vp.row(1);
+        let r2 = vp.row(2);
+        let r3 = vp.row(3);
+        let mut planes = [
+            r3 + r0, // Left
+            r3 - r0, // Right
+            r3 + r1, // Bottom
+            r3 - r1, // Top
+            r2,      // Near (wgpu [0, 1] NDC depth)
+            r3 - r2, // Far
+        ];
+        for p in &mut planes {
+            let len = Vec3::new(p.x, p.y, p.z).length();
+            if len > 1e-6 {
+                *p /= len;
+            }
+        }
+        Self { planes }
+    }
+
+    pub fn intersects_sphere(&self, center: Vec3, radius: f32) -> bool {
+        for p in &self.planes {
+            let dist = p.x * center.x + p.y * center.y + p.z * center.z + p.w;
+            if dist < -radius {
+                return false;
+            }
+        }
+        true
+    }
 }

@@ -716,6 +716,108 @@ pub fn load_gltf_clips(path: impl AsRef<std::path::Path>) -> Result<HashMap<Stri
     Ok(clips)
 }
 
+#[derive(Debug, Clone)]
+pub struct SkinMeshData {
+    pub base_positions: Vec<[f32; 3]>,
+    pub base_normals: Vec<[f32; 3]>,
+    pub joint_indices: Vec<[u16; 4]>,
+    pub joint_weights: Vec<[f32; 4]>,
+    pub uvs: Vec<[f32; 2]>,
+    pub colors: Vec<[f32; 4]>,
+    pub indices: Vec<u32>,
+    pub inverse_bind_matrices: Vec<glam::Mat4>,
+}
+
+pub fn compute_skinned_vertices(
+    skin: &SkinMeshData,
+    joint_matrices: &[glam::Mat4],
+) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
+    let n = skin.base_positions.len();
+    let mut out_pos = Vec::with_capacity(n);
+    let mut out_norm = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let p = glam::Vec3::from(skin.base_positions[i]);
+        let nrm = glam::Vec3::from(skin.base_normals[i]);
+        let ji = skin.joint_indices[i];
+        let jw = skin.joint_weights[i];
+        let w_sum = jw[0] + jw[1] + jw[2] + jw[3];
+
+        if w_sum < 1e-5 || joint_matrices.is_empty() {
+            out_pos.push(skin.base_positions[i]);
+            out_norm.push(skin.base_normals[i]);
+            continue;
+        }
+
+        let mut skinned_p = glam::Vec3::ZERO;
+        let mut skinned_n = glam::Vec3::ZERO;
+        for k in 0..4 {
+            let w = jw[k] / w_sum;
+            if w > 0.0 {
+                let idx = (ji[k] as usize).min(joint_matrices.len() - 1);
+                let m = joint_matrices[idx];
+                skinned_p += m.transform_point3(p) * w;
+                skinned_n += m.transform_vector3(nrm) * w;
+            }
+        }
+        let nn = skinned_n.normalize_or_zero();
+        out_pos.push([skinned_p.x, skinned_p.y, skinned_p.z]);
+        out_norm.push(if nn.length_squared() > 0.0 { [nn.x, nn.y, nn.z] } else { skin.base_normals[i] });
+    }
+    (out_pos, out_norm)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnimStateTransition {
+    pub from: String,
+    pub to: String,
+    pub param: String,
+    pub threshold: f32,
+    pub greater: bool,
+    pub blend_time: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnimStateMachine {
+    pub current_state: String,
+    #[serde(default)]
+    pub params: HashMap<String, f32>,
+    #[serde(default)]
+    pub transitions: Vec<AnimStateTransition>,
+}
+
+impl AnimStateMachine {
+    pub fn new(initial_state: impl Into<String>) -> Self {
+        Self {
+            current_state: initial_state.into(),
+            params: HashMap::new(),
+            transitions: Vec::new(),
+        }
+    }
+
+    pub fn set_param(&mut self, name: &str, value: f32) {
+        self.params.insert(name.to_string(), value);
+    }
+
+    pub fn add_transition(&mut self, t: AnimStateTransition) {
+        self.transitions.push(t);
+    }
+
+    pub fn evaluate(&mut self) -> Option<(String, f32)> {
+        for t in &self.transitions {
+            if t.from == self.current_state || t.from == "*" {
+                let val = self.params.get(&t.param).copied().unwrap_or(0.0);
+                let matched = if t.greater { val > t.threshold } else { val < t.threshold };
+                if matched && t.to != self.current_state {
+                    self.current_state = t.to.clone();
+                    return Some((t.to.clone(), t.blend_time));
+                }
+            }
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -882,5 +984,41 @@ mod tests {
         assert!((end_pos[1] - 20.0).abs() < 0.01);
         assert!((end_pos[2] - 30.0).abs() < 0.01);
         assert_eq!(player.previous_clip, None);
+    }
+
+    #[test]
+    fn test_skeletal_skinning_and_state_machine() {
+        let skin = SkinMeshData {
+            base_positions: vec![[1.0, 0.0, 0.0]],
+            base_normals: vec![[0.0, 1.0, 0.0]],
+            joint_indices: vec![[0, 1, 0, 0]],
+            joint_weights: vec![[0.5, 0.5, 0.0, 0.0]],
+            uvs: vec![[0.0, 0.0]],
+            colors: vec![[1.0; 4]],
+            indices: vec![0],
+            inverse_bind_matrices: vec![glam::Mat4::IDENTITY; 2],
+        };
+        let joints = [
+            glam::Mat4::from_translation(glam::Vec3::new(0.0, 2.0, 0.0)),
+            glam::Mat4::from_translation(glam::Vec3::new(0.0, 4.0, 0.0)),
+        ];
+        let (pos, _) = compute_skinned_vertices(&skin, &joints);
+        assert!((pos[0][0] - 1.0).abs() < 1e-4);
+        assert!((pos[0][1] - 3.0).abs() < 1e-4);
+
+        let mut sm = AnimStateMachine::new("idle");
+        sm.add_transition(AnimStateTransition {
+            from: "idle".to_string(),
+            to: "run".to_string(),
+            param: "speed".to_string(),
+            threshold: 0.5,
+            greater: true,
+            blend_time: 0.2,
+        });
+        sm.set_param("speed", 0.2);
+        assert!(sm.evaluate().is_none());
+        sm.set_param("speed", 1.5);
+        let next = sm.evaluate();
+        assert_eq!(next, Some(("run".to_string(), 0.2)));
     }
 }

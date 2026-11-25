@@ -47,6 +47,28 @@ impl Default for GamepadState {
     }
 }
 
+pub struct GamepadBackend {
+    pub enabled: bool,
+}
+
+impl GamepadBackend {
+    pub fn init() -> Self {
+        if cfg!(test)
+            || std::env::var("CI").is_ok()
+            || std::env::var("GITHUB_ACTIONS").is_ok()
+        {
+            return Self { enabled: false };
+        }
+        Self { enabled: true }
+    }
+
+    pub fn poll(&mut self, state: &mut GamepadState) {
+        if !self.enabled {
+            state.buttons_just_pressed = 0;
+        }
+    }
+}
+
 pub struct GamepadButton;
 impl GamepadButton {
     pub const SOUTH: u32 = 1 << 0; // A / Cross
@@ -399,5 +421,14 @@ mod tests {
         let loaded = InputMap::load_or_default(path);
         assert!(loaded.actions.contains_key("special_move"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_gamepad_backend_headless_safe() {
+        let mut backend = GamepadBackend::init();
+        let mut state = GamepadState::default();
+        state.buttons_just_pressed = GamepadButton::SOUTH;
+        backend.poll(&mut state);
+        assert_eq!(state.buttons_just_pressed, 0);
     }
 }

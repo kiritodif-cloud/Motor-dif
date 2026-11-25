@@ -97,6 +97,7 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `raycast(ox, oy, oz, dx, dy, dz, max_dist, [layer_mask]) -> { hit=bool, entity_id=str, distance=f, point={x,y,z}, normal={x,y,z} }`.
   - `overlap_sphere(cx, cy, cz, radius, [layer_mask]) -> { count=n, entity_ids={ ... } }`.
   - `apply_force(fx, fy, fz)`, `apply_impulse(ix, iy, iz)`: Operates on self entity rigid body.
+  - `create_joint(entity_a, entity_b, joint_type, [ax,ay,az], [bx,by,bz], [axis_x,axis_y,axis_z])`: Joints (`"fixed"`, `"revolute"`, `"spherical"`).
   - Callbacks in scripts: `on_collision(self, other_id, nx, ny, nz)`, `on_trigger_enter(other_id, self)`, `on_trigger_exit(other_id, self)`.
 - Timers & Events:
   - `after(delay_secs, callback_name) -> timer_id`, `every(interval_secs, callback_name) -> timer_id`

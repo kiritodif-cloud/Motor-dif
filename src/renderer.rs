@@ -734,11 +734,27 @@ impl TextureGpu {
         emissive_view: &wgpu::TextureView,
         label: &str,
     ) -> Result<Self, String> {
+        Self::from_bytes_pbr_fmt(
+            device, queue, layout, bytes, normal_view, mr_view, emissive_view, label, true,
+        )
+    }
+
+    pub fn from_bytes_pbr_fmt(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &wgpu::BindGroupLayout,
+        bytes: &[u8],
+        normal_view: &wgpu::TextureView,
+        mr_view: &wgpu::TextureView,
+        emissive_view: &wgpu::TextureView,
+        label: &str,
+        srgb: bool,
+    ) -> Result<Self, String> {
         let img = image::load_from_memory(bytes).map_err(|e| format!("Image decode error: {}", e))?;
         let rgba = img.to_rgba8();
         let (width, height) = rgba.dimensions();
-        Self::from_rgba_pbr(
-            device, queue, layout, &rgba, width, height, normal_view, mr_view, emissive_view, label,
+        Self::from_rgba_pbr_fmt(
+            device, queue, layout, &rgba, width, height, normal_view, mr_view, emissive_view, label, srgb,
         )
     }
 
@@ -771,6 +787,24 @@ impl TextureGpu {
         emissive_view: &wgpu::TextureView,
         label: &str,
     ) -> Result<Self, String> {
+        Self::from_rgba_pbr_fmt(
+            device, queue, layout, rgba, width, height, normal_view, mr_view, emissive_view, label, true,
+        )
+    }
+
+    pub fn from_rgba_pbr_fmt(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &wgpu::BindGroupLayout,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        normal_view: &wgpu::TextureView,
+        mr_view: &wgpu::TextureView,
+        emissive_view: &wgpu::TextureView,
+        label: &str,
+        srgb: bool,
+    ) -> Result<Self, String> {
         let w = width.max(1);
         let h = height.max(1);
         let is_nearest = label.contains("voxel") || label.contains("pixel") || label.contains("atlas") || label.ends_with("_nearest");
@@ -785,13 +819,18 @@ impl TextureGpu {
             height: h,
             depth_or_array_layers: 1,
         };
+        let format = if srgb {
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        } else {
+            wgpu::TextureFormat::Rgba8Unorm
+        };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size,
             mip_level_count,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -1267,11 +1306,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let F0 = mix(vec3<f32>(0.04), albedo, metallic);
 
-    // 1. Hemispheric Ambient
+    // 1. Hemispheric Ambient + Procedural Sky IBL
     let hemi_factor = clamp(N.y * 0.5 + 0.5, 0.0, 1.0);
     let sky_ambient = mix(vec3<f32>(0.26, 0.30, 0.38), camera.zenith_color.rgb * 0.45, 0.5);
     let ground_ambient = mix(vec3<f32>(0.11, 0.12, 0.14), camera.horizon_color.rgb * 0.25, 0.5);
     let ambient = mix(ground_ambient, sky_ambient, hemi_factor) * albedo * (1.0 - metallic * 0.6);
+    let R = reflect(-view_dir, N);
+    let r_sky_t = clamp(R.y * 0.5 + 0.5, 0.0, 1.0);
+    let env_sky = mix(ground_ambient * 1.4, mix(camera.horizon_color.rgb, camera.zenith_color.rgb, clamp(R.y, 0.0, 1.0)), r_sky_t);
+    let F_ibl = fresnel_schlick(max(dot(N, view_dir), 0.0), F0);
+    let ibl_spec = env_sky * F_ibl * (1.0 - roughness * 0.85) * (0.25 + 0.75 * metallic);
 
     // 2. Directional Sun/Light with PCF 3x3 Shadows & PBR Cook-Torrance
     var light_dir = shadow_uniform.light_dir.xyz;
@@ -1350,7 +1394,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // 5. Total Lit Color
-    let lit_color = ambient + direct_light + point_lights_contrib + emissive + fresnel_contrib;
+    let lit_color = ambient + ibl_spec + direct_light + point_lights_contrib + emissive + fresnel_contrib;
 
     // 6. Atmospheric Fog (Exponential or Linear)
     let dist = length(camera.camera_pos.xyz - in.world_pos);
@@ -2665,10 +2709,14 @@ impl GpuContext {
     }
 
     pub fn get_or_load_texture(&mut self, path: &str) -> &TextureGpu {
+        self.get_or_load_texture_with_format(path, true)
+    }
+
+    pub fn get_or_load_texture_with_format(&mut self, path: &str, srgb: bool) -> &TextureGpu {
         if !self.texture_cache.contains_key(path) {
             match std::fs::read(path) {
                 Ok(bytes) => {
-                    match TextureGpu::from_bytes_pbr(
+                    match TextureGpu::from_bytes_pbr_fmt(
                         &self.device,
                         &self.queue,
                         &self.texture_bind_group_layout,
@@ -2677,6 +2725,7 @@ impl GpuContext {
                         &self.dummy_mr.view,
                         &self.dummy_black.view,
                         path,
+                        srgb,
                     ) {
                         Ok(tex) => {
                             self.texture_cache.insert(path.to_string(), tex);
@@ -2825,16 +2874,16 @@ impl GpuContext {
 
         if !self.material_cache.contains_key(key) {
             if let Some(diffuse) = &key.diffuse {
-                let _ = self.get_or_load_texture(diffuse);
+                let _ = self.get_or_load_texture_with_format(diffuse, true);
             }
             if let Some(normal) = &key.normal {
-                let _ = self.get_or_load_texture(normal);
+                let _ = self.get_or_load_texture_with_format(normal, false);
             }
             if let Some(mr) = &key.metallic_roughness {
-                let _ = self.get_or_load_texture(mr);
+                let _ = self.get_or_load_texture_with_format(mr, false);
             }
             if let Some(emissive) = &key.emissive {
-                let _ = self.get_or_load_texture(emissive);
+                let _ = self.get_or_load_texture_with_format(emissive, true);
             }
 
             let (diffuse_view, diffuse_sampler) = if let Some(diffuse) = &key.diffuse {
@@ -3010,6 +3059,44 @@ impl GpuContext {
                 vertex_buffer,
                 index_buffer,
                 num_indices: mesh.indices.len() as u32,
+                index_format: wgpu::IndexFormat::Uint32,
+            },
+        );
+    }
+
+    pub fn update_mesh_vertices(
+        &mut self,
+        mesh_id: &str,
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        uvs: &[[f32; 2]],
+        colors: &[[f32; 4]],
+        indices: &[u32],
+    ) {
+        let vertices: Vec<Vertex> = (0..positions.len())
+            .map(|i| Vertex {
+                position: positions[i],
+                normal: normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]),
+                uv: uvs.get(i).copied().unwrap_or([0.0, 0.0]),
+                color: colors.get(i).copied().unwrap_or([1.0, 1.0, 1.0, 1.0]),
+            })
+            .collect();
+        let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("Skinned Vertex Buffer: {}", mesh_id)),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("Skinned Index Buffer: {}", mesh_id)),
+            contents: bytemuck::cast_slice(indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        self.meshes.insert(
+            mesh_id.to_string(),
+            MeshGpu {
+                vertex_buffer,
+                index_buffer,
+                num_indices: indices.len() as u32,
                 index_format: wgpu::IndexFormat::Uint32,
             },
         );
