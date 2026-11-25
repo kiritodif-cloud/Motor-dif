@@ -47,7 +47,7 @@ jobs:
         run: cargo check --verbose
 
       - name: Cargo Test
-        run: cargo test --bin motor_dif --verbose
+        run: cargo test --bin motor_dif --verbose -- --test-threads=1 --nocapture
 
       - name: Cargo Build Release
         run: cargo build --release --bin motor_dif
