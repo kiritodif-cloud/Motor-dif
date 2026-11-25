@@ -4,6 +4,7 @@ pub mod animation;
 pub mod assets;
 pub mod audio;
 pub mod camera;
+pub mod day_night;
 pub mod ecs;
 pub mod exporter;
 pub mod game_ui;
@@ -11,14 +12,17 @@ pub mod glb_exporter;
 pub mod hot_reload;
 pub mod input_map;
 pub mod level_forge;
+pub mod lua_lint;
 pub mod mcp_server;
 pub mod modeler;
-pub mod net;
 pub mod music_forge;
 pub mod nav;
+pub mod net;
 pub mod particles;
+pub mod path_safety;
 pub mod physics;
 pub mod procedural_rig;
+pub mod profiling;
 pub mod renderer;
 pub mod scripting;
 pub mod sdf;
@@ -28,7 +32,6 @@ pub mod tweens;
 pub mod ui_theme;
 pub mod vfx_forge;
 pub mod voxel_forge;
-pub mod day_night;
 
 use day_night::*;
 
@@ -37,18 +40,18 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use egui::{CentralPanel, Frame, Panel};
 use assets::SceneDef;
 use camera::{Camera, CameraMode};
 use ecs::{EntityMeta, MeshRender, Transform};
+use egui::{CentralPanel, Frame, Panel};
 use glam::{EulerRot, Quat, Vec3};
 use hot_reload::{HotReloadEvent, HotReloadManager};
 use mcp_server::{EngineLogsResponse, McpCommand, WorldInspection};
 use physics::{CharacterControllerComponent, PhysicsEngine, RigidBodyComponent};
-use renderer::{create_instance_buffer, GpuContext, InstanceRaw, LightsUniform};
+use renderer::{GpuContext, InstanceRaw, LightsUniform};
 use scripting::ScriptComponent;
-use tweens::TweenManager;
 use tokio::sync::{mpsc, oneshot};
+use tweens::TweenManager;
 use wgpu::CurrentSurfaceTexture;
 use winit::{
     application::ApplicationHandler,
@@ -239,6 +242,12 @@ pub struct EngineState {
     pub sim_time_ms: f32,
     pub render_time_ms: f32,
     pub ui_time_ms: f32,
+    pub frame_metrics: profiling::FrameMetrics,
+    pub physics_snapshot_state:
+        HashMap<rapier3d::dynamics::RigidBodyHandle, (glam::Vec3, rapier3d::math::Rotation)>,
+    pub physics_snapshot_collider_count: usize,
+    pub physics_snapshot_rebuilds: u64,
+    pub physics_snapshot_dirty: bool,
     pub view_mode: renderer::ViewMode,
     pub camera_bookmarks: [Option<(Vec3, Vec3)>; 4],
     pub last_draw_calls: usize,
@@ -287,7 +296,10 @@ pub fn is_scene_path(path: &str) -> bool {
         return false;
     }
     let normalized = path.replace('\\', "/").to_lowercase();
-    if normalized.contains("/prefabs/") || normalized.contains("/models/") || normalized.contains("/textures/") {
+    if normalized.contains("/prefabs/")
+        || normalized.contains("/models/")
+        || normalized.contains("/textures/")
+    {
         return false;
     }
     let filename = Path::new(path)
@@ -301,16 +313,17 @@ pub fn is_scene_path(path: &str) -> bool {
     true
 }
 
-pub fn compute_world_transforms(
-    world: &hecs::World,
-) -> HashMap<hecs::Entity, (glam::Mat4, Vec3)> {
+pub fn compute_world_transforms(world: &hecs::World) -> HashMap<hecs::Entity, (glam::Mat4, Vec3)> {
     let mut id_to_entity = HashMap::new();
     let mut parent_map = HashMap::new();
     let mut local_mats = HashMap::new();
 
     for entity_ref in world.iter() {
         let entity = entity_ref.entity();
-        if let (Some(meta), Some(transform)) = (entity_ref.get::<&EntityMeta>(), entity_ref.get::<&Transform>()) {
+        if let (Some(meta), Some(transform)) = (
+            entity_ref.get::<&EntityMeta>(),
+            entity_ref.get::<&Transform>(),
+        ) {
             id_to_entity.insert(meta.id.clone(), entity);
             local_mats.insert(meta.id.clone(), transform.matrix());
             if let Some(pid) = &meta.parent {
@@ -326,7 +339,13 @@ pub fn compute_world_transforms(
     let mut visiting = HashSet::new();
 
     for id in local_mats.keys() {
-        resolve_world_matrix(id, &parent_map, &local_mats, &mut resolved_matrices, &mut visiting);
+        resolve_world_matrix(
+            id,
+            &parent_map,
+            &local_mats,
+            &mut resolved_matrices,
+            &mut visiting,
+        );
     }
 
     let mut result = HashMap::new();
@@ -358,7 +377,8 @@ fn resolve_world_matrix(
     let local = local_mats.get(id).copied().unwrap_or(glam::Mat4::IDENTITY);
     let world = if let Some(parent_id) = parent_map.get(id) {
         if parent_id != id && local_mats.contains_key(parent_id) {
-            let parent_world = resolve_world_matrix(parent_id, parent_map, local_mats, resolved, visiting);
+            let parent_world =
+                resolve_world_matrix(parent_id, parent_map, local_mats, resolved, visiting);
             parent_world * local
         } else {
             local
@@ -379,6 +399,7 @@ impl EngineState {
         initial_scene_path: String,
         enable_mcp: bool,
         mcp_token: Option<String>,
+        mcp_port: u16,
     ) -> Self {
         let size = window.inner_size();
         let aspect = size.width as f32 / size.height.max(1) as f32;
@@ -446,14 +467,34 @@ impl EngineState {
                 if let Some(env) = &scene.environment {
                     loaded_env = env.clone();
                 }
-                let ctx_opt = if is_standalone_play { Some(&lua_ctx) } else { None };
-                assets::apply_scene_to_world(&scene, &mut world, &mut camera, &mut physics, ctx_opt);
+                let ctx_opt = if is_standalone_play {
+                    Some(&lua_ctx)
+                } else {
+                    None
+                };
+                assets::apply_scene_to_world(
+                    &scene,
+                    &mut world,
+                    &mut camera,
+                    &mut physics,
+                    ctx_opt,
+                );
                 crate::level_forge::sync_active_terrain_from_scene(&scene, &lua_ctx.active_terrain);
-                crate::voxel_forge::sync_active_voxel_world_from_scene(&scene, &lua_ctx.active_voxel_world);
-                logs.push(format!("Scene loaded from '{}' ({} entities)", initial_scene_path, world.len()));
+                crate::voxel_forge::sync_active_voxel_world_from_scene(
+                    &scene,
+                    &lua_ctx.active_voxel_world,
+                );
+                logs.push(format!(
+                    "Scene loaded from '{}' ({} entities)",
+                    initial_scene_path,
+                    world.len()
+                ));
             }
             Err(e) => {
-                logs.push(format!("Warning loading scene '{}': {}", initial_scene_path, e));
+                logs.push(format!(
+                    "Warning loading scene '{}': {}",
+                    initial_scene_path, e
+                ));
             }
         }
         if let Ok(mut lock) = lua_ctx.post_process_settings.write() {
@@ -479,9 +520,20 @@ impl EngineState {
 
         let (mcp_handle, mcp_server_addr, cmd_rx) = if enable_mcp || !is_standalone_play {
             let (tx, rx) = mpsc::channel(64);
-            let handle = mcp_server::start_mcp_server(tx, 3030, mcp_token);
+            let handle = mcp_server::start_mcp_server(tx, mcp_port, mcp_token);
             let addr = handle.bound_addr.to_string();
-            logs.push(format!("MCP Server: running at http://{}/mcp and stdio", addr));
+            if handle.bound_addr.port() != mcp_port {
+                logs.push(format!(
+                    "MCP port {} was unavailable; using ephemeral port {}",
+                    mcp_port,
+                    handle.bound_addr.port()
+                ));
+            }
+            logs.push(format!(
+                "MCP Server: running at http://{}/mcp and stdio",
+                addr
+            ));
+            println!("[Motor-dif] MCP Server listening at http://{}/mcp", addr);
             (Some(handle), addr, rx)
         } else {
             let (_tx, rx) = mpsc::channel(64);
@@ -557,7 +609,11 @@ impl EngineState {
             forge_recipe: crate::modeler::preset_spaceship(),
             forge_selected_part: None,
 
-            play_mode: if is_standalone_play { PlayMode::Play } else { PlayMode::Edit },
+            play_mode: if is_standalone_play {
+                PlayMode::Play
+            } else {
+                PlayMode::Edit
+            },
             play_snapshot: None,
             gizmo_mode: GizmoMode::Translate,
             snap_enabled: false,
@@ -606,6 +662,11 @@ impl EngineState {
             sim_time_ms: 0.0,
             render_time_ms: 0.0,
             ui_time_ms: 0.0,
+            frame_metrics: profiling::FrameMetrics::new(),
+            physics_snapshot_state: HashMap::new(),
+            physics_snapshot_collider_count: 0,
+            physics_snapshot_rebuilds: 0,
+            physics_snapshot_dirty: true,
             view_mode: renderer::ViewMode::Lit,
             camera_bookmarks: [None, None, None, None],
             last_draw_calls: 0,
@@ -647,43 +708,95 @@ impl EngineState {
         }
 
         let profiler_area = egui::Area::new(ui.make_persistent_id("viewport_profiler_f3"))
-            .fixed_pos(egui::pos2(viewport_rect.min.x + 12.0, viewport_rect.min.y + 48.0));
+            .fixed_pos(egui::pos2(
+                viewport_rect.min.x + 12.0,
+                viewport_rect.min.y + 48.0,
+            ));
         profiler_area.show(ui.ctx(), |ui| {
             egui::Frame::new()
                 .fill(egui::Color32::from_rgba_premultiplied(18, 21, 28, 235))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(56, 189, 248)))
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgb(56, 189, 248),
+                ))
                 .corner_radius(egui::CornerRadius::same(6))
                 .inner_margin(egui::Margin::symmetric(10, 8))
                 .show(ui, |ui| {
                     let avg_ms = if self.frametime_history.is_empty() {
                         0.0
                     } else {
-                        self.frametime_history.iter().sum::<f32>() / self.frametime_history.len() as f32
+                        self.frametime_history.iter().sum::<f32>()
+                            / self.frametime_history.len() as f32
                     };
                     let avg_fps = if avg_ms > 0.0 { 1000.0 / avg_ms } else { 0.0 };
 
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("PROFILER (F3)").strong().color(egui::Color32::from_rgb(56, 189, 248)));
+                        ui.label(
+                            egui::RichText::new("PROFILER (F3)")
+                                .strong()
+                                .color(egui::Color32::from_rgb(56, 189, 248)),
+                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(format!("{:.1}ms", avg_ms)).size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                            ui.label(
+                                egui::RichText::new(format!("{:.1}ms", avg_ms))
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(142, 149, 165)),
+                            );
                         });
                     });
                     ui.separator();
 
                     // Sparkline Graph: 120 frames with reference lines
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(220.0, 52.0), egui::Sense::hover());
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(220.0, 52.0), egui::Sense::hover());
                     let painter = ui.painter();
-                    painter.rect_filled(rect, egui::CornerRadius::same(4), egui::Color32::from_rgb(14, 16, 22));
-                    painter.rect_stroke(rect, egui::CornerRadius::same(4), egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(46, 51, 64, 150)), egui::StrokeKind::Inside);
+                    painter.rect_filled(
+                        rect,
+                        egui::CornerRadius::same(4),
+                        egui::Color32::from_rgb(14, 16, 22),
+                    );
+                    painter.rect_stroke(
+                        rect,
+                        egui::CornerRadius::same(4),
+                        egui::Stroke::new(
+                            1.0,
+                            egui::Color32::from_rgba_premultiplied(46, 51, 64, 150),
+                        ),
+                        egui::StrokeKind::Inside,
+                    );
 
                     // Target reference lines: 16.6ms (60 FPS) and 33.3ms (30 FPS)
                     let max_graph_ms = 40.0f32;
                     let y_60 = rect.max.y - (16.6 / max_graph_ms) * rect.height();
                     let y_30 = rect.max.y - (33.3 / max_graph_ms) * rect.height();
-                    painter.line_segment([egui::pos2(rect.min.x, y_60), egui::pos2(rect.max.x, y_60)], egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(34, 197, 94, 90)));
-                    painter.line_segment([egui::pos2(rect.min.x, y_30), egui::pos2(rect.max.x, y_30)], egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(240, 120, 40, 80)));
-                    painter.text(egui::pos2(rect.max.x - 2.0, y_60 - 2.0), egui::Align2::RIGHT_BOTTOM, "60 FPS", egui::FontId::proportional(8.0), egui::Color32::from_rgba_unmultiplied(34, 197, 94, 150));
-                    painter.text(egui::pos2(rect.max.x - 2.0, y_30 - 2.0), egui::Align2::RIGHT_BOTTOM, "30 FPS", egui::FontId::proportional(8.0), egui::Color32::from_rgba_unmultiplied(240, 120, 40, 150));
+                    painter.line_segment(
+                        [egui::pos2(rect.min.x, y_60), egui::pos2(rect.max.x, y_60)],
+                        egui::Stroke::new(
+                            1.0,
+                            egui::Color32::from_rgba_unmultiplied(34, 197, 94, 90),
+                        ),
+                    );
+                    painter.line_segment(
+                        [egui::pos2(rect.min.x, y_30), egui::pos2(rect.max.x, y_30)],
+                        egui::Stroke::new(
+                            1.0,
+                            egui::Color32::from_rgba_unmultiplied(240, 120, 40, 80),
+                        ),
+                    );
+                    painter.text(
+                        egui::pos2(rect.max.x - 2.0, y_60 - 2.0),
+                        egui::Align2::RIGHT_BOTTOM,
+                        "60 FPS",
+                        egui::FontId::proportional(8.0),
+                        egui::Color32::from_rgba_unmultiplied(34, 197, 94, 150),
+                    );
+                    painter.text(
+                        egui::pos2(rect.max.x - 2.0, y_30 - 2.0),
+                        egui::Align2::RIGHT_BOTTOM,
+                        "30 FPS",
+                        egui::FontId::proportional(8.0),
+                        egui::Color32::from_rgba_unmultiplied(240, 120, 40, 150),
+                    );
 
                     if self.frametime_history.len() >= 2 {
                         let count = self.frametime_history.len();
@@ -712,27 +825,107 @@ impl EngineState {
 
                     // Timing Breakdown (Sim / Render / UI)
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("CPU Breakdown:").size(10.5).color(egui::Color32::from_rgb(142, 149, 165)));
+                        ui.label(
+                            egui::RichText::new("CPU Breakdown:")
+                                .size(10.5)
+                                .color(egui::Color32::from_rgb(142, 149, 165)),
+                        );
                     });
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(format!("Sim: {:.1}ms", self.sim_time_ms)).size(10.5).strong().color(egui::Color32::from_rgb(56, 189, 248)));
-                        ui.label(egui::RichText::new("|").size(10.5).color(egui::Color32::from_rgb(80, 85, 100)));
-                        ui.label(egui::RichText::new(format!("Render: {:.1}ms", self.render_time_ms)).size(10.5).strong().color(egui::Color32::from_rgb(168, 85, 247)));
-                        ui.label(egui::RichText::new("|").size(10.5).color(egui::Color32::from_rgb(80, 85, 100)));
-                        ui.label(egui::RichText::new(format!("UI: {:.1}ms", self.ui_time_ms)).size(10.5).strong().color(egui::Color32::from_rgb(34, 197, 94)));
+                        ui.label(
+                            egui::RichText::new(format!("Sim: {:.1}ms", self.sim_time_ms))
+                                .size(10.5)
+                                .strong()
+                                .color(egui::Color32::from_rgb(56, 189, 248)),
+                        );
+                        ui.label(
+                            egui::RichText::new("|")
+                                .size(10.5)
+                                .color(egui::Color32::from_rgb(80, 85, 100)),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!("Render: {:.1}ms", self.render_time_ms))
+                                .size(10.5)
+                                .strong()
+                                .color(egui::Color32::from_rgb(168, 85, 247)),
+                        );
+                        ui.label(
+                            egui::RichText::new("|")
+                                .size(10.5)
+                                .color(egui::Color32::from_rgb(80, 85, 100)),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!("UI: {:.1}ms", self.ui_time_ms))
+                                .size(10.5)
+                                .strong()
+                                .color(egui::Color32::from_rgb(34, 197, 94)),
+                        );
                     });
+
+                    // Per-stage p95 histogram (120-frame rolling window, full scale = 16.7ms)
+                    let stages = [
+                        profiling::FrameStage::McpHotReload,
+                        profiling::FrameStage::PhysicsSnapshot,
+                        profiling::FrameStage::LuaUpdate,
+                        profiling::FrameStage::TimersEvents,
+                        profiling::FrameStage::ForcesAndMoves,
+                        profiling::FrameStage::PhysicsStep,
+                        profiling::FrameStage::Transforms,
+                        profiling::FrameStage::BatchBuild,
+                    ];
+                    let (stage_rect, _) =
+                        ui.allocate_exact_size(egui::vec2(220.0, 34.0), egui::Sense::hover());
+                    let stage_painter = ui.painter();
+                    stage_painter.rect_filled(
+                        stage_rect,
+                        egui::CornerRadius::same(3),
+                        egui::Color32::from_rgb(14, 16, 22),
+                    );
+                    let bar_w = stage_rect.width() / stages.len() as f32;
+                    for (i, &stage) in stages.iter().enumerate() {
+                        let p95 = self
+                            .frame_metrics
+                            .stats(stage)
+                            .map(|s| s.p95_ms)
+                            .unwrap_or(0.0);
+                        let h = (p95 / 16.7).clamp(0.0, 1.0) * stage_rect.height();
+                        let x0 = stage_rect.min.x + i as f32 * bar_w + 1.0;
+                        let bar_rect = egui::Rect::from_min_max(
+                            egui::pos2(x0, stage_rect.max.y - h),
+                            egui::pos2(x0 + bar_w - 2.0, stage_rect.max.y),
+                        );
+                        let color = if p95 <= 4.0 {
+                            egui::Color32::from_rgb(34, 197, 94)
+                        } else if p95 <= 10.0 {
+                            egui::Color32::from_rgb(250, 204, 21)
+                        } else {
+                            egui::Color32::from_rgb(239, 68, 68)
+                        };
+                        stage_painter.rect_filled(bar_rect, egui::CornerRadius::same(1), color);
+                        stage_painter.text(
+                            egui::pos2(x0, stage_rect.min.y + 1.0),
+                            egui::Align2::LEFT_TOP,
+                            stage.short_name(),
+                            egui::FontId::proportional(7.0),
+                            egui::Color32::from_rgb(142, 149, 165),
+                        );
+                    }
 
                     ui.add_space(3.0);
                     ui.separator();
                     ui.add_space(2.0);
 
                     // Stats grid
-                    let bodies_count = self.physics.dynamic_bodies_count() + self.physics.fixed_bodies_count();
+                    let bodies_count =
+                        self.physics.dynamic_bodies_count() + self.physics.fixed_bodies_count();
                     let particles_count = self.particles.active_count();
                     let lights_count = self.world.query::<&crate::ecs::PointLight>().iter().count();
 
                     let est_mem_mb = {
-                        let mut bytes = (self.gpu.config.width as usize) * (self.gpu.config.height as usize) * 4 * 2;
+                        let mut bytes = (self.gpu.config.width as usize)
+                            * (self.gpu.config.height as usize)
+                            * 4
+                            * 2;
                         bytes += 2048 * 2048 * 4;
                         bytes += self.gpu.texture_cache.len() * 2 * 1024 * 1024;
                         for mesh in self.gpu.meshes.values() {
@@ -746,47 +939,182 @@ impl EngineState {
                         .num_columns(2)
                         .spacing([12.0, 3.0])
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new("FPS / Frametime:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
-                            ui.label(egui::RichText::new(format!("{:.0} FPS ({:.2} ms) | Avg: {:.1} FPS", self.fps, 1000.0 / self.fps.max(1.0), avg_fps)).size(11.0).strong());
+                            ui.label(
+                                egui::RichText::new("FPS / Frametime:")
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(142, 149, 165)),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{:.0} FPS ({:.2} ms) | Avg: {:.1} FPS",
+                                    self.fps,
+                                    1000.0 / self.fps.max(1.0),
+                                    avg_fps
+                                ))
+                                .size(11.0)
+                                .strong(),
+                            );
                             ui.end_row();
 
-                            ui.label(egui::RichText::new("Draw Calls (Batches):").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
-                            ui.label(egui::RichText::new(format!("{}", self.last_draw_calls)).size(11.0).strong().color(egui::Color32::from_rgb(56, 189, 248)));
+                            ui.label(
+                                egui::RichText::new("Draw Calls (Batches):")
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(142, 149, 165)),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("{}", self.last_draw_calls))
+                                    .size(11.0)
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(56, 189, 248)),
+                            );
                             ui.end_row();
 
-let role_str = match self.net.role {
+                            let lua_p95 = self
+                                .frame_metrics
+                                .stats(profiling::FrameStage::LuaUpdate)
+                                .map(|s| s.p95_ms)
+                                .unwrap_or(0.0);
+                            let physics_p95 = self
+                                .frame_metrics
+                                .stats(profiling::FrameStage::PhysicsStep)
+                                .map(|s| s.p95_ms)
+                                .unwrap_or(0.0);
+                            let batch_p95 = self
+                                .frame_metrics
+                                .stats(profiling::FrameStage::BatchBuild)
+                                .map(|s| s.p95_ms)
+                                .unwrap_or(0.0);
+                            ui.label(
+                                egui::RichText::new("Stage p95 (Lua/Phys/Batch):")
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(142, 149, 165)),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{:.2}/{:.2}/{:.2} ms",
+                                    lua_p95, physics_p95, batch_p95
+                                ))
+                                .size(11.0)
+                                .strong(),
+                            );
+                            ui.end_row();
+
+                            let role_str = match self.net.role {
                                 net::NetworkRole::Server => "Server",
                                 net::NetworkRole::Client => "Client",
                                 net::NetworkRole::Disconnected => "Offline",
                             };
                             let (tx, rx) = self.net.tx_rx_stats();
                             let rtt_ms = self.net.rtt(None);
-                            ui.label(egui::RichText::new("Net (Role/Peers/RTT):").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
-                            ui.label(egui::RichText::new(format!("{} | {} peers | {:.0}ms | {:.1}/{:.1} KB/s", role_str, self.net.peer_count(), rtt_ms, tx / 1024.0, rx / 1024.0)).size(11.0).strong().color(egui::Color32::from_rgb(56, 189, 248)));
+                            ui.label(
+                                egui::RichText::new("Net (Role/Peers/RTT):")
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(142, 149, 165)),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} | {} peers | {:.0}ms | {:.1}/{:.1} KB/s",
+                                    role_str,
+                                    self.net.peer_count(),
+                                    rtt_ms,
+                                    tx / 1024.0,
+                                    rx / 1024.0
+                                ))
+                                .size(11.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(56, 189, 248)),
+                            );
                             ui.end_row();
 
-                            ui.label(egui::RichText::new("RTT Passes / Targets:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
-                            ui.label(egui::RichText::new(format!("{} passes | {} targets", self.last_rtt_passes, self.gpu.rtt_registry.target_count())).size(11.0).strong().color(egui::Color32::from_rgb(168, 85, 247)));
+                            ui.label(
+                                egui::RichText::new("RTT Passes / Targets:")
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(142, 149, 165)),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} passes | {} targets",
+                                    self.last_rtt_passes,
+                                    self.gpu.rtt_registry.target_count()
+                                ))
+                                .size(11.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(168, 85, 247)),
+                            );
                             ui.end_row();
 
-                            ui.label(egui::RichText::new("Entities:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
-                            ui.label(egui::RichText::new(format!("{}", self.world.len())).size(11.0).strong());
+                            ui.label(
+                                egui::RichText::new("Entities:")
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(142, 149, 165)),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("{}", self.world.len()))
+                                    .size(11.0)
+                                    .strong(),
+                            );
                             ui.end_row();
 
-                            ui.label(egui::RichText::new("Physics Bodies:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
-                            ui.label(egui::RichText::new(format!("{}", bodies_count)).size(11.0).strong());
+                            ui.label(
+                                egui::RichText::new("Physics Bodies:")
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(142, 149, 165)),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("{}", bodies_count))
+                                    .size(11.0)
+                                    .strong(),
+                            );
                             ui.end_row();
 
-                            ui.label(egui::RichText::new("Active Particles:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
-                            ui.label(egui::RichText::new(format!("{}", particles_count)).size(11.0).strong());
+                            ui.label(
+                                egui::RichText::new("Snapshot Rebuilds:")
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(142, 149, 165)),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("{}", self.physics_snapshot_rebuilds))
+                                    .size(11.0)
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(168, 85, 247)),
+                            );
                             ui.end_row();
 
-                            ui.label(egui::RichText::new("Point Lights:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
-                            ui.label(egui::RichText::new(format!("{}", lights_count)).size(11.0).strong());
+                            ui.label(
+                                egui::RichText::new("Active Particles:")
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(142, 149, 165)),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("{}", particles_count))
+                                    .size(11.0)
+                                    .strong(),
+                            );
                             ui.end_row();
 
-                            ui.label(egui::RichText::new("Est. Memory:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
-                            ui.label(egui::RichText::new(format!("{:.1} MB", est_mem_mb)).size(11.0).strong().color(egui::Color32::from_rgb(34, 197, 94)));
+                            ui.label(
+                                egui::RichText::new("Point Lights:")
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(142, 149, 165)),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("{}", lights_count))
+                                    .size(11.0)
+                                    .strong(),
+                            );
+                            ui.end_row();
+
+                            ui.label(
+                                egui::RichText::new("Est. Memory:")
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(142, 149, 165)),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("{:.1} MB", est_mem_mb))
+                                    .size(11.0)
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(34, 197, 94)),
+                            );
                             ui.end_row();
                         });
                 });
@@ -794,17 +1122,20 @@ let role_str = match self.net.role {
     }
 
     pub fn sync_entity_to_physics(&mut self, entity: hecs::Entity) {
-        let tr_opt = self.world.get::<&Transform>(entity).map(|t| (t.position, t.rotation)).ok();
-        let rb_opt = self.world.get::<&RigidBodyComponent>(entity).map(|r| r.handle).ok();
+        let tr_opt = self
+            .world
+            .get::<&Transform>(entity)
+            .map(|t| (t.position, t.rotation))
+            .ok();
+        let rb_opt = self
+            .world
+            .get::<&RigidBodyComponent>(entity)
+            .map(|r| r.handle)
+            .ok();
         if let (Some((pos, rot)), Some(handle)) = (tr_opt, rb_opt) {
             if let Some(body) = self.physics.rigid_body_set.get_mut(handle) {
                 body.set_translation(pos, true);
-                let q = Quat::from_euler(
-                    EulerRot::XYZ,
-                    rot.x,
-                    rot.y,
-                    rot.z,
-                );
+                let q = Quat::from_euler(EulerRot::XYZ, rot.x, rot.y, rot.z);
                 body.set_rotation(q, true);
                 body.set_linvel(Vec3::ZERO, true);
                 body.set_angvel(Vec3::ZERO, true);
@@ -812,10 +1143,24 @@ let role_str = match self.net.role {
         }
     }
 
+    /// Call after any structural or collider-level physics mutation so the
+    /// Lua raycast snapshot is rebuilt on the next frame even if body poses
+    /// and counts happen to stay identical.
+    pub fn invalidate_physics_snapshot(&mut self) {
+        self.physics_snapshot_dirty = true;
+    }
+
     pub fn undo(&mut self) {
         let current = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
         if let Some(prev) = self.history.undo(current) {
-            assets::apply_scene_to_world(&prev, &mut self.world, &mut self.camera, &mut self.physics, None);
+            assets::apply_scene_to_world(
+                &prev,
+                &mut self.world,
+                &mut self.camera,
+                &mut self.physics,
+                None,
+            );
+            self.invalidate_physics_snapshot();
             self.selected_entity = None;
             self.logs.push("Undo performed".to_string());
         }
@@ -824,7 +1169,14 @@ let role_str = match self.net.role {
     pub fn redo(&mut self) {
         let current = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
         if let Some(next) = self.history.redo(current) {
-            assets::apply_scene_to_world(&next, &mut self.world, &mut self.camera, &mut self.physics, None);
+            assets::apply_scene_to_world(
+                &next,
+                &mut self.world,
+                &mut self.camera,
+                &mut self.physics,
+                None,
+            );
+            self.invalidate_physics_snapshot();
             self.selected_entity = None;
             self.logs.push("Redo performed".to_string());
         }
@@ -834,7 +1186,8 @@ let role_str = match self.net.role {
         let mut scene = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
         scene.post_process = Some(self.post_process_settings.clone());
         scene.environment = Some(self.environment_settings.clone());
-        self.hot_reload.suppress_scene_events(std::time::Duration::from_millis(600));
+        self.hot_reload
+            .suppress_scene_events(std::time::Duration::from_millis(600));
         match assets::save_scene_to_file(path, &scene) {
             Ok(()) => {
                 let msg = format!("Scene successfully saved to '{}'", path);
@@ -845,7 +1198,10 @@ let role_str = match self.net.role {
             }
             Err(e) => {
                 self.logs.push(format!("Error saving scene: {}", e));
-                self.add_toast(format!("Error saving scene: {}", e), egui::Color32::from_rgb(239, 68, 68));
+                self.add_toast(
+                    format!("Error saving scene: {}", e),
+                    egui::Color32::from_rgb(239, 68, 68),
+                );
             }
         }
     }
@@ -859,9 +1215,22 @@ let role_str = match self.net.role {
         };
         match assets::load_scene_from_file(&path) {
             Ok(scene) => {
-                assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, ctx_opt);
-                crate::level_forge::sync_active_terrain_from_scene(&scene, &self.lua_ctx.active_terrain);
-                crate::voxel_forge::sync_active_voxel_world_from_scene(&scene, &self.lua_ctx.active_voxel_world);
+                assets::apply_scene_to_world(
+                    &scene,
+                    &mut self.world,
+                    &mut self.camera,
+                    &mut self.physics,
+                    ctx_opt,
+                );
+                self.invalidate_physics_snapshot();
+                crate::level_forge::sync_active_terrain_from_scene(
+                    &scene,
+                    &self.lua_ctx.active_terrain,
+                );
+                crate::voxel_forge::sync_active_voxel_world_from_scene(
+                    &scene,
+                    &self.lua_ctx.active_voxel_world,
+                );
                 if let Some(pp) = &scene.post_process {
                     self.post_process_settings = pp.clone();
                     if let Ok(mut lock) = self.lua_ctx.post_process_settings.write() {
@@ -879,7 +1248,11 @@ let role_str = match self.net.role {
                 }
                 self.selected_entity = None;
                 self.hot_reload.last_reload_error = None;
-                let msg = format!("Hot-Reload: Scene successfully reloaded from '{}' ({} entities)", path, self.world.len());
+                let msg = format!(
+                    "Hot-Reload: Scene successfully reloaded from '{}' ({} entities)",
+                    path,
+                    self.world.len()
+                );
                 self.logs.push(msg.clone());
                 self.hot_reload.last_reload_status = Some(msg);
                 self.add_toast("Scene reloaded", egui::Color32::from_rgb(56, 189, 248));
@@ -887,7 +1260,10 @@ let role_str = match self.net.role {
             Err(err) => {
                 self.hot_reload.last_reload_error = Some(err.clone());
                 self.logs.push(format!("Hot-Reload ERROR: {}", err));
-                self.add_toast(format!("Hot-reload error: {}", err), egui::Color32::from_rgb(239, 68, 68));
+                self.add_toast(
+                    format!("Hot-reload error: {}", err),
+                    egui::Color32::from_rgb(239, 68, 68),
+                );
             }
         }
     }
@@ -899,13 +1275,21 @@ let role_str = match self.net.role {
         let mut count = 0;
         let norm_target = prefab_path.replace('\\', "/").to_lowercase();
 
-        let matching: Vec<hecs::Entity> = self.world.iter()
+        let matching: Vec<hecs::Entity> = self
+            .world
+            .iter()
             .filter_map(|er| {
                 let is_match = er.get::<&ecs::PrefabInstance>().map_or(false, |p| {
                     let norm_s = p.source.replace('\\', "/").to_lowercase();
-                    norm_s == norm_target || norm_s.ends_with(&norm_target) || norm_target.ends_with(&norm_s)
+                    norm_s == norm_target
+                        || norm_s.ends_with(&norm_target)
+                        || norm_target.ends_with(&norm_s)
                 });
-                if is_match { Some(er.entity()) } else { None }
+                if is_match {
+                    Some(er.entity())
+                } else {
+                    None
+                }
             })
             .collect();
 
@@ -930,8 +1314,14 @@ let role_str = match self.net.role {
             }
         }
         if count > 0 {
-            self.logs.push(format!("Synced {} instances of prefab '{}'", count, prefab_path));
-            self.add_toast(format!("Synced {} prefab instances", count), egui::Color32::from_rgb(56, 189, 248));
+            self.logs.push(format!(
+                "Synced {} instances of prefab '{}'",
+                count, prefab_path
+            ));
+            self.add_toast(
+                format!("Synced {} prefab instances", count),
+                egui::Color32::from_rgb(56, 189, 248),
+            );
         }
         count
     }
@@ -941,7 +1331,8 @@ let role_str = match self.net.role {
         if self.play_mode != PlayMode::Edit {
             self.play_snapshot = None;
             self.play_mode = PlayMode::Edit;
-            self.logs.push("Simulation stopped to open new scene.".to_string());
+            self.logs
+                .push("Simulation stopped to open new scene.".to_string());
         }
 
         // Clean up audio, particles, and Lua timers/events/UI
@@ -969,9 +1360,19 @@ let role_str = match self.net.role {
         } else {
             None
         };
-        assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, ctx_opt);
+        assets::apply_scene_to_world(
+            &scene,
+            &mut self.world,
+            &mut self.camera,
+            &mut self.physics,
+            ctx_opt,
+        );
+        self.invalidate_physics_snapshot();
         crate::level_forge::sync_active_terrain_from_scene(&scene, &self.lua_ctx.active_terrain);
-        crate::voxel_forge::sync_active_voxel_world_from_scene(&scene, &self.lua_ctx.active_voxel_world);
+        crate::voxel_forge::sync_active_voxel_world_from_scene(
+            &scene,
+            &self.lua_ctx.active_voxel_world,
+        );
 
         // 5. Apply post-process and environment settings
         if let Some(pp) = &scene.post_process {
@@ -996,17 +1397,28 @@ let role_str = match self.net.role {
         self.hot_reload.last_reload_error = None;
 
         // 7. Toast & Logs
-        let file_name = Path::new(path).file_name().and_then(|f| f.to_str()).unwrap_or(path);
+        let file_name = Path::new(path)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or(path);
         let toast_msg = format!("Opened: {}", file_name);
         self.add_toast(&toast_msg, egui::Color32::from_rgb(56, 189, 248));
-        self.logs.push(format!("Scene opened from '{}' ({} entities)", path, self.world.len()));
+        self.logs.push(format!(
+            "Scene opened from '{}' ({} entities)",
+            path,
+            self.world.len()
+        ));
 
         Ok(())
     }
 
     pub fn start_play_mode(&mut self) {
         if self.play_mode == PlayMode::Edit {
-            self.play_snapshot = Some(assets::extract_scene_from_world(&self.world, &self.camera, &self.physics));
+            self.play_snapshot = Some(assets::extract_scene_from_world(
+                &self.world,
+                &self.camera,
+                &self.physics,
+            ));
         }
         self.play_mode = PlayMode::Play;
         self.is_paused = false;
@@ -1020,7 +1432,10 @@ let role_str = match self.net.role {
         }
 
         // Initialize and execute all Lua scripts now that Play mode is active
-        for (meta, script) in self.world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
+        for (meta, script) in self
+            .world
+            .query_mut::<(&EntityMeta, &mut ScriptComponent)>()
+        {
             if let Err(e) = script.init_or_reload(self.lua_ctx.clone()) {
                 let err_msg = format!("Script compile error on '{}': {}", meta.id, e);
                 self.logs.push(err_msg.clone());
@@ -1034,18 +1449,38 @@ let role_str = match self.net.role {
 
     pub fn stop_simulation(&mut self) {
         if let Some(snapshot) = self.play_snapshot.take() {
-            assets::apply_scene_to_world(&snapshot, &mut self.world, &mut self.camera, &mut self.physics, None);
-            crate::level_forge::sync_active_terrain_from_scene(&snapshot, &self.lua_ctx.active_terrain);
-            crate::voxel_forge::sync_active_voxel_world_from_scene(&snapshot, &self.lua_ctx.active_voxel_world);
-            self.logs.push("Simulation stopped. Scene restored to initial snapshot.".to_string());
-            self.add_toast("Simulation stopped & restored", egui::Color32::from_rgb(239, 68, 68));
+            assets::apply_scene_to_world(
+                &snapshot,
+                &mut self.world,
+                &mut self.camera,
+                &mut self.physics,
+                None,
+            );
+            self.invalidate_physics_snapshot();
+            crate::level_forge::sync_active_terrain_from_scene(
+                &snapshot,
+                &self.lua_ctx.active_terrain,
+            );
+            crate::voxel_forge::sync_active_voxel_world_from_scene(
+                &snapshot,
+                &self.lua_ctx.active_voxel_world,
+            );
+            self.logs
+                .push("Simulation stopped. Scene restored to initial snapshot.".to_string());
+            self.add_toast(
+                "Simulation stopped & restored",
+                egui::Color32::from_rgb(239, 68, 68),
+            );
         }
         self.particles.clear();
         self.lua_ctx.clear_timers_and_events();
         if let Ok(mut audio) = self.audio.lock() {
             audio.stop_music();
         }
-        for (_meta, script) in self.world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
+        for (_meta, script) in self
+            .world
+            .query_mut::<(&EntityMeta, &mut ScriptComponent)>()
+        {
             script.lua = None;
         }
         self.active_gizmo_axis = None;
@@ -1072,29 +1507,42 @@ let role_str = match self.net.role {
             return true;
         }
         let scale_factor = self.window.scale_factor() as f32;
-        let pt = egui::pos2(self.mouse_pos[0] / scale_factor, self.mouse_pos[1] / scale_factor);
+        let pt = egui::pos2(
+            self.mouse_pos[0] / scale_factor,
+            self.mouse_pos[1] / scale_factor,
+        );
         self.viewport_rect.contains(pt)
     }
 
     pub fn set_pointer_lock(&mut self, locked: bool) {
         self.pointer_locked = locked;
-        self.lua_ctx.pointer_locked.store(locked, std::sync::atomic::Ordering::SeqCst);
+        self.lua_ctx
+            .pointer_locked
+            .store(locked, std::sync::atomic::Ordering::SeqCst);
         if locked {
             if self.viewport_rect.is_positive() {
                 let scale = self.window.scale_factor() as f32;
                 let c = self.viewport_rect.center();
-                let _ = self.window.set_cursor_position(winit::dpi::PhysicalPosition::new(
-                    (c.x * scale) as f64,
-                    (c.y * scale) as f64,
-                ));
+                let _ = self
+                    .window
+                    .set_cursor_position(winit::dpi::PhysicalPosition::new(
+                        (c.x * scale) as f64,
+                        (c.y * scale) as f64,
+                    ));
             }
-            let res = self.window.set_cursor_grab(winit::window::CursorGrabMode::Locked);
+            let res = self
+                .window
+                .set_cursor_grab(winit::window::CursorGrabMode::Locked);
             if res.is_err() {
-                let _ = self.window.set_cursor_grab(winit::window::CursorGrabMode::Confined);
+                let _ = self
+                    .window
+                    .set_cursor_grab(winit::window::CursorGrabMode::Confined);
             }
             self.window.set_cursor_visible(false);
         } else {
-            let _ = self.window.set_cursor_grab(winit::window::CursorGrabMode::None);
+            let _ = self
+                .window
+                .set_cursor_grab(winit::window::CursorGrabMode::None);
             self.window.set_cursor_visible(true);
         }
     }
@@ -1130,13 +1578,16 @@ let role_str = match self.net.role {
             blend_mode: None,
             wireframe: None,
             uv_scroll: None,
-        uv_scale: None,
+            uv_scale: None,
         };
 
         let entity = self.world.spawn((meta, transform, mesh));
         self.selected_entity = Some(entity);
         self.logs.push(format!("Spawned primitive entity '{}'", id));
-        self.add_toast(format!("Spawned '{}'", id), egui::Color32::from_rgb(56, 189, 248));
+        self.add_toast(
+            format!("Spawned '{}'", id),
+            egui::Color32::from_rgb(56, 189, 248),
+        );
     }
 
     pub fn duplicate_selected(&mut self) {
@@ -1162,7 +1613,10 @@ let role_str = match self.net.role {
                 None
             };
             let phys_val = if let Ok(rb) = self.world.get::<&RigidBodyComponent>(entity) {
-                self.physics.rigid_body_set.get(rb.handle).map(|b| (b.is_dynamic(), b.mass()))
+                self.physics
+                    .rigid_body_set
+                    .get(rb.handle)
+                    .map(|b| (b.is_dynamic(), b.mass()))
             } else {
                 None
             };
@@ -1193,7 +1647,11 @@ let role_str = match self.net.role {
 
             if let Some((is_dyn, mass)) = phys_val {
                 let phys_def = assets::PhysicsDef {
-                    body: if is_dyn { "dynamic".to_string() } else { "fixed".to_string() },
+                    body: if is_dyn {
+                        "dynamic".to_string()
+                    } else {
+                        "fixed".to_string()
+                    },
                     collider: "cuboid".to_string(),
                     mass,
                     restitution: 0.5,
@@ -1206,7 +1664,8 @@ let role_str = match self.net.role {
             }
 
             self.selected_entity = Some(new_e);
-            self.logs.push(format!("Duplicated entity to '{}'", new_trans.position));
+            self.logs
+                .push(format!("Duplicated entity to '{}'", new_trans.position));
         }
     }
 
@@ -1291,7 +1750,7 @@ let role_str = match self.net.role {
                 fresnel_color: None,
                 fresnel_power: None,
                 uv_scroll: None,
-            uv_scale: None,
+                uv_scale: None,
             };
 
             let tri_indices: Vec<[u32; 3]> = mesh
@@ -1306,13 +1765,12 @@ let role_str = match self.net.role {
                 .map(|p| Vec3::new(p[0], p[1], p[2]))
                 .collect();
 
-            let spawned = if let Some(handle) = self.physics.add_trimesh_body(
-                &transform,
-                vert_vec3,
-                tri_indices,
-                false,
-            ) {
-                self.world.spawn((meta, transform, mesh_render, RigidBodyComponent { handle }))
+            let spawned = if let Some(handle) =
+                self.physics
+                    .add_trimesh_body(&transform, vert_vec3, tri_indices, false)
+            {
+                self.world
+                    .spawn((meta, transform, mesh_render, RigidBodyComponent { handle }))
             } else {
                 self.world.spawn((meta, transform, mesh_render))
             };
@@ -1374,7 +1832,7 @@ let role_str = match self.net.role {
                     fresnel_color: None,
                     fresnel_power: None,
                     uv_scroll: None,
-                uv_scale: None,
+                    uv_scale: None,
                 };
                 let phys_def = crate::assets::PhysicsDef {
                     body: "fixed".to_string(),
@@ -1386,7 +1844,8 @@ let role_str = match self.net.role {
                     collision_mask: None,
                 };
                 let handle = self.physics.add_body(&transform, &phys_def);
-                self.world.spawn((meta, transform, mesh, RigidBodyComponent { handle }));
+                self.world
+                    .spawn((meta, transform, mesh, RigidBodyComponent { handle }));
             }
 
             // 2. Spawn Walls around dungeon
@@ -1413,7 +1872,7 @@ let role_str = match self.net.role {
                     fresnel_color: None,
                     fresnel_power: None,
                     uv_scroll: None,
-                uv_scale: None,
+                    uv_scale: None,
                 };
                 let phys_def = crate::assets::PhysicsDef {
                     body: "fixed".to_string(),
@@ -1425,7 +1884,8 @@ let role_str = match self.net.role {
                     collision_mask: None,
                 };
                 let handle = self.physics.add_body(&transform, &phys_def);
-                self.world.spawn((meta, transform, mesh, RigidBodyComponent { handle }));
+                self.world
+                    .spawn((meta, transform, mesh, RigidBodyComponent { handle }));
             }
 
             // 3. Spawn Point marker
@@ -1435,7 +1895,8 @@ let role_str = match self.net.role {
                 name: "Dungeon Spawn Point".to_string(),
                 parent: None,
             };
-            let sp_trans = Transform::new(Vec3::from(result.spawn_point), Vec3::ZERO, Vec3::splat(0.6));
+            let sp_trans =
+                Transform::new(Vec3::from(result.spawn_point), Vec3::ZERO, Vec3::splat(0.6));
             let sp_mesh = MeshRender {
                 mesh_type: "sphere".to_string(),
                 color: [0.2, 0.8, 0.3, 1.0],
@@ -1446,7 +1907,7 @@ let role_str = match self.net.role {
                 fresnel_color: None,
                 fresnel_power: None,
                 uv_scroll: None,
-            uv_scale: None,
+                uv_scale: None,
             };
             self.world.spawn((sp_meta, sp_trans, sp_mesh));
 
@@ -1457,7 +1918,8 @@ let role_str = match self.net.role {
                 name: "Dungeon Boss Point".to_string(),
                 parent: None,
             };
-            let bp_trans = Transform::new(Vec3::from(result.boss_point), Vec3::ZERO, Vec3::splat(0.9));
+            let bp_trans =
+                Transform::new(Vec3::from(result.boss_point), Vec3::ZERO, Vec3::splat(0.9));
             let bp_mesh = MeshRender {
                 mesh_type: "sphere".to_string(),
                 color: [0.9, 0.15, 0.15, 1.0],
@@ -1468,7 +1930,7 @@ let role_str = match self.net.role {
                 fresnel_color: None,
                 fresnel_power: None,
                 uv_scroll: None,
-            uv_scale: None,
+                uv_scale: None,
             };
             self.world.spawn((bp_meta, bp_trans, bp_mesh));
 
@@ -1491,7 +1953,7 @@ let role_str = match self.net.role {
                     fresnel_color: None,
                     fresnel_power: None,
                     uv_scroll: None,
-                uv_scale: None,
+                    uv_scale: None,
                 };
                 self.world.spawn((lp_meta, lp_trans, lp_mesh));
             }
@@ -1524,7 +1986,11 @@ let role_str = match self.net.role {
 
             for inst in &instances {
                 self.entity_counter += 1;
-                let id = format!("scatter_{}_{}", recipe.prefab_or_mesh.replace('/', "_").replace('.', "_"), self.entity_counter);
+                let id = format!(
+                    "scatter_{}_{}",
+                    recipe.prefab_or_mesh.replace('/', "_").replace('.', "_"),
+                    self.entity_counter
+                );
                 let meta = EntityMeta {
                     id: id.clone(),
                     name: format!("Prop ({})", recipe.prefab_or_mesh),
@@ -1557,7 +2023,7 @@ let role_str = match self.net.role {
                         None
                     },
                     uv_scroll: None,
-                uv_scale: None,
+                    uv_scale: None,
                 };
                 self.world.spawn((meta, transform, mesh));
             }
@@ -1588,7 +2054,10 @@ let role_str = match self.net.role {
             true
         };
         if pass_to_egui {
-            let response = self.gpu.egui_winit_state.on_window_event(&self.window, event);
+            let response = self
+                .gpu
+                .egui_winit_state
+                .on_window_event(&self.window, event);
             if response.repaint {
                 self.window.request_redraw();
             }
@@ -1597,7 +2066,11 @@ let role_str = match self.net.role {
             }
         }
 
-        let egui_wants_kbd = self.gpu.egui_winit_state.egui_ctx().egui_wants_keyboard_input();
+        let egui_wants_kbd = self
+            .gpu
+            .egui_winit_state
+            .egui_ctx()
+            .egui_wants_keyboard_input();
 
         match event {
             WindowEvent::CloseRequested => {
@@ -1634,7 +2107,10 @@ let role_str = match self.net.role {
 
                 if let winit::keyboard::PhysicalKey::Code(code) = physical_key {
                     let code_str = format!("{:?}", code);
-                    let clean = code_str.strip_prefix("Key").unwrap_or(&code_str).to_uppercase();
+                    let clean = code_str
+                        .strip_prefix("Key")
+                        .unwrap_or(&code_str)
+                        .to_uppercase();
                     keys_to_update.push(clean);
                 }
 
@@ -1700,22 +2176,32 @@ let role_str = match self.net.role {
                         if self.window.fullscreen().is_some() {
                             self.window.set_fullscreen(None);
                         } else {
-                            self.window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                            self.window
+                                .set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
                         }
                     }
                 }
 
                 // Keyboard Shortcuts when not focused on egui text edit (Editor mode only)
-                if !self.is_standalone_play && self.play_mode == PlayMode::Edit && is_pressed && !egui_wants_kbd {
+                if !self.is_standalone_play
+                    && self.play_mode == PlayMode::Edit
+                    && is_pressed
+                    && !egui_wants_kbd
+                {
                     let (_ctrl, do_s, do_z, do_y, do_d, do_del, do_w, do_e, do_r, do_f) = {
                         let set = self.pressed_keys.read().unwrap();
-                        let ctrl_down = set.contains("CONTROL") || set.contains("CONTROLRIGHT") || set.contains("CONTROLLEFT");
-                        let shift_down = set.contains("SHIFT") || set.contains("SHIFTRIGHT") || set.contains("SHIFTLEFT");
+                        let ctrl_down = set.contains("CONTROL")
+                            || set.contains("CONTROLRIGHT")
+                            || set.contains("CONTROLLEFT");
+                        let shift_down = set.contains("SHIFT")
+                            || set.contains("SHIFTRIGHT")
+                            || set.contains("SHIFTLEFT");
                         (
                             ctrl_down,
                             ctrl_down && set.contains("S"),
                             ctrl_down && !shift_down && set.contains("Z"),
-                            (ctrl_down && set.contains("Y")) || (ctrl_down && shift_down && set.contains("Z")),
+                            (ctrl_down && set.contains("Y"))
+                                || (ctrl_down && shift_down && set.contains("Z")),
                             ctrl_down && set.contains("D"),
                             !ctrl_down && set.contains("DELETE"),
                             !ctrl_down && set.contains("W"),
@@ -1727,20 +2213,39 @@ let role_str = match self.net.role {
 
                     let (ctrl_down, alt_down, key_1, key_2, key_3, key_4) = {
                         let set = self.pressed_keys.read().unwrap();
-                        let ctrl = set.contains("CONTROL") || set.contains("CONTROLRIGHT") || set.contains("CONTROLLEFT");
-                        let alt = set.contains("ALT") || set.contains("ALTRIGHT") || set.contains("ALTLEFT");
-                        let k1 = set.contains("1") || set.contains("DIGIT1") || set.contains("NUMPAD1");
-                        let k2 = set.contains("2") || set.contains("DIGIT2") || set.contains("NUMPAD2");
-                        let k3 = set.contains("3") || set.contains("DIGIT3") || set.contains("NUMPAD3");
-                        let k4 = set.contains("4") || set.contains("DIGIT4") || set.contains("NUMPAD4");
+                        let ctrl = set.contains("CONTROL")
+                            || set.contains("CONTROLRIGHT")
+                            || set.contains("CONTROLLEFT");
+                        let alt = set.contains("ALT")
+                            || set.contains("ALTRIGHT")
+                            || set.contains("ALTLEFT");
+                        let k1 =
+                            set.contains("1") || set.contains("DIGIT1") || set.contains("NUMPAD1");
+                        let k2 =
+                            set.contains("2") || set.contains("DIGIT2") || set.contains("NUMPAD2");
+                        let k3 =
+                            set.contains("3") || set.contains("DIGIT3") || set.contains("NUMPAD3");
+                        let k4 =
+                            set.contains("4") || set.contains("DIGIT4") || set.contains("NUMPAD4");
                         (ctrl, alt, k1, k2, k3, k4)
                     };
 
-                    let bookmark_slot = if key_1 { Some(0) } else if key_2 { Some(1) } else if key_3 { Some(2) } else if key_4 { Some(3) } else { None };
+                    let bookmark_slot = if key_1 {
+                        Some(0)
+                    } else if key_2 {
+                        Some(1)
+                    } else if key_3 {
+                        Some(2)
+                    } else if key_4 {
+                        Some(3)
+                    } else {
+                        None
+                    };
 
                     if let Some(slot) = bookmark_slot {
                         if ctrl_down {
-                            self.camera_bookmarks[slot] = Some((self.camera.eye, self.camera.target));
+                            self.camera_bookmarks[slot] =
+                                Some((self.camera.eye, self.camera.target));
                             self.toasts.push((
                                 format!("Camera Bookmark {} saved", slot + 1),
                                 Instant::now(),
@@ -1810,7 +2315,11 @@ let role_str = match self.net.role {
                         let cx = c.x * scale;
                         let cy = c.y * scale;
                         if (new_x - cx).abs() > 4.0 || (new_y - cy).abs() > 4.0 {
-                            let _ = self.window.set_cursor_position(winit::dpi::PhysicalPosition::new(cx as f64, cy as f64));
+                            let _ =
+                                self.window
+                                    .set_cursor_position(winit::dpi::PhysicalPosition::new(
+                                        cx as f64, cy as f64,
+                                    ));
                         }
                     }
                 }
@@ -1848,8 +2357,16 @@ let role_str = match self.net.role {
                 match button {
                     winit::event::MouseButton::Left => {
                         if is_pressed {
-                            let over_ui = self.lua_ctx.pointer_over_ui.load(std::sync::atomic::Ordering::SeqCst);
-                            if is_play_mode && !self.is_paused && in_viewport && !self.pointer_locked && !over_ui {
+                            let over_ui = self
+                                .lua_ctx
+                                .pointer_over_ui
+                                .load(std::sync::atomic::Ordering::SeqCst);
+                            if is_play_mode
+                                && !self.is_paused
+                                && in_viewport
+                                && !self.pointer_locked
+                                && !over_ui
+                            {
                                 self.set_pointer_lock(true);
                             }
                             if !self.is_left_mouse_down {
@@ -1883,7 +2400,8 @@ let role_str = match self.net.role {
             WindowEvent::Focused(focused) => {
                 if !focused && self.pointer_locked {
                     self.set_pointer_lock(false);
-                    self.logs.push("[PointerLock] Unlocked by window focus loss".to_string());
+                    self.logs
+                        .push("[PointerLock] Unlocked by window focus loss".to_string());
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -1898,7 +2416,8 @@ let role_str = match self.net.role {
         while let Ok(cmd) = self.mcp_cmd_rx.try_recv() {
             match cmd {
                 McpCommand::InspectWorld { respond_to } => {
-                    let scene = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
+                    let scene =
+                        assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
                     let _ = respond_to.send(WorldInspection {
                         camera: scene.camera,
                         entities: scene.entities,
@@ -1906,6 +2425,7 @@ let role_str = match self.net.role {
                 }
                 McpCommand::UpsertEntity { entity, respond_to } => {
                     self.push_history();
+                    self.invalidate_physics_snapshot();
                     let mut found_e = None;
                     for entity_ref in self.world.iter() {
                         if let Some(meta) = entity_ref.get::<&EntityMeta>() {
@@ -1950,11 +2470,14 @@ let role_str = match self.net.role {
                             }
                         }
                         if let Some(pl) = &entity.point_light {
-                            let _ = self.world.insert_one(e, ecs::PointLight {
-                                color: pl.color,
-                                intensity: pl.intensity,
-                                radius: pl.radius,
-                            });
+                            let _ = self.world.insert_one(
+                                e,
+                                ecs::PointLight {
+                                    color: pl.color,
+                                    intensity: pl.intensity,
+                                    radius: pl.radius,
+                                },
+                            );
                         }
                         if let Some(pbr) = &entity.pbr_material {
                             let _ = self.world.insert_one(e, pbr.clone());
@@ -2000,11 +2523,14 @@ let role_str = match self.net.role {
                         }
 
                         if let Some(pl) = &entity.point_light {
-                            let _ = self.world.insert_one(e, ecs::PointLight {
-                                color: pl.color,
-                                intensity: pl.intensity,
-                                radius: pl.radius,
-                            });
+                            let _ = self.world.insert_one(
+                                e,
+                                ecs::PointLight {
+                                    color: pl.color,
+                                    intensity: pl.intensity,
+                                    radius: pl.radius,
+                                },
+                            );
                         }
                         if let Some(pbr) = &entity.pbr_material {
                             let _ = self.world.insert_one(e, pbr.clone());
@@ -2019,51 +2545,90 @@ let role_str = match self.net.role {
                     let _ = respond_to.send(Ok(msg));
                 }
                 McpCommand::GetEngineLogs { respond_to } => {
-                    let lua_err = self.last_lua_error.clone().or_else(|| self.hot_reload.last_reload_error.clone());
+                    let lua_err = self
+                        .last_lua_error
+                        .clone()
+                        .or_else(|| self.hot_reload.last_reload_error.clone());
                     let _ = respond_to.send(EngineLogsResponse {
                         fps: self.fps,
                         logs: self.logs.clone(),
                         lua_errors: lua_err,
                     });
                 }
-                McpCommand::GetConsoleLogs { filter, limit, respond_to } => {
+                McpCommand::GetConsoleLogs {
+                    filter,
+                    limit,
+                    respond_to,
+                } => {
                     let f = filter.as_deref().unwrap_or("all").to_lowercase();
                     let lim = limit.unwrap_or(50);
-                    let filtered: Vec<String> = self.logs.iter().filter(|l| {
-                        match f.as_str() {
-                            "error" => l.to_lowercase().contains("error") || l.to_lowercase().contains("fail"),
-                            "lua" => l.to_lowercase().contains("lua") || l.to_lowercase().contains("script"),
+                    let filtered: Vec<String> = self
+                        .logs
+                        .iter()
+                        .filter(|l| match f.as_str() {
+                            "error" => {
+                                l.to_lowercase().contains("error")
+                                    || l.to_lowercase().contains("fail")
+                            }
+                            "lua" => {
+                                l.to_lowercase().contains("lua")
+                                    || l.to_lowercase().contains("script")
+                            }
                             "mcp" => l.to_lowercase().contains("mcp"),
                             _ => true,
-                        }
-                    }).cloned().collect();
+                        })
+                        .cloned()
+                        .collect();
                     let len = filtered.len();
                     let start = len.saturating_sub(lim);
                     let result = filtered[start..].to_vec();
                     let _ = respond_to.send(result);
                 }
                 McpCommand::GetSceneTree { respond_to } => {
-                    let selected_id = self.selected_entity.and_then(|e| {
-                        self.world.get::<&EntityMeta>(e).ok().map(|m| m.id.clone())
-                    });
+                    let selected_id = self
+                        .selected_entity
+                        .and_then(|e| self.world.get::<&EntityMeta>(e).ok().map(|m| m.id.clone()));
 
                     let mut nodes: HashMap<String, mcp_server::SceneTreeNode> = HashMap::new();
                     for entity_ref in self.world.iter() {
-                        if let (Some(meta), Some(mesh)) = (entity_ref.get::<&EntityMeta>(), entity_ref.get::<&MeshRender>()) {
-                            let mut comps = vec!["EntityMeta".to_string(), "Transform".to_string(), "MeshRender".to_string()];
-                            if entity_ref.get::<&ScriptComponent>().is_some() { comps.push("ScriptComponent".to_string()); }
-                            if entity_ref.get::<&RigidBodyComponent>().is_some() { comps.push("RigidBody".to_string()); }
-                            if entity_ref.get::<&crate::ecs::PointLight>().is_some() { comps.push("PointLight".to_string()); }
-                            if entity_ref.get::<&crate::animation::AnimationPlayer>().is_some() { comps.push("AnimationPlayer".to_string()); }
-                            if entity_ref.get::<&crate::ecs::TrailComponent>().is_some() { comps.push("Trail".to_string()); }
+                        if let (Some(meta), Some(mesh)) = (
+                            entity_ref.get::<&EntityMeta>(),
+                            entity_ref.get::<&MeshRender>(),
+                        ) {
+                            let mut comps = vec![
+                                "EntityMeta".to_string(),
+                                "Transform".to_string(),
+                                "MeshRender".to_string(),
+                            ];
+                            if entity_ref.get::<&ScriptComponent>().is_some() {
+                                comps.push("ScriptComponent".to_string());
+                            }
+                            if entity_ref.get::<&RigidBodyComponent>().is_some() {
+                                comps.push("RigidBody".to_string());
+                            }
+                            if entity_ref.get::<&crate::ecs::PointLight>().is_some() {
+                                comps.push("PointLight".to_string());
+                            }
+                            if entity_ref
+                                .get::<&crate::animation::AnimationPlayer>()
+                                .is_some()
+                            {
+                                comps.push("AnimationPlayer".to_string());
+                            }
+                            if entity_ref.get::<&crate::ecs::TrailComponent>().is_some() {
+                                comps.push("Trail".to_string());
+                            }
 
-                            nodes.insert(meta.id.clone(), mcp_server::SceneTreeNode {
-                                id: meta.id.clone(),
-                                mesh: mesh.mesh_type.clone(),
-                                parent: meta.parent.clone(),
-                                components: comps,
-                                children: Vec::new(),
-                            });
+                            nodes.insert(
+                                meta.id.clone(),
+                                mcp_server::SceneTreeNode {
+                                    id: meta.id.clone(),
+                                    mesh: mesh.mesh_type.clone(),
+                                    parent: meta.parent.clone(),
+                                    components: comps,
+                                    children: Vec::new(),
+                                },
+                            );
                         }
                     }
 
@@ -2071,15 +2636,23 @@ let role_str = match self.net.role {
                     let mut parent_to_children: HashMap<String, Vec<String>> = HashMap::new();
                     for node in nodes.values() {
                         if let Some(p) = &node.parent {
-                            parent_to_children.entry(p.clone()).or_default().push(node.id.clone());
+                            parent_to_children
+                                .entry(p.clone())
+                                .or_default()
+                                .push(node.id.clone());
                         }
                     }
 
-                    fn build_node(id: &str, nodes: &HashMap<String, mcp_server::SceneTreeNode>, parent_to_children: &HashMap<String, Vec<String>>) -> Option<mcp_server::SceneTreeNode> {
+                    fn build_node(
+                        id: &str,
+                        nodes: &HashMap<String, mcp_server::SceneTreeNode>,
+                        parent_to_children: &HashMap<String, Vec<String>>,
+                    ) -> Option<mcp_server::SceneTreeNode> {
                         let mut node = nodes.get(id)?.clone();
                         if let Some(child_ids) = parent_to_children.get(id) {
                             for cid in child_ids {
-                                if let Some(child_node) = build_node(cid, nodes, parent_to_children) {
+                                if let Some(child_node) = build_node(cid, nodes, parent_to_children)
+                                {
                                     node.children.push(child_node);
                                 }
                             }
@@ -2089,8 +2662,12 @@ let role_str = match self.net.role {
 
                     let mut roots = Vec::new();
                     for node in nodes.values() {
-                        if node.parent.is_none() || !nodes.contains_key(node.parent.as_ref().unwrap()) {
-                            if let Some(root_tree) = build_node(&node.id, &nodes, &parent_to_children) {
+                        if node.parent.is_none()
+                            || !nodes.contains_key(node.parent.as_ref().unwrap())
+                        {
+                            if let Some(root_tree) =
+                                build_node(&node.id, &nodes, &parent_to_children)
+                            {
                                 roots.push(root_tree);
                             }
                         }
@@ -2103,9 +2680,14 @@ let role_str = match self.net.role {
                     });
                 }
                 McpCommand::GetPerformanceStats { respond_to } => {
-                    let bodies_count = self.physics.dynamic_bodies_count() + self.physics.fixed_bodies_count();
+                    let bodies_count =
+                        self.physics.dynamic_bodies_count() + self.physics.fixed_bodies_count();
                     let particles_count = self.particles.active_count();
-                    let frame_time_ms = if self.fps > 0.0 { 1000.0 / self.fps } else { 0.0 };
+                    let frame_time_ms = if self.fps > 0.0 {
+                        1000.0 / self.fps
+                    } else {
+                        0.0
+                    };
 
                     let _ = respond_to.send(mcp_server::PerformanceStatsResponse {
                         fps: self.fps,
@@ -2121,13 +2703,18 @@ let role_str = match self.net.role {
                 }
                 McpCommand::DeleteEntity { id, respond_to } => {
                     self.push_history();
-                    let to_remove: Option<(hecs::Entity, Option<rapier3d::prelude::RigidBodyHandle>)> = {
+                    self.invalidate_physics_snapshot();
+                    let to_remove: Option<(
+                        hecs::Entity,
+                        Option<rapier3d::prelude::RigidBodyHandle>,
+                    )> = {
                         let mut found = None;
                         for entity_ref in self.world.iter() {
                             let entity = entity_ref.entity();
                             if let Some(meta) = entity_ref.get::<&EntityMeta>() {
                                 if meta.id == id {
-                                    let rb_handle = entity_ref.get::<&RigidBodyComponent>().map(|r| r.handle);
+                                    let rb_handle =
+                                        entity_ref.get::<&RigidBodyComponent>().map(|r| r.handle);
                                     found = Some((entity, rb_handle));
                                     break;
                                 }
@@ -2151,7 +2738,13 @@ let role_str = match self.net.role {
                         let _ = respond_to.send(Err(err));
                     }
                 }
-                McpCommand::SetCamera { mode, position, target, ortho_size, respond_to } => {
+                McpCommand::SetCamera {
+                    mode,
+                    position,
+                    target,
+                    ortho_size,
+                    respond_to,
+                } => {
                     if let Some(m) = mode {
                         match m.to_lowercase().as_str() {
                             "2d" | "orthographic" => self.camera.mode = CameraMode::Orthographic,
@@ -2169,7 +2762,10 @@ let role_str = match self.net.role {
                         self.camera.ortho_size = size;
                     }
                     self.gpu.update_camera(&self.camera);
-                    let msg = format!("Camera updated: mode={:?}, eye={}, target={}", self.camera.mode, self.camera.eye, self.camera.target);
+                    let msg = format!(
+                        "Camera updated: mode={:?}, eye={}, target={}",
+                        self.camera.mode, self.camera.eye, self.camera.target
+                    );
                     self.logs.push(msg.clone());
                     let _ = respond_to.send(Ok(msg));
                 }
@@ -2188,12 +2784,17 @@ let role_str = match self.net.role {
                                 let _ = respond_to.send(Ok(val));
                             }
                             Err(e) => {
-                                let _ = respond_to.send(Err(format!("Failed to load scene '{}': {}", path, e)));
+                                let _ = respond_to
+                                    .send(Err(format!("Failed to load scene '{}': {}", path, e)));
                             }
                         }
                     }
                 }
-                McpCommand::SetPlayMode { playing, mode, respond_to } => {
+                McpCommand::SetPlayMode {
+                    playing,
+                    mode,
+                    respond_to,
+                } => {
                     let result = if let Some(p) = playing {
                         if p {
                             self.start_play_mode();
@@ -2212,13 +2813,18 @@ let role_str = match self.net.role {
                             }
                             "pause" => {
                                 self.play_mode = PlayMode::Pause;
-                                Ok(serde_json::json!({ "success": true, "playing": false, "mode": "pause" }))
+                                Ok(
+                                    serde_json::json!({ "success": true, "playing": false, "mode": "pause" }),
+                                )
                             }
                             "stop" | "edit" => {
                                 self.stop_simulation();
                                 Ok(serde_json::json!({ "success": true, "playing": false }))
                             }
-                            _ => Err(format!("Unknown play mode '{}'. Valid modes: 'play', 'pause', 'stop'", m)),
+                            _ => Err(format!(
+                                "Unknown play mode '{}'. Valid modes: 'play', 'pause', 'stop'",
+                                m
+                            )),
                         }
                     } else {
                         Err("Neither 'playing' nor 'mode' specified".to_string())
@@ -2230,24 +2836,43 @@ let role_str = match self.net.role {
                     let step_dt = if dt <= 0.0 { 1.0 / 60.0 } else { dt };
                     if let Ok(mut we) = self.lua_ctx.world_entities.write() {
                         we.clear();
-                        for (meta, transform) in self.world.query::<(&EntityMeta, &Transform)>().iter() {
+                        for (meta, transform) in
+                            self.world.query::<(&EntityMeta, &Transform)>().iter()
+                        {
                             we.insert(
                                 meta.id.clone(),
                                 [
-                                    transform.position.x, transform.position.y, transform.position.z,
-                                    transform.rotation.x, transform.rotation.y, transform.rotation.z,
-                                    transform.scale.x, transform.scale.y, transform.scale.z,
+                                    transform.position.x,
+                                    transform.position.y,
+                                    transform.position.z,
+                                    transform.rotation.x,
+                                    transform.rotation.y,
+                                    transform.rotation.z,
+                                    transform.scale.x,
+                                    transform.scale.y,
+                                    transform.scale.z,
                                 ],
                             );
                         }
                     }
 
-                    for (_meta, transform, script) in self.world.query_mut::<(&EntityMeta, &mut Transform, &mut ScriptComponent)>() {
+                    for (_meta, transform, script) in
+                        self.world
+                            .query_mut::<(&EntityMeta, &mut Transform, &mut ScriptComponent)>()
+                    {
                         let _ = script.update(transform, step_dt);
                     }
-                    scripting::process_timers_and_events(&mut self.world, &self.lua_ctx, step_dt, &mut self.logs);
+                    scripting::process_timers_and_events(
+                        &mut self.world,
+                        &self.lua_ctx,
+                        step_dt,
+                        &mut self.logs,
+                    );
 
-                    for (rb, script) in self.world.query_mut::<(&RigidBodyComponent, &mut ScriptComponent)>() {
+                    for (rb, script) in self
+                        .world
+                        .query_mut::<(&RigidBodyComponent, &mut ScriptComponent)>()
+                    {
                         if let Ok(mut forces) = script.pending_forces.lock() {
                             for f in forces.drain(..) {
                                 self.physics.apply_force(rb.handle, f);
@@ -2275,7 +2900,9 @@ let role_str = match self.net.role {
                         let clean = key.trim().to_uppercase();
                         Ok(scripting::check_key_match(&keys, &clean))
                     });
-                    if let Ok(f) = is_key_down { let _ = lua.globals().set("is_key_down", f); }
+                    if let Ok(f) = is_key_down {
+                        let _ = lua.globals().set("is_key_down", f);
+                    }
 
                     let just_pressed_ref = self.lua_ctx.just_pressed_keys.clone();
                     let is_key_just_pressed = lua.create_function(move |_, key: String| {
@@ -2283,20 +2910,26 @@ let role_str = match self.net.role {
                         let clean = key.trim().to_uppercase();
                         Ok(scripting::check_key_match(&keys, &clean))
                     });
-                    if let Ok(f) = is_key_just_pressed { let _ = lua.globals().set("is_key_just_pressed", f); }
+                    if let Ok(f) = is_key_just_pressed {
+                        let _ = lua.globals().set("is_key_just_pressed", f);
+                    }
 
                     let events_ref = self.lua_ctx.pending_events.clone();
-                    let emit_event = lua.create_function(move |_, (event_name, payload): (String, Option<mlua::Value>)| {
-                        let json_val = match payload {
-                            Some(v) => scripting::lua_to_json(&v),
-                            None => serde_json::Value::Null,
-                        };
-                        if let Ok(mut list) = events_ref.lock() {
-                            list.push((event_name, json_val));
-                        }
-                        Ok(true)
-                    });
-                    if let Ok(f) = emit_event { let _ = lua.globals().set("emit_event", f); }
+                    let emit_event = lua.create_function(
+                        move |_, (event_name, payload): (String, Option<mlua::Value>)| {
+                            let json_val = match payload {
+                                Some(v) => scripting::lua_to_json(&v),
+                                None => serde_json::Value::Null,
+                            };
+                            if let Ok(mut list) = events_ref.lock() {
+                                list.push((event_name, json_val));
+                            }
+                            Ok(true)
+                        },
+                    );
+                    if let Ok(f) = emit_event {
+                        let _ = lua.globals().set("emit_event", f);
+                    }
 
                     let spawns_ref = self.lua_ctx.pending_spawns.clone();
                     let spawn_entity = lua.create_function(move |_, table: mlua::Table| {
@@ -2315,21 +2948,53 @@ let role_str = match self.net.role {
                         let texture: Option<String> = table.get("texture").ok();
                         let parent: Option<String> = table.get("parent").ok();
                         let def = assets::EntityDef {
-                            id, mesh, position: [x,y,z], rotation: [rx,ry,rz], scale: [sx,sy,sz],
-                            color, texture, parent, emissive: 0.0,
-                            fresnel_color: None, fresnel_power: None, blend_mode: None, wireframe: None, uv_scroll: None, uv_scale: None, pbr_material: None,
-                            script: None, physics: None, point_light: None, spot_light: None, animation_player: None, procedural_rig: None, vfx_emitter: None, camera_target: None, material_override_rtt: None, network_id: None, network_sync: None };
-                        if let Ok(mut list) = spawns_ref.lock() { list.push(def); }
+                            id,
+                            mesh,
+                            position: [x, y, z],
+                            rotation: [rx, ry, rz],
+                            scale: [sx, sy, sz],
+                            color,
+                            texture,
+                            parent,
+                            emissive: 0.0,
+                            fresnel_color: None,
+                            fresnel_power: None,
+                            blend_mode: None,
+                            wireframe: None,
+                            uv_scroll: None,
+                            uv_scale: None,
+                            pbr_material: None,
+                            script: None,
+                            physics: None,
+                            point_light: None,
+                            spot_light: None,
+                            animation_player: None,
+                            procedural_rig: None,
+                            vfx_emitter: None,
+                            camera_target: None,
+                            material_override_rtt: None,
+                            network_id: None,
+                            network_sync: None,
+                        };
+                        if let Ok(mut list) = spawns_ref.lock() {
+                            list.push(def);
+                        }
                         Ok(())
                     });
-                    if let Ok(f) = spawn_entity { let _ = lua.globals().set("spawn_entity", f); }
+                    if let Ok(f) = spawn_entity {
+                        let _ = lua.globals().set("spawn_entity", f);
+                    }
 
                     let destroys_ref = self.lua_ctx.pending_destroys.clone();
                     let destroy_entity = lua.create_function(move |_, id: String| {
-                        if let Ok(mut list) = destroys_ref.lock() { list.push(id); }
+                        if let Ok(mut list) = destroys_ref.lock() {
+                            list.push(id);
+                        }
                         Ok(())
                     });
-                    if let Ok(f) = destroy_entity { let _ = lua.globals().set("destroy_entity", f); }
+                    if let Ok(f) = destroy_entity {
+                        let _ = lua.globals().set("destroy_entity", f);
+                    }
 
                     let entities_ref = self.lua_ctx.world_entities.clone();
                     let get_entity = lua.create_function(move |lua, id: Option<String>| {
@@ -2354,14 +3019,20 @@ let role_str = match self.net.role {
                             Ok(None)
                         }
                     });
-                    if let Ok(f) = get_entity { let _ = lua.globals().set("get_entity", f); }
+                    if let Ok(f) = get_entity {
+                        let _ = lua.globals().set("get_entity", f);
+                    }
 
                     let hud_ref = self.lua_ctx.hud_texts.clone();
                     let set_hud_text = lua.create_function(move |_, (k, v): (String, String)| {
-                        if let Ok(mut h) = hud_ref.write() { h.insert(k, v); }
+                        if let Ok(mut h) = hud_ref.write() {
+                            h.insert(k, v);
+                        }
                         Ok(())
                     });
-                    if let Ok(f) = set_hud_text { let _ = lua.globals().set("set_hud_text", f); }
+                    if let Ok(f) = set_hud_text {
+                        let _ = lua.globals().set("set_hud_text", f);
+                    }
 
                     let particles_ref = self.lua_ctx.pending_particles.clone();
                     let spawn_particles = lua.create_function(
@@ -2395,26 +3066,45 @@ let role_str = match self.net.role {
                     }
 
                     let spawns_ref_p = self.lua_ctx.pending_spawns.clone();
-                    let spawn_prefab = lua.create_function(
-                        move |_, (name, x, y, z): (String, Option<f32>, Option<f32>, Option<f32>)| {
-                            let file_path = if name.ends_with(".json") {
-                                if name.starts_with("assets/prefabs/") { name.clone() } else { format!("assets/prefabs/{}", name) }
-                            } else {
-                                format!("assets/prefabs/{}.json", name)
-                            };
-                            match assets::load_prefab_from_file(&file_path) {
-                                Ok(mut def) => {
-                                    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(1);
-                                    def.id = format!("{}_{}", def.id, ts % 10000);
-                                    def.position = [x.unwrap_or(0.0), y.unwrap_or(0.0), z.unwrap_or(0.0)];
-                                    if let Ok(mut list) = spawns_ref_p.lock() { list.push(def); }
-                                    Ok(true)
+                    let spawn_prefab =
+                        lua.create_function(
+                            move |_,
+                                  (name, x, y, z): (
+                                String,
+                                Option<f32>,
+                                Option<f32>,
+                                Option<f32>,
+                            )| {
+                                let file_path = if name.ends_with(".json") {
+                                    if name.starts_with("assets/prefabs/") {
+                                        name.clone()
+                                    } else {
+                                        format!("assets/prefabs/{}", name)
+                                    }
+                                } else {
+                                    format!("assets/prefabs/{}.json", name)
+                                };
+                                match assets::load_prefab_from_file(&file_path) {
+                                    Ok(mut def) => {
+                                        let ts = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .map(|d| d.subsec_nanos())
+                                            .unwrap_or(1);
+                                        def.id = format!("{}_{}", def.id, ts % 10000);
+                                        def.position =
+                                            [x.unwrap_or(0.0), y.unwrap_or(0.0), z.unwrap_or(0.0)];
+                                        if let Ok(mut list) = spawns_ref_p.lock() {
+                                            list.push(def);
+                                        }
+                                        Ok(true)
+                                    }
+                                    Err(_) => Ok(false),
                                 }
-                                Err(_) => Ok(false),
-                            }
-                        },
-                    );
-                    if let Ok(f) = spawn_prefab { let _ = lua.globals().set("spawn_prefab", f); }
+                            },
+                        );
+                    if let Ok(f) = spawn_prefab {
+                        let _ = lua.globals().set("spawn_prefab", f);
+                    }
 
                     let parents_ref_snippet = self.lua_ctx.pending_parents.clone();
                     let set_parent = lua.create_function(
@@ -2422,77 +3112,125 @@ let role_str = match self.net.role {
                             if let Ok(mut list) = parents_ref_snippet.lock() {
                                 let clean = parent_id.and_then(|p| {
                                     let t = p.trim().to_string();
-                                    if t.is_empty() { None } else { Some(t) }
+                                    if t.is_empty() {
+                                        None
+                                    } else {
+                                        Some(t)
+                                    }
                                 });
                                 list.push((child_id, clean));
                             }
                             Ok(true)
                         },
                     );
-                    if let Ok(f) = set_parent { let _ = lua.globals().set("set_parent", f); }
+                    if let Ok(f) = set_parent {
+                        let _ = lua.globals().set("set_parent", f);
+                    }
 
                     let lights_ref_snippet = self.lua_ctx.pending_lights.clone();
                     let set_light = lua.create_function(
-                        move |_, (id, r, g, b, intensity, radius): (String, f32, f32, f32, f32, f32)| {
+                        move |_,
+                              (id, r, g, b, intensity, radius): (
+                            String,
+                            f32,
+                            f32,
+                            f32,
+                            f32,
+                            f32,
+                        )| {
                             if let Ok(mut list) = lights_ref_snippet.lock() {
                                 list.push((id, [r, g, b], intensity, radius));
                             }
                             Ok(true)
                         },
                     );
-                    if let Ok(f) = set_light { let _ = lua.globals().set("set_light", f); }
+                    if let Ok(f) = set_light {
+                        let _ = lua.globals().set("set_light", f);
+                    }
 
                     let cam_set_s = self.lua_ctx.pending_camera_sets.clone();
-                    let set_camera = lua.create_function(move |_, (x, y, z, tx, ty, tz): (f32, f32, f32, f32, f32, f32)| {
-                        if let Ok(mut list) = cam_set_s.lock() { list.push(([x, y, z], [tx, ty, tz])); }
-                        Ok(true)
-                    });
-                    if let Ok(f) = set_camera { let _ = lua.globals().set("set_camera", f); }
+                    let set_camera = lua.create_function(
+                        move |_, (x, y, z, tx, ty, tz): (f32, f32, f32, f32, f32, f32)| {
+                            if let Ok(mut list) = cam_set_s.lock() {
+                                list.push(([x, y, z], [tx, ty, tz]));
+                            }
+                            Ok(true)
+                        },
+                    );
+                    if let Ok(f) = set_camera {
+                        let _ = lua.globals().set("set_camera", f);
+                    }
 
                     let cam_follow_s = self.lua_ctx.pending_camera_follows.clone();
-                    let follow_entity = lua.create_function(move |_, (entity_id, ox, oy, oz, sm): (Option<String>, Option<f32>, Option<f32>, Option<f32>, Option<f32>)| {
-                        if let Ok(mut list) = cam_follow_s.lock() {
-                            let offset = [ox.unwrap_or(0.0), oy.unwrap_or(3.0), oz.unwrap_or(8.0)];
-                            list.push((entity_id, offset, sm.unwrap_or(0.2)));
-                        }
-                        Ok(true)
-                    });
-                    if let Ok(f) = follow_entity { let _ = lua.globals().set("follow_entity", f); }
+                    let follow_entity = lua.create_function(
+                        move |_,
+                              (entity_id, ox, oy, oz, sm): (
+                            Option<String>,
+                            Option<f32>,
+                            Option<f32>,
+                            Option<f32>,
+                            Option<f32>,
+                        )| {
+                            if let Ok(mut list) = cam_follow_s.lock() {
+                                let offset =
+                                    [ox.unwrap_or(0.0), oy.unwrap_or(3.0), oz.unwrap_or(8.0)];
+                                list.push((entity_id, offset, sm.unwrap_or(0.2)));
+                            }
+                            Ok(true)
+                        },
+                    );
+                    if let Ok(f) = follow_entity {
+                        let _ = lua.globals().set("follow_entity", f);
+                    }
 
                     let cam_shake_s = self.lua_ctx.pending_camera_shakes.clone();
-                    let camera_shake = lua.create_function(move |_, (intensity, duration, freq): (f32, f32, Option<f32>)| {
-                        if let Ok(mut list) = cam_shake_s.lock() { list.push((intensity, duration, freq.unwrap_or(25.0))); }
-                        Ok(true)
-                    });
-                    if let Ok(f) = camera_shake { let _ = lua.globals().set("camera_shake", f); }
+                    let camera_shake = lua.create_function(
+                        move |_, (intensity, duration, freq): (f32, f32, Option<f32>)| {
+                            if let Ok(mut list) = cam_shake_s.lock() {
+                                list.push((intensity, duration, freq.unwrap_or(25.0)));
+                            }
+                            Ok(true)
+                        },
+                    );
+                    if let Ok(f) = camera_shake {
+                        let _ = lua.globals().set("camera_shake", f);
+                    }
 
                     let tw_pos_s = self.lua_ctx.pending_tweens.clone();
-                    let tween_position = lua.create_function(move |_, (id, x, y, z, duration): (String, f32, f32, f32, f32)| {
-                        if let Ok(mut list) = tw_pos_s.lock() {
-                            list.push(tweens::TweenRequest {
-                                entity_id: id,
-                                target: glam::Vec3::new(x, y, z),
-                                duration,
-                                is_scale: false,
-                            });
-                        }
-                        Ok(true)
-                    });
-                    if let Ok(f) = tween_position { let _ = lua.globals().set("tween_position", f); }
+                    let tween_position = lua.create_function(
+                        move |_, (id, x, y, z, duration): (String, f32, f32, f32, f32)| {
+                            if let Ok(mut list) = tw_pos_s.lock() {
+                                list.push(tweens::TweenRequest {
+                                    entity_id: id,
+                                    target: glam::Vec3::new(x, y, z),
+                                    duration,
+                                    is_scale: false,
+                                });
+                            }
+                            Ok(true)
+                        },
+                    );
+                    if let Ok(f) = tween_position {
+                        let _ = lua.globals().set("tween_position", f);
+                    }
 
                     let tw_scale_s = self.lua_ctx.pending_tweens.clone();
-                    let tween_scale = lua.create_function(move |_, (id, sx, sy, sz, duration): (String, f32, f32, f32, f32)| {
-                        if let Ok(mut list) = tw_scale_s.lock() {
-                            list.push(tweens::TweenRequest {
-                                entity_id: id,
-                                target: glam::Vec3::new(sx, sy, sz),
-                                duration,
-                                is_scale: true,
-                            });
-                        }
-                        Ok(true)
-                    });
-                    if let Ok(f) = tween_scale { let _ = lua.globals().set("tween_scale", f); }
+                    let tween_scale = lua.create_function(
+                        move |_, (id, sx, sy, sz, duration): (String, f32, f32, f32, f32)| {
+                            if let Ok(mut list) = tw_scale_s.lock() {
+                                list.push(tweens::TweenRequest {
+                                    entity_id: id,
+                                    target: glam::Vec3::new(sx, sy, sz),
+                                    duration,
+                                    is_scale: true,
+                                });
+                            }
+                            Ok(true)
+                        },
+                    );
+                    if let Ok(f) = tween_scale {
+                        let _ = lua.globals().set("tween_scale", f);
+                    }
 
                     let scene_load_s = self.lua_ctx.pending_scene_load.clone();
                     let load_scene = lua.create_function(move |_, path: String| {
@@ -2501,20 +3239,25 @@ let role_str = match self.net.role {
                         }
                         Ok(true)
                     });
-                    if let Ok(f) = load_scene { let _ = lua.globals().set("load_scene", f); }
+                    if let Ok(f) = load_scene {
+                        let _ = lua.globals().set("load_scene", f);
+                    }
 
                     let save_store_s = self.lua_ctx.save_data_store.clone();
-                    let save_data = lua.create_function(move |_, (key, val): (String, mlua::Value)| {
-                        let json_val = scripting::lua_to_json(&val);
-                        if let Ok(mut store) = save_store_s.write() {
-                            store.insert(key, json_val);
-                            if let Ok(serialized) = serde_json::to_string_pretty(&*store) {
-                                let _ = std::fs::write("assets/save_data.json", serialized);
+                    let save_data =
+                        lua.create_function(move |_, (key, val): (String, mlua::Value)| {
+                            let json_val = scripting::lua_to_json(&val);
+                            if let Ok(mut store) = save_store_s.write() {
+                                store.insert(key, json_val);
+                                if let Ok(serialized) = serde_json::to_string_pretty(&*store) {
+                                    let _ = std::fs::write("assets/save_data.json", serialized);
+                                }
                             }
-                        }
-                        Ok(true)
-                    });
-                    if let Ok(f) = save_data { let _ = lua.globals().set("save_data", f); }
+                            Ok(true)
+                        });
+                    if let Ok(f) = save_data {
+                        let _ = lua.globals().set("save_data", f);
+                    }
 
                     let load_store_s = self.lua_ctx.save_data_store.clone();
                     let load_data = lua.create_function(move |lua, key: String| {
@@ -2525,25 +3268,44 @@ let role_str = match self.net.role {
                         }
                         Ok(mlua::Value::Nil)
                     });
-                    if let Ok(f) = load_data { let _ = lua.globals().set("load_data", f); }
+                    if let Ok(f) = load_data {
+                        let _ = lua.globals().set("load_data", f);
+                    }
 
                     let btns_s = self.lua_ctx.hud_buttons.clone();
-                    let set_hud_button = lua.create_function(move |_, (id, text, x, y, callback): (String, String, f32, f32, String)| {
-                        if let Ok(mut btns) = btns_s.write() {
-                            btns.insert(id.clone(), scripting::HudButtonDef { id, text, x, y, callback });
-                        }
-                        Ok(true)
-                    });
-                    if let Ok(f) = set_hud_button { let _ = lua.globals().set("set_hud_button", f); }
+                    let set_hud_button = lua.create_function(
+                        move |_, (id, text, x, y, callback): (String, String, f32, f32, String)| {
+                            if let Ok(mut btns) = btns_s.write() {
+                                btns.insert(
+                                    id.clone(),
+                                    scripting::HudButtonDef {
+                                        id,
+                                        text,
+                                        x,
+                                        y,
+                                        callback,
+                                    },
+                                );
+                            }
+                            Ok(true)
+                        },
+                    );
+                    if let Ok(f) = set_hud_button {
+                        let _ = lua.globals().set("set_hud_button", f);
+                    }
 
                     let sprites_s = self.lua_ctx.pending_sprite_frames.clone();
-                    let set_sprite_frame = lua.create_function(move |_, (id, cols, rows, frame): (String, u32, u32, u32)| {
-                        if let Ok(mut list) = sprites_s.lock() {
-                            list.push((id, cols.max(1), rows.max(1), frame));
-                        }
-                        Ok(true)
-                    });
-                    if let Ok(f) = set_sprite_frame { let _ = lua.globals().set("set_sprite_frame", f); }
+                    let set_sprite_frame = lua.create_function(
+                        move |_, (id, cols, rows, frame): (String, u32, u32, u32)| {
+                            if let Ok(mut list) = sprites_s.lock() {
+                                list.push((id, cols.max(1), rows.max(1), frame));
+                            }
+                            Ok(true)
+                        },
+                    );
+                    if let Ok(f) = set_sprite_frame {
+                        let _ = lua.globals().set("set_sprite_frame", f);
+                    }
 
                     let chunk = lua.load(&code);
                     let result_str = match chunk.eval::<mlua::Value>() {
@@ -2567,7 +3329,11 @@ let role_str = match self.net.role {
                     let msg = format!("Scene saved to '{}'", target_path);
                     let _ = respond_to.send(Ok(msg));
                 }
-                McpCommand::SpawnPrefab { name, position, respond_to } => {
+                McpCommand::SpawnPrefab {
+                    name,
+                    position,
+                    respond_to,
+                } => {
                     self.push_history();
                     let file_path = if name.ends_with(".prefab.json") || name.ends_with(".json") {
                         if name.starts_with("assets/prefabs/") {
@@ -2613,10 +3379,15 @@ let role_str = match self.net.role {
                                 blend_mode: root.blend_mode.clone(),
                                 wireframe: root.wireframe,
                                 uv_scroll: root.uv_scroll,
-                            uv_scale: root.uv_scale,
+                                uv_scale: root.uv_scale,
                             };
                             let e = self.world.spawn((meta, transform, mesh));
-                            let _ = self.world.insert_one(e, ecs::PrefabInstance { source: file_path.clone() });
+                            let _ = self.world.insert_one(
+                                e,
+                                ecs::PrefabInstance {
+                                    source: file_path.clone(),
+                                },
+                            );
 
                             if let Some(phys) = &root.physics {
                                 let handle = self.physics.add_body(&transform, phys);
@@ -2630,11 +3401,14 @@ let role_str = match self.net.role {
                             }
 
                             if let Some(pl) = &root.point_light {
-                                let _ = self.world.insert_one(e, ecs::PointLight {
-                                    color: pl.color,
-                                    intensity: pl.intensity,
-                                    radius: pl.radius,
-                                });
+                                let _ = self.world.insert_one(
+                                    e,
+                                    ecs::PointLight {
+                                        color: pl.color,
+                                        intensity: pl.intensity,
+                                        radius: pl.radius,
+                                    },
+                                );
                             }
 
                             // Spawn children if any
@@ -2664,13 +3438,19 @@ let role_str = match self.net.role {
                                     blend_mode: child.blend_mode.clone(),
                                     wireframe: child.wireframe,
                                     uv_scroll: child.uv_scroll,
-                                uv_scale: child.uv_scale,
+                                    uv_scale: child.uv_scale,
                                 };
                                 let c_e = self.world.spawn((c_meta, c_trans, c_mesh));
-                                let _ = self.world.insert_one(c_e, ecs::PrefabInstance { source: file_path.clone() });
+                                let _ = self.world.insert_one(
+                                    c_e,
+                                    ecs::PrefabInstance {
+                                        source: file_path.clone(),
+                                    },
+                                );
                                 if let Some(phys) = &child.physics {
                                     let handle = self.physics.add_body(&c_trans, phys);
-                                    let _ = self.world.insert_one(c_e, RigidBodyComponent { handle });
+                                    let _ =
+                                        self.world.insert_one(c_e, RigidBodyComponent { handle });
                                 }
                                 if let Some(script_path) = &child.script {
                                     let mut s = ScriptComponent::new(script_path.clone());
@@ -2680,7 +3460,10 @@ let role_str = match self.net.role {
                             }
 
                             self.selected_entity = Some(e);
-                            let msg = format!("Spawned prefab '{}' as entity '{}' at {:?}", name, root.id, position);
+                            let msg = format!(
+                                "Spawned prefab '{}' as entity '{}' at {:?}",
+                                name, root.id, position
+                            );
                             self.logs.push(msg.clone());
                             let _ = respond_to.send(Ok(msg));
                         }
@@ -2691,7 +3474,11 @@ let role_str = match self.net.role {
                         }
                     }
                 }
-                McpCommand::SavePrefab { entity_id, name, respond_to } => {
+                McpCommand::SavePrefab {
+                    entity_id,
+                    name,
+                    respond_to,
+                } => {
                     let mut found = None;
                     for er in self.world.iter() {
                         if let Some(meta) = er.get::<&EntityMeta>() {
@@ -2702,22 +3489,36 @@ let role_str = match self.net.role {
                         }
                     }
                     if let Some(e) = found {
-                        if let Some(prefab_def) = assets::extract_prefab_hierarchy(&self.world, &self.physics, e) {
-                            let clean_name = name.trim().strip_suffix(".prefab.json").unwrap_or(name.trim()).strip_suffix(".json").unwrap_or(name.trim());
+                        if let Some(prefab_def) =
+                            assets::extract_prefab_hierarchy(&self.world, &self.physics, e)
+                        {
+                            let clean_name = name
+                                .trim()
+                                .strip_suffix(".prefab.json")
+                                .unwrap_or(name.trim())
+                                .strip_suffix(".json")
+                                .unwrap_or(name.trim());
                             let file_path = format!("assets/prefabs/{}.prefab.json", clean_name);
                             match assets::save_prefab_to_file(&file_path, &prefab_def) {
                                 Ok(_) => {
-                                    let msg = format!("Prefab '{}' saved successfully with {} children to '{}'", clean_name, prefab_def.children.len(), file_path);
+                                    let msg = format!(
+                                        "Prefab '{}' saved successfully with {} children to '{}'",
+                                        clean_name,
+                                        prefab_def.children.len(),
+                                        file_path
+                                    );
                                     self.logs.push(msg.clone());
                                     self.add_toast(&msg, egui::Color32::from_rgb(34, 197, 94));
                                     let _ = respond_to.send(Ok(msg));
                                 }
                                 Err(err) => {
-                                    let _ = respond_to.send(Err(format!("Error writing prefab: {}", err)));
+                                    let _ = respond_to
+                                        .send(Err(format!("Error writing prefab: {}", err)));
                                 }
                             }
                         } else {
-                            let _ = respond_to.send(Err(format!("Failed to extract entity '{}'", entity_id)));
+                            let _ = respond_to
+                                .send(Err(format!("Failed to extract entity '{}'", entity_id)));
                         }
                     } else {
                         let _ = respond_to.send(Err(format!("Entity '{}' not found", entity_id)));
@@ -2735,7 +3536,10 @@ let role_str = match self.net.role {
                     }
                     if let Some(e) = found {
                         self.selected_entity = Some(e);
-                        self.add_toast(format!("Selected '{}'", id), egui::Color32::from_rgb(56, 189, 248));
+                        self.add_toast(
+                            format!("Selected '{}'", id),
+                            egui::Color32::from_rgb(56, 189, 248),
+                        );
                         let _ = respond_to.send(Ok(format!("Selected entity '{}'", id)));
                     } else {
                         let _ = respond_to.send(Err(format!("Entity '{}' not found", id)));
@@ -2747,7 +3551,13 @@ let role_str = match self.net.role {
                     self.forge_recipe = recipe;
                     let v_count = mesh.positions.len();
                     let t_count = mesh.indices.len() / 3;
-                    self.add_toast(format!("Forge: Loaded '{}' ({} verts)", self.forge_recipe.name, v_count), egui::Color32::from_rgb(56, 189, 248));
+                    self.add_toast(
+                        format!(
+                            "Forge: Loaded '{}' ({} verts)",
+                            self.forge_recipe.name, v_count
+                        ),
+                        egui::Color32::from_rgb(56, 189, 248),
+                    );
                     let _ = respond_to.send(Ok(serde_json::json!({
                         "success": true,
                         "recipe_name": self.forge_recipe.name,
@@ -2755,7 +3565,12 @@ let role_str = match self.net.role {
                         "triangle_count": t_count
                     })));
                 }
-                McpCommand::ForgeBakeGlb { recipe, output_name, insert_in_scene, respond_to } => {
+                McpCommand::ForgeBakeGlb {
+                    recipe,
+                    output_name,
+                    insert_in_scene,
+                    respond_to,
+                } => {
                     let mesh = recipe.build_mesh();
                     let out_path = format!("assets/models/{}.glb", output_name);
                     match crate::glb_exporter::export_glb_to_file(&mesh, &output_name, &out_path) {
@@ -2765,7 +3580,11 @@ let role_str = match self.net.role {
                                 let id = format!("{}_spawned", output_name);
                                 let pos = [0.0, 0.0, 0.0];
                                 let mut ent_builder = hecs::EntityBuilder::new();
-                                ent_builder.add(EntityMeta { id: id.clone(), name: output_name.clone(), parent: None });
+                                ent_builder.add(EntityMeta {
+                                    id: id.clone(),
+                                    name: output_name.clone(),
+                                    parent: None,
+                                });
                                 ent_builder.add(Transform {
                                     position: Vec3::from(pos),
                                     rotation: Vec3::ZERO,
@@ -2781,15 +3600,21 @@ let role_str = match self.net.role {
                                     fresnel_color: None,
                                     fresnel_power: None,
                                     uv_scroll: None,
-                                uv_scale: None,
+                                    uv_scale: None,
                                 });
                                 let spawned = self.world.spawn(ent_builder.build());
                                 self.selected_entity = Some(spawned);
                             }
                             let v_count = mesh.positions.len();
                             let t_count = mesh.indices.len() / 3;
-                            self.logs.push(format!("Baked Forge GLB model to '{}' ({} verts, {} tris)", out_path, v_count, t_count));
-                            self.add_toast(format!("Baked '{}'", out_path), egui::Color32::from_rgb(34, 197, 94));
+                            self.logs.push(format!(
+                                "Baked Forge GLB model to '{}' ({} verts, {} tris)",
+                                out_path, v_count, t_count
+                            ));
+                            self.add_toast(
+                                format!("Baked '{}'", out_path),
+                                egui::Color32::from_rgb(34, 197, 94),
+                            );
                             let _ = respond_to.send(Ok(serde_json::json!({
                                 "success": true,
                                 "path": out_path,
@@ -2814,12 +3639,27 @@ let role_str = match self.net.role {
                     self.gpu.update_camera(&self.camera);
                     self.pending_viewport_capture = Some(respond_to);
                 }
-                McpCommand::ForgeCreateTexture { style, filename, size, seed, color_tint, respond_to } => {
-                    match crate::texture_forge::save_procedural_texture(&style, &filename, size, seed, color_tint) {
+                McpCommand::ForgeCreateTexture {
+                    style,
+                    filename,
+                    size,
+                    seed,
+                    color_tint,
+                    respond_to,
+                } => {
+                    match crate::texture_forge::save_procedural_texture(
+                        &style, &filename, size, seed, color_tint,
+                    ) {
                         Ok(saved_path) => {
                             self.gpu.get_or_load_texture(&saved_path);
-                            self.logs.push(format!("Generated procedural texture '{}' (style: {}, {}x{})", saved_path, style, size, size));
-                            self.add_toast(format!("Texture created: {}", saved_path), egui::Color32::from_rgb(34, 197, 94));
+                            self.logs.push(format!(
+                                "Generated procedural texture '{}' (style: {}, {}x{})",
+                                saved_path, style, size, size
+                            ));
+                            self.add_toast(
+                                format!("Texture created: {}", saved_path),
+                                egui::Color32::from_rgb(34, 197, 94),
+                            );
                             let _ = respond_to.send(Ok(serde_json::json!({
                                 "success": true,
                                 "path": saved_path,
@@ -2828,18 +3668,27 @@ let role_str = match self.net.role {
                             })));
                         }
                         Err(e) => {
-                            let _ = respond_to.send(Err(format!("Error generating procedural texture: {}", e)));
+                            let _ = respond_to
+                                .send(Err(format!("Error generating procedural texture: {}", e)));
                         }
                     }
                 }
-                McpCommand::ForgeCreateMusic { preset, recipe, bake_path, play_now, intensity, respond_to } => {
+                McpCommand::ForgeCreateMusic {
+                    preset,
+                    recipe,
+                    bake_path,
+                    play_now,
+                    intensity,
+                    respond_to,
+                } => {
                     let target_recipe = if let Some(r) = recipe {
                         r
                     } else if let Some(p_name) = &preset {
                         match crate::music_forge::get_music_preset(p_name) {
                             Some(pr) => pr,
                             None => {
-                                let _ = respond_to.send(Err(format!("Preset '{}' no encontrado", p_name)));
+                                let _ = respond_to
+                                    .send(Err(format!("Preset '{}' no encontrado", p_name)));
                                 continue;
                             }
                         }
@@ -2849,14 +3698,19 @@ let role_str = match self.net.role {
 
                     let mut baked = None;
                     if let Some(path) = &bake_path {
-                        match crate::music_forge::bake_music_to_wav(&target_recipe, path, intensity) {
+                        match crate::music_forge::bake_music_to_wav(&target_recipe, path, intensity)
+                        {
                             Ok(p) => {
                                 self.logs.push(format!("Music Forge: Baked WAV to '{}'", p));
-                                self.add_toast(format!("Music baked: {}", p), egui::Color32::from_rgb(34, 197, 94));
+                                self.add_toast(
+                                    format!("Music baked: {}", p),
+                                    egui::Color32::from_rgb(34, 197, 94),
+                                );
                                 baked = Some(p);
                             }
                             Err(e) => {
-                                let _ = respond_to.send(Err(format!("Error baking music to wav: {}", e)));
+                                let _ = respond_to
+                                    .send(Err(format!("Error baking music to wav: {}", e)));
                                 continue;
                             }
                         }
@@ -2864,12 +3718,19 @@ let role_str = match self.net.role {
 
                     if play_now {
                         let init_int = intensity.unwrap_or(0.5);
-                        let source = crate::music_forge::AdaptiveMusicSource::new(&target_recipe, init_int);
+                        let source =
+                            crate::music_forge::AdaptiveMusicSource::new(&target_recipe, init_int);
                         if let Ok(mut audio) = self.audio.lock() {
                             let _ = audio.play_adaptive_music(source);
                         }
-                        self.logs.push(format!("Music Forge: Playing '{}' (intensity: {:.2})", target_recipe.name, init_int));
-                        self.add_toast(format!("Playing music: {}", target_recipe.name), egui::Color32::from_rgb(56, 189, 248));
+                        self.logs.push(format!(
+                            "Music Forge: Playing '{}' (intensity: {:.2})",
+                            target_recipe.name, init_int
+                        ));
+                        self.add_toast(
+                            format!("Playing music: {}", target_recipe.name),
+                            egui::Color32::from_rgb(56, 189, 248),
+                        );
                     }
 
                     let _ = respond_to.send(Ok(serde_json::json!({
@@ -2882,21 +3743,34 @@ let role_str = match self.net.role {
                         "playing": play_now
                     })));
                 }
-                McpCommand::SetMusicIntensity { intensity, respond_to } => {
+                McpCommand::SetMusicIntensity {
+                    intensity,
+                    respond_to,
+                } => {
                     let cl = intensity.clamp(0.0, 1.0);
                     if let Ok(audio) = self.audio.lock() {
                         audio.set_music_intensity(cl);
                     }
-                    self.logs.push(format!("Music Forge: Set intensity to {:.2}", cl));
+                    self.logs
+                        .push(format!("Music Forge: Set intensity to {:.2}", cl));
                     let _ = respond_to.send(Ok(serde_json::json!({
                         "success": true,
                         "intensity": cl
                     })));
                 }
-                McpCommand::ForgeGenerateTerrain { recipe, output_name, insert_in_scene, respond_to } => {
+                McpCommand::ForgeGenerateTerrain {
+                    recipe,
+                    output_name,
+                    insert_in_scene,
+                    respond_to,
+                } => {
                     match self.generate_and_insert_terrain(&recipe, &output_name, insert_in_scene) {
                         Ok(mesh) => {
-                            let clean_name = if output_name.trim().is_empty() { "terrain_demo" } else { output_name.trim() };
+                            let clean_name = if output_name.trim().is_empty() {
+                                "terrain_demo"
+                            } else {
+                                output_name.trim()
+                            };
                             let out_path = if clean_name.ends_with(".glb") {
                                 format!("assets/models/{}", clean_name)
                             } else {
@@ -2911,11 +3785,16 @@ let role_str = match self.net.role {
                             })));
                         }
                         Err(e) => {
-                            let _ = respond_to.send(Err(format!("Error generating terrain: {}", e)));
+                            let _ =
+                                respond_to.send(Err(format!("Error generating terrain: {}", e)));
                         }
                     }
                 }
-                McpCommand::ForgeGenerateDungeon { recipe, insert_in_scene, respond_to } => {
+                McpCommand::ForgeGenerateDungeon {
+                    recipe,
+                    insert_in_scene,
+                    respond_to,
+                } => {
                     let result = self.generate_and_insert_dungeon(&recipe, insert_in_scene);
                     let _ = respond_to.send(Ok(serde_json::json!({
                         "success": true,
@@ -2928,8 +3807,17 @@ let role_str = match self.net.role {
                         "inserted": insert_in_scene
                     })));
                 }
-                McpCommand::ForgeScatterProps { recipe, terrain_recipe, respond_to } => {
-                    let active_terrain_opt = self.lua_ctx.active_terrain.read().ok().and_then(|g| g.clone());
+                McpCommand::ForgeScatterProps {
+                    recipe,
+                    terrain_recipe,
+                    respond_to,
+                } => {
+                    let active_terrain_opt = self
+                        .lua_ctx
+                        .active_terrain
+                        .read()
+                        .ok()
+                        .and_then(|g| g.clone());
                     let hm_from_recipe = terrain_recipe.as_ref().map(|r| r.to_heightmap());
                     let resolved_terrain = hm_from_recipe.as_ref().or(active_terrain_opt.as_ref());
 
@@ -2942,12 +3830,23 @@ let role_str = match self.net.role {
                         "positions": positions
                     })));
                 }
-                McpCommand::ForgeCreateRiggedCharacter { preset, id_prefix, position, respond_to } => {
-                    let defs = crate::procedural_rig::build_modular_character(&preset, &id_prefix, position);
+                McpCommand::ForgeCreateRiggedCharacter {
+                    preset,
+                    id_prefix,
+                    position,
+                    respond_to,
+                } => {
+                    let defs = crate::procedural_rig::build_modular_character(
+                        &preset, &id_prefix, position,
+                    );
                     if defs.is_empty() {
                         let _ = respond_to.send(Err(format!("Preset '{}' no reconocido. Opciones: mech_biped, sci_fi_trooper, spider_drone, defense_turret", preset)));
                     } else {
-                        let current_scene = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
+                        let current_scene = assets::extract_scene_from_world(
+                            &self.world,
+                            &self.camera,
+                            &self.physics,
+                        );
                         self.history.push(current_scene);
                         let mut created_ids = Vec::new();
                         let mut first_ent = None;
@@ -2973,7 +3872,7 @@ let role_str = match self.net.role {
                                 blend_mode: def.blend_mode.clone(),
                                 wireframe: def.wireframe,
                                 uv_scroll: def.uv_scroll,
-                            uv_scale: def.uv_scale,
+                                uv_scale: def.uv_scale,
                             };
                             let e = self.world.spawn((meta, transform, mesh));
                             if let Some(ref rig) = def.procedural_rig {
@@ -2986,7 +3885,11 @@ let role_str = match self.net.role {
                         if let Some(e) = first_ent {
                             self.selected_entity = Some(e);
                         }
-                        let msg = format!("Rig Forge: Spawned '{}' with {} entities", preset, defs.len());
+                        let msg = format!(
+                            "Rig Forge: Spawned '{}' with {} entities",
+                            preset,
+                            defs.len()
+                        );
                         self.logs.push(msg.clone());
                         self.add_toast(msg, egui::Color32::from_rgb(34, 197, 94));
                         let _ = respond_to.send(Ok(serde_json::json!({
@@ -2999,11 +3902,18 @@ let role_str = match self.net.role {
                         })));
                     }
                 }
-                McpCommand::ForgeSpawnVfx { preset, recipe, position, attach_to_entity, respond_to } => {
+                McpCommand::ForgeSpawnVfx {
+                    preset,
+                    recipe,
+                    position,
+                    attach_to_entity,
+                    respond_to,
+                } => {
                     let resolved_recipe = if let Some(r) = recipe {
                         r
                     } else if let Some(p_name) = &preset {
-                        crate::vfx_forge::get_vfx_preset(p_name).unwrap_or_else(crate::vfx_forge::preset_explosion)
+                        crate::vfx_forge::get_vfx_preset(p_name)
+                            .unwrap_or_else(crate::vfx_forge::preset_explosion)
                     } else {
                         crate::vfx_forge::preset_explosion()
                     };
@@ -3028,7 +3938,10 @@ let role_str = match self.net.role {
                                 burst_fired: false,
                             };
                             let _ = self.world.insert_one(e, comp);
-                            let msg = format!("VFX Forge: Attached '{}' to entity '{}'", resolved_recipe.name, target_id);
+                            let msg = format!(
+                                "VFX Forge: Attached '{}' to entity '{}'",
+                                resolved_recipe.name, target_id
+                            );
                             self.logs.push(msg.clone());
                             self.add_toast(msg, egui::Color32::from_rgb(34, 197, 94));
                             let _ = respond_to.send(Ok(serde_json::json!({
@@ -3038,7 +3951,8 @@ let role_str = match self.net.role {
                                 "vfx": resolved_recipe.name
                             })));
                         } else {
-                            let _ = respond_to.send(Err(format!("Entidad '{}' no encontrada", target_id)));
+                            let _ = respond_to
+                                .send(Err(format!("Entidad '{}' no encontrada", target_id)));
                         }
                     } else {
                         let spawn_pos = position.map(Vec3::from).unwrap_or(self.camera.target);
@@ -3048,7 +3962,10 @@ let role_str = match self.net.role {
                             (resolved_recipe.rate_per_sec as usize).max(30)
                         };
                         self.particles.spawn_vfx(spawn_pos, &resolved_recipe, count);
-                        let msg = format!("VFX Forge: Spawned '{}' ({} particles) at {:?}", resolved_recipe.name, count, spawn_pos);
+                        let msg = format!(
+                            "VFX Forge: Spawned '{}' ({} particles) at {:?}",
+                            resolved_recipe.name, count, spawn_pos
+                        );
                         self.logs.push(msg.clone());
                         self.add_toast(msg, egui::Color32::from_rgb(56, 189, 248));
                         let _ = respond_to.send(Ok(serde_json::json!({
@@ -3069,12 +3986,21 @@ let role_str = match self.net.role {
                     respond_to,
                 } => {
                     self.push_history();
-                    let clean_name = if name.trim().is_empty() { "voxel_world" } else { name.trim() };
+                    let clean_name = if name.trim().is_empty() {
+                        "voxel_world"
+                    } else {
+                        name.trim()
+                    };
                     let atlas_path = "assets/textures/voxel_atlas.png";
                     let _ = crate::voxel_forge::ensure_voxel_atlas(atlas_path);
                     self.gpu.get_or_load_texture(atlas_path);
 
-                    let world = crate::voxel_forge::generate_voxel_world(width_chunks, depth_chunks, seed, &terrain_type);
+                    let world = crate::voxel_forge::generate_voxel_world(
+                        width_chunks,
+                        depth_chunks,
+                        seed,
+                        &terrain_type,
+                    );
                     let total_blocks = world.total_blocks();
 
                     // Save .voxels.json
@@ -3090,7 +4016,11 @@ let role_str = match self.net.role {
                     let mut total_tris = 0;
 
                     if !opaque_mesh.positions.is_empty() {
-                        let _ = crate::glb_exporter::export_glb_to_file(&opaque_mesh, clean_name, &opaque_glb_path);
+                        let _ = crate::glb_exporter::export_glb_to_file(
+                            &opaque_mesh,
+                            clean_name,
+                            &opaque_glb_path,
+                        );
                         self.gpu.ensure_mesh(&opaque_glb_path);
                         total_verts += opaque_mesh.positions.len();
                         total_tris += opaque_mesh.indices.len() / 3;
@@ -3107,26 +4037,37 @@ let role_str = match self.net.role {
                             }
                         }
                         let entity = meta.unwrap_or_else(|| self.world.reserve_entity());
-                        let _ = self.world.insert(entity, (
-                            EntityMeta { id: ent_id.clone(), name: ent_id.clone(), parent: None },
-                            Transform::from_xyz(0.0, 0.0, 0.0),
-                            MeshRender {
-                                mesh_type: opaque_glb_path.clone(),
-                                color: [1.0, 1.0, 1.0, 1.0],
-                                texture: Some(atlas_path.to_string()),
-                                emissive: 0.0,
-                                fresnel_color: None,
-                                fresnel_power: None,
-                                blend_mode: Some("opaque".to_string()),
-                                wireframe: None,
-                                uv_scroll: None,
-                                uv_scale: None,
-                            },
-                        ));
+                        let _ = self.world.insert(
+                            entity,
+                            (
+                                EntityMeta {
+                                    id: ent_id.clone(),
+                                    name: ent_id.clone(),
+                                    parent: None,
+                                },
+                                Transform::from_xyz(0.0, 0.0, 0.0),
+                                MeshRender {
+                                    mesh_type: opaque_glb_path.clone(),
+                                    color: [1.0, 1.0, 1.0, 1.0],
+                                    texture: Some(atlas_path.to_string()),
+                                    emissive: 0.0,
+                                    fresnel_color: None,
+                                    fresnel_power: None,
+                                    blend_mode: Some("opaque".to_string()),
+                                    wireframe: None,
+                                    uv_scroll: None,
+                                    uv_scale: None,
+                                },
+                            ),
+                        );
                     }
 
                     if !water_mesh.positions.is_empty() {
-                        let _ = crate::glb_exporter::export_glb_to_file(&water_mesh, &format!("{}_water", clean_name), &water_glb_path);
+                        let _ = crate::glb_exporter::export_glb_to_file(
+                            &water_mesh,
+                            &format!("{}_water", clean_name),
+                            &water_glb_path,
+                        );
                         self.gpu.ensure_mesh(&water_glb_path);
                         total_verts += water_mesh.positions.len();
                         total_tris += water_mesh.indices.len() / 3;
@@ -3143,22 +4084,29 @@ let role_str = match self.net.role {
                             }
                         }
                         let entity = meta.unwrap_or_else(|| self.world.reserve_entity());
-                        let _ = self.world.insert(entity, (
-                            EntityMeta { id: water_id.clone(), name: water_id.clone(), parent: None },
-                            Transform::from_xyz(0.0, 0.0, 0.0),
-                            MeshRender {
-                                mesh_type: water_glb_path.clone(),
-                                color: [1.0, 1.0, 1.0, 1.0],
-                                texture: Some(atlas_path.to_string()),
-                                emissive: 0.0,
-                                fresnel_color: None,
-                                fresnel_power: None,
-                                blend_mode: Some("translucent".to_string()),
-                                wireframe: None,
-                                uv_scroll: None,
-                                uv_scale: None,
-                            },
-                        ));
+                        let _ = self.world.insert(
+                            entity,
+                            (
+                                EntityMeta {
+                                    id: water_id.clone(),
+                                    name: water_id.clone(),
+                                    parent: None,
+                                },
+                                Transform::from_xyz(0.0, 0.0, 0.0),
+                                MeshRender {
+                                    mesh_type: water_glb_path.clone(),
+                                    color: [1.0, 1.0, 1.0, 1.0],
+                                    texture: Some(atlas_path.to_string()),
+                                    emissive: 0.0,
+                                    fresnel_color: None,
+                                    fresnel_power: None,
+                                    blend_mode: Some("translucent".to_string()),
+                                    wireframe: None,
+                                    uv_scroll: None,
+                                    uv_scale: None,
+                                },
+                            ),
+                        );
                     }
 
                     // Update lua active_voxel_world
@@ -3166,8 +4114,17 @@ let role_str = match self.net.role {
                         *lock = Some(world);
                     }
 
-                    self.logs.push(format!("Voxel world '{}' created: {} chunks, {} blocks, {} tris", clean_name, width_chunks * depth_chunks, total_blocks, total_tris));
-                    self.add_toast(format!("Voxel World '{}' baked!", clean_name), egui::Color32::from_rgb(34, 197, 94));
+                    self.logs.push(format!(
+                        "Voxel world '{}' created: {} chunks, {} blocks, {} tris",
+                        clean_name,
+                        width_chunks * depth_chunks,
+                        total_blocks,
+                        total_tris
+                    ));
+                    self.add_toast(
+                        format!("Voxel World '{}' baked!", clean_name),
+                        egui::Color32::from_rgb(34, 197, 94),
+                    );
 
                     let _ = respond_to.send(Ok(serde_json::json!({
                         "success": true,
@@ -3192,69 +4149,122 @@ let role_str = match self.net.role {
                 } => {
                     self.push_history();
                     let ctype = controller_type.trim().to_lowercase();
-                    let ent_id = if entity_id.trim().is_empty() { "player".to_string() } else { entity_id.trim().to_string() };
+                    let ent_id = if entity_id.trim().is_empty() {
+                        "player".to_string()
+                    } else {
+                        entity_id.trim().to_string()
+                    };
 
-                    let (raw_template, mesh_name, mesh_color, mesh_scale, collider_type) = match ctype.as_str() {
-                        "fps" => (
-                            include_str!("../assets/scripts/templates/fps_controller.lua"),
-                            "Capsule",
-                            [0.2f32, 0.6f32, 1.0f32, 1.0f32],
-                            [0.8f32, 1.8f32, 0.8f32],
-                            "capsule",
-                        ),
-                        "third_person" => (
-                            include_str!("../assets/scripts/templates/third_person_controller.lua"),
-                            "Capsule",
-                            [0.3f32, 0.8f32, 0.4f32, 1.0f32],
-                            [0.8f32, 1.8f32, 0.8f32],
-                            "capsule",
-                        ),
-                        "top_down" => (
-                            include_str!("../assets/scripts/templates/top_down_controller.lua"),
-                            "Cube",
-                            [0.9f32, 0.6f32, 0.2f32, 1.0f32],
-                            [0.8f32, 1.8f32, 0.8f32],
-                            "cuboid",
-                        ),
-                        "vehicle" => (
-                            include_str!("../assets/scripts/templates/vehicle_controller.lua"),
-                            "Cube",
-                            [0.9f32, 0.2f32, 0.3f32, 1.0f32],
-                            [1.8f32, 0.8f32, 3.2f32],
-                            "cuboid",
-                        ),
-                        _ => {
-                            let _ = respond_to.send(Err(format!(
+                    let (raw_template, mesh_name, mesh_color, mesh_scale, collider_type) =
+                        match ctype.as_str() {
+                            "fps" => (
+                                include_str!("../assets/scripts/templates/fps_controller.lua"),
+                                "Capsule",
+                                [0.2f32, 0.6f32, 1.0f32, 1.0f32],
+                                [0.8f32, 1.8f32, 0.8f32],
+                                "capsule",
+                            ),
+                            "third_person" => (
+                                include_str!(
+                                    "../assets/scripts/templates/third_person_controller.lua"
+                                ),
+                                "Capsule",
+                                [0.3f32, 0.8f32, 0.4f32, 1.0f32],
+                                [0.8f32, 1.8f32, 0.8f32],
+                                "capsule",
+                            ),
+                            "top_down" => (
+                                include_str!("../assets/scripts/templates/top_down_controller.lua"),
+                                "Cube",
+                                [0.9f32, 0.6f32, 0.2f32, 1.0f32],
+                                [0.8f32, 1.8f32, 0.8f32],
+                                "cuboid",
+                            ),
+                            "vehicle" => (
+                                include_str!("../assets/scripts/templates/vehicle_controller.lua"),
+                                "Cube",
+                                [0.9f32, 0.2f32, 0.3f32, 1.0f32],
+                                [1.8f32, 0.8f32, 3.2f32],
+                                "cuboid",
+                            ),
+                            _ => {
+                                let _ = respond_to.send(Err(format!(
                                 "Unknown controller_type '{}'. Expected one of: 'fps', 'third_person', 'top_down', 'vehicle'",
                                 controller_type
                             )));
-                            continue;
-                        }
-                    };
+                                continue;
+                            }
+                        };
 
                     let mut script_content = raw_template.to_string();
                     if let Some(spd) = speed {
-                        script_content = script_content.replacen("local speed = 10.0", &format!("local speed = {:.1}", spd), 1);
-                        script_content = script_content.replacen("local speed = 8.0", &format!("local speed = {:.1}", spd), 1);
-                        script_content = script_content.replacen("local speed = 9.0", &format!("local speed = {:.1}", spd), 1);
-                        script_content = script_content.replacen("local max_speed = 22.0", &format!("local max_speed = {:.1}", spd), 1);
+                        script_content = script_content.replacen(
+                            "local speed = 10.0",
+                            &format!("local speed = {:.1}", spd),
+                            1,
+                        );
+                        script_content = script_content.replacen(
+                            "local speed = 8.0",
+                            &format!("local speed = {:.1}", spd),
+                            1,
+                        );
+                        script_content = script_content.replacen(
+                            "local speed = 9.0",
+                            &format!("local speed = {:.1}", spd),
+                            1,
+                        );
+                        script_content = script_content.replacen(
+                            "local max_speed = 22.0",
+                            &format!("local max_speed = {:.1}", spd),
+                            1,
+                        );
                     }
                     if let Some(jf) = jump_force {
-                        script_content = script_content.replacen("local jump_force = 7.0", &format!("local jump_force = {:.1}", jf), 1);
+                        script_content = script_content.replacen(
+                            "local jump_force = 7.0",
+                            &format!("local jump_force = {:.1}", jf),
+                            1,
+                        );
                     }
                     if voxel_collision {
-                        script_content = script_content.replacen("local voxel_collision = false", "local voxel_collision = true", 1);
+                        script_content = script_content.replacen(
+                            "local voxel_collision = false",
+                            "local voxel_collision = true",
+                            1,
+                        );
+                    }
+
+                    let lint_diags = crate::lua_lint::lint_lua_source(&script_content);
+                    let lint_errors: Vec<_> = lint_diags
+                        .iter()
+                        .filter(|d| d.severity == "error")
+                        .collect();
+                    if !lint_errors.is_empty() {
+                        let details = lint_errors
+                            .iter()
+                            .map(|d| format!("{}:{} {}", d.line, d.column, d.message))
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        let _ = respond_to.send(Err(format!(
+                            "Generated controller script failed lint: {}",
+                            details
+                        )));
+                        continue;
                     }
 
                     let _ = std::fs::create_dir_all("assets/scripts/templates");
-                    let template_path = format!("assets/scripts/templates/{}_controller.lua", ctype);
+                    let template_path =
+                        format!("assets/scripts/templates/{}_controller.lua", ctype);
                     let _ = std::fs::write(&template_path, raw_template);
 
                     let script_path = format!("assets/scripts/{}_controller.lua", ent_id);
                     let script_exists = std::path::Path::new(&script_path).exists();
                     let wrote_file = if !script_exists || overwrite {
                         if let Err(e) = std::fs::write(&script_path, &script_content) {
-                            let _ = respond_to.send(Err(format!("Failed to write controller script '{}': {}", script_path, e)));
+                            let _ = respond_to.send(Err(format!(
+                                "Failed to write controller script '{}': {}",
+                                script_path, e
+                            )));
                             continue;
                         }
                         true
@@ -3304,7 +4314,7 @@ let role_str = match self.net.role {
                             blend_mode: Some("opaque".to_string()),
                             wireframe: None,
                             uv_scroll: None,
-                        uv_scale: None,
+                            uv_scale: None,
                         };
                         self.world.spawn((meta, transform, mesh))
                     };
@@ -3334,7 +4344,10 @@ let role_str = match self.net.role {
                         ent_id, ctype, script_path, position
                     );
                     self.logs.push(log_msg.clone());
-                    self.add_toast(format!("Spawned '{}' ({})", ent_id, ctype), egui::Color32::from_rgb(59, 130, 246));
+                    self.add_toast(
+                        format!("Spawned '{}' ({})", ent_id, ctype),
+                        egui::Color32::from_rgb(59, 130, 246),
+                    );
 
                     let _ = respond_to.send(Ok(serde_json::json!({
                         "success": true,
@@ -3357,15 +4370,21 @@ let role_str = match self.net.role {
                     let terrain_guard = self.lua_ctx.active_terrain.read().unwrap();
                     let voxel_guard = self.lua_ctx.active_voxel_world.read().unwrap();
 
-                    let height_sampler = terrain_guard.as_ref().map(|hm| {
-                        move |x: f32, z: f32| hm.sample_world_height(x, z)
-                    });
+                    let height_sampler = terrain_guard
+                        .as_ref()
+                        .map(|hm| move |x: f32, z: f32| hm.sample_world_height(x, z));
                     let obstacle_checker = voxel_guard.as_ref().map(|vw| {
-                        move |x: f32, y: f32, z: f32| vw.is_solid(x.floor() as i32, y.floor() as i32, z.floor() as i32)
+                        move |x: f32, y: f32, z: f32| {
+                            vw.is_solid(x.floor() as i32, y.floor() as i32, z.floor() as i32)
+                        }
                     });
 
-                    let height_fn_ref = height_sampler.as_ref().map(|f| f as &dyn Fn(f32, f32) -> f32);
-                    let obst_fn_ref = obstacle_checker.as_ref().map(|f| f as &dyn Fn(f32, f32, f32) -> bool);
+                    let height_fn_ref = height_sampler
+                        .as_ref()
+                        .map(|f| f as &dyn Fn(f32, f32) -> f32);
+                    let obst_fn_ref = obstacle_checker
+                        .as_ref()
+                        .map(|f| f as &dyn Fn(f32, f32, f32) -> bool);
 
                     let budget = max_steps.unwrap_or(2000);
                     let path_opt = grid.find_path_3d(from, to, budget, height_fn_ref, obst_fn_ref);
@@ -3479,12 +4498,29 @@ let role_str = match self.net.role {
                         active_replicated_entities,
                     });
                 }
+                McpCommand::GetFrameMetrics { respond_to } => {
+                    let _ = respond_to.send(self.frame_metrics.summary_json());
+                }
+                McpCommand::RunBenchmark {
+                    name,
+                    iterations,
+                    respond_to,
+                } => {
+                    let result = profiling::run_benchmark(&name, iterations);
+                    if let Err(ref err) = result {
+                        self.logs.push(format!("[Benchmark] {}", err));
+                    }
+                    let _ = respond_to.send(result);
+                }
             }
         }
     }
 
     pub fn spawn_rigged_character_preset(&mut self, preset: &str) -> Vec<String> {
-        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_millis()).unwrap_or(1);
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_millis())
+            .unwrap_or(1);
         let id_prefix = format!("{}_{}", preset, ts % 1000);
         let forward = (self.camera.target - self.camera.eye).normalize();
         let spawn_pos = self.camera.eye + forward * 4.0;
@@ -3493,7 +4529,8 @@ let role_str = match self.net.role {
         if defs.is_empty() {
             return Vec::new();
         }
-        let current_scene = assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
+        let current_scene =
+            assets::extract_scene_from_world(&self.world, &self.camera, &self.physics);
         self.history.push(current_scene);
         let mut created_ids = Vec::new();
         let mut first_ent = None;
@@ -3519,7 +4556,7 @@ let role_str = match self.net.role {
                 blend_mode: def.blend_mode.clone(),
                 wireframe: def.wireframe,
                 uv_scroll: def.uv_scroll,
-            uv_scale: def.uv_scale,
+                uv_scale: def.uv_scale,
             };
             let e = self.world.spawn((meta, transform, mesh));
             if let Some(ref rig) = def.procedural_rig {
@@ -3532,7 +4569,11 @@ let role_str = match self.net.role {
         if let Some(e) = first_ent {
             self.selected_entity = Some(e);
         }
-        let msg = format!("Spawned rigged character: '{}' ({} parts)", preset, defs.len());
+        let msg = format!(
+            "Spawned rigged character: '{}' ({} parts)",
+            preset,
+            defs.len()
+        );
         self.logs.push(msg.clone());
         self.add_toast(msg, egui::Color32::from_rgb(34, 197, 94));
         created_ids
@@ -3549,8 +4590,10 @@ let role_str = match self.net.role {
                     let half_pi = std::f32::consts::PI;
                     let curve = (p * half_pi).sin();
                     let angle = curve * 0.95 * intensity;
-                    rot = glam::Quat::from_rotation_x(-angle) * glam::Quat::from_rotation_y(-angle * 0.45);
-                    offset = glam::Vec3::new(-0.06 * curve, -0.12 * curve, 0.08 * curve) * *intensity;
+                    rot = glam::Quat::from_rotation_x(-angle)
+                        * glam::Quat::from_rotation_y(-angle * 0.45);
+                    offset =
+                        glam::Vec3::new(-0.06 * curve, -0.12 * curve, 0.08 * curve) * *intensity;
                 }
                 "recoil" => {
                     let recoil_curve = (1.0 - p) * (1.0 - p) * (p * 4.0).min(1.0) * intensity;
@@ -3577,13 +4620,21 @@ let role_str = match self.net.role {
         self.total_time += dt;
 
         // Sync time scale from Lua
-        let lua_ts = f32::from_bits(self.lua_ctx.time_scale.load(std::sync::atomic::Ordering::Relaxed));
+        let lua_ts = f32::from_bits(
+            self.lua_ctx
+                .time_scale
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
         if lua_ts >= 0.0 {
             self.time_scale = lua_ts;
         }
 
         // Sync hitstop from Lua
-        let lua_hitstop = f32::from_bits(self.lua_ctx.hitstop_timer.swap(0, std::sync::atomic::Ordering::Relaxed));
+        let lua_hitstop = f32::from_bits(
+            self.lua_ctx
+                .hitstop_timer
+                .swap(0, std::sync::atomic::Ordering::Relaxed),
+        );
         if lua_hitstop > 0.0 {
             self.hitstop_timer = self.hitstop_timer.max(lua_hitstop);
         }
@@ -3595,7 +4646,9 @@ let role_str = match self.net.role {
             dt * self.time_scale
         };
 
-        self.lua_ctx.last_dt.store(sim_dt.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        self.lua_ctx
+            .last_dt
+            .store(sim_dt.to_bits(), std::sync::atomic::Ordering::Relaxed);
 
         // Drain pending post process updates from Lua
         if let Ok(mut pending_pp) = self.lua_ctx.pending_post_process.lock() {
@@ -3636,14 +4689,20 @@ let role_str = match self.net.role {
         }
 
         // Drain pending pointer lock command from Lua
-        let pl_cmd = self.lua_ctx.pointer_lock_command.swap(0, std::sync::atomic::Ordering::SeqCst);
+        let pl_cmd = self
+            .lua_ctx
+            .pointer_lock_command
+            .swap(0, std::sync::atomic::Ordering::SeqCst);
         if pl_cmd == 1 {
             self.pointer_lock_requested = true;
             self.set_pointer_lock(true);
         } else if pl_cmd < 0 {
             self.pointer_lock_requested = false;
             self.set_pointer_lock(false);
-            self.logs.push(format!("[PointerLock] Unlocked by Lua set_pointer_lock(false) at line {}", -pl_cmd));
+            self.logs.push(format!(
+                "[PointerLock] Unlocked by Lua set_pointer_lock(false) at line {}",
+                -pl_cmd
+            ));
         }
 
         self.frametime_history.push_back(dt * 1000.0);
@@ -3658,6 +4717,8 @@ let role_str = match self.net.role {
             self.fps_timer = Instant::now();
         }
 
+        self.frame_metrics
+            .begin(profiling::FrameStage::McpHotReload);
         self.process_mcp_commands();
         self.scan_assets();
 
@@ -3671,16 +4732,35 @@ let role_str = match self.net.role {
                 HotReloadEvent::ScriptChanged(path) => {
                     let script_str = path.to_string_lossy().replace('\\', "/");
                     let mut reloaded = false;
-                    for (meta, script) in self.world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
+                    for (meta, script) in self
+                        .world
+                        .query_mut::<(&EntityMeta, &mut ScriptComponent)>()
+                    {
                         let comp_str = script.path.replace('\\', "/");
                         if script_str.ends_with(&comp_str) || comp_str.ends_with(&script_str) {
                             if self.play_mode == PlayMode::Play || self.is_standalone_play {
                                 match script.init_or_reload(self.lua_ctx.clone()) {
                                     Ok(()) => {
-                                        let msg = format!("Hot-Reload: Script '{}' reloaded for entity '{}'", script.path, meta.id);
+                                        let msg = format!(
+                                            "Hot-Reload: Script '{}' reloaded for entity '{}'",
+                                            script.path, meta.id
+                                        );
                                         self.logs.push(msg.clone());
                                         self.hot_reload.last_reload_status = Some(msg);
                                         self.last_lua_error = None;
+                                        if let Ok(source) = std::fs::read_to_string(&script.path) {
+                                            let diags = crate::lua_lint::lint_lua_source(&source);
+                                            let errors = diags
+                                                .iter()
+                                                .filter(|d| d.severity == "error")
+                                                .count();
+                                            if errors > 0 {
+                                                self.logs.push(format!(
+                                                    "Lua lint: {} error(s) in '{}' (see lint_lua tool)",
+                                                    errors, script.path
+                                                ));
+                                            }
+                                        }
                                         reloaded = true;
                                     }
                                     Err(e) => {
@@ -3690,7 +4770,10 @@ let role_str = match self.net.role {
                                 }
                             } else {
                                 script.lua = None;
-                                let msg = format!("Hot-Reload: Script '{}' updated (will initialize on Play)", script.path);
+                                let msg = format!(
+                                    "Hot-Reload: Script '{}' updated (will initialize on Play)",
+                                    script.path
+                                );
                                 self.logs.push(msg.clone());
                                 self.hot_reload.last_reload_status = Some(msg);
                                 reloaded = true;
@@ -3698,14 +4781,18 @@ let role_str = match self.net.role {
                         }
                     }
                     if !reloaded {
-                        self.logs.push(format!("Script modified: {}", path.display()));
+                        self.logs
+                            .push(format!("Script modified: {}", path.display()));
                     }
                 }
                 HotReloadEvent::PrefabChanged(path) => {
                     let p_str = path.to_string_lossy().replace('\\', "/");
                     let count = self.sync_prefab_instances(&p_str);
                     let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    let msg = format!("Hot-Reload: Prefab '{}' reloaded ({} instances updated)", fname, count);
+                    let msg = format!(
+                        "Hot-Reload: Prefab '{}' reloaded ({} instances updated)",
+                        fname, count
+                    );
                     self.logs.push(msg.clone());
                     self.hot_reload.last_reload_status = Some(msg.clone());
                     self.add_toast(msg, egui::Color32::from_rgb(56, 189, 248));
@@ -3714,7 +4801,10 @@ let role_str = match self.net.role {
                     let p_str = path.to_string_lossy().replace('\\', "/");
                     let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     let invalidated = self.gpu.invalidate_model(&p_str);
-                    let msg = format!("Hot-Reload: Model '{}' invalidated (cached: {})", fname, invalidated);
+                    let msg = format!(
+                        "Hot-Reload: Model '{}' invalidated (cached: {})",
+                        fname, invalidated
+                    );
                     self.logs.push(msg.clone());
                     self.hot_reload.last_reload_status = Some(msg.clone());
                     self.add_toast(msg, egui::Color32::from_rgb(168, 85, 247));
@@ -3724,7 +4814,10 @@ let role_str = match self.net.role {
                     let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     self.ui_texture_cache.retain(|k, _| !k.contains(fname));
                     let reloaded = self.gpu.reload_texture(&p_str);
-                    let msg = format!("Hot-Reload: Texture '{}' reloaded (GPU: {})", fname, reloaded);
+                    let msg = format!(
+                        "Hot-Reload: Texture '{}' reloaded (GPU: {})",
+                        fname, reloaded
+                    );
                     self.logs.push(msg.clone());
                     self.hot_reload.last_reload_status = Some(msg.clone());
                     self.add_toast(msg, egui::Color32::from_rgb(34, 197, 94));
@@ -3750,6 +4843,7 @@ let role_str = match self.net.role {
                 HotReloadEvent::Other(_) => {}
             }
         }
+        self.frame_metrics.end(profiling::FrameStage::McpHotReload);
 
         // Run simulation only if PlayMode::Play
         if self.play_mode == PlayMode::Play {
@@ -3762,25 +4856,40 @@ let role_str = match self.net.role {
             let in_viewport = self.is_cursor_in_viewport();
             let is_play_mode = self.play_mode == PlayMode::Play;
 
-            let (screen_pos, screen_size) = if self.is_standalone_play || !self.viewport_rect.is_positive() {
-                (self.mouse_pos, [self.gpu.config.width as f32, self.gpu.config.height as f32])
-            } else {
-                let v_min = self.viewport_rect.min;
-                let scale_factor = self.window.scale_factor() as f32;
-                (
-                    [(self.mouse_pos[0] / scale_factor) - v_min.x, (self.mouse_pos[1] / scale_factor) - v_min.y],
-                    [self.viewport_rect.width().max(1.0), self.viewport_rect.height().max(1.0)],
-                )
-            };
+            let (screen_pos, screen_size) =
+                if self.is_standalone_play || !self.viewport_rect.is_positive() {
+                    (
+                        self.mouse_pos,
+                        [self.gpu.config.width as f32, self.gpu.config.height as f32],
+                    )
+                } else {
+                    let v_min = self.viewport_rect.min;
+                    let scale_factor = self.window.scale_factor() as f32;
+                    (
+                        [
+                            (self.mouse_pos[0] / scale_factor) - v_min.x,
+                            (self.mouse_pos[1] / scale_factor) - v_min.y,
+                        ],
+                        [
+                            self.viewport_rect.width().max(1.0),
+                            self.viewport_rect.height().max(1.0),
+                        ],
+                    )
+                };
 
-            let (buttons_down, buttons_just_pressed) = if is_play_mode && !in_viewport && !self.pointer_locked {
-                ([false; 3], [false; 3])
-            } else {
-                (
-                    [self.is_left_mouse_down, self.is_right_mouse_down, self.is_middle_mouse_down],
-                    self.just_pressed_mouse,
-                )
-            };
+            let (buttons_down, buttons_just_pressed) =
+                if is_play_mode && !in_viewport && !self.pointer_locked {
+                    ([false; 3], [false; 3])
+                } else {
+                    (
+                        [
+                            self.is_left_mouse_down,
+                            self.is_right_mouse_down,
+                            self.is_middle_mouse_down,
+                        ],
+                        self.just_pressed_mouse,
+                    )
+                };
 
             if let Ok(mut m) = self.lua_ctx.mouse_info.write() {
                 m.screen_pos = screen_pos;
@@ -3830,29 +4939,70 @@ let role_str = match self.net.role {
                 }
             }
 
-            // Update physics raycaster snapshot for Lua raycast queries
-            let mut collider_to_entity = HashMap::new();
-            for entity_ref in self.world.iter() {
-                if let (Some(meta), Some(rb)) = (entity_ref.get::<&EntityMeta>(), entity_ref.get::<&RigidBodyComponent>()) {
-                    if let Some(rb_obj) = self.physics.rigid_body_set.get(rb.handle) {
-                        for col_h in rb_obj.colliders() {
-                            collider_to_entity.insert(*col_h, meta.id.clone());
+            self.frame_metrics
+                .begin(profiling::FrameStage::PhysicsSnapshot);
+
+            // Rebuild the Lua raycast snapshot only when geometry actually changed.
+            // Static scenes avoid cloning Rapier sets on every frame.
+            let mut snapshot_changed = self.physics_snapshot_dirty
+                || self.physics.rigid_body_set.len() != self.physics_snapshot_state.len()
+                || self.physics.collider_set.len() != self.physics_snapshot_collider_count;
+            if !snapshot_changed {
+                for (handle, body) in self.physics.rigid_body_set.iter() {
+                    match self.physics_snapshot_state.get(&handle) {
+                        Some((cached_pos, cached_rot))
+                            if *cached_pos == body.translation()
+                                && *cached_rot == *body.rotation() => {}
+                        _ => {
+                            snapshot_changed = true;
+                            break;
                         }
                     }
                 }
             }
-            if let Ok(mut rc) = self.lua_ctx.physics_raycaster.write() {
-                *rc = Some(scripting::PhysicsRaycaster {
-                    broad_phase: self.physics.broad_phase.clone(),
-                    narrow_phase: self.physics.narrow_phase.clone(),
-                    rigid_body_set: self.physics.rigid_body_set.clone(),
-                    collider_set: self.physics.collider_set.clone(),
-                    collider_to_entity,
-                });
+
+            if snapshot_changed {
+                let mut collider_to_entity = HashMap::new();
+                for entity_ref in self.world.iter() {
+                    if let (Some(meta), Some(rb)) = (
+                        entity_ref.get::<&EntityMeta>(),
+                        entity_ref.get::<&RigidBodyComponent>(),
+                    ) {
+                        if let Some(rb_obj) = self.physics.rigid_body_set.get(rb.handle) {
+                            for col_h in rb_obj.colliders() {
+                                collider_to_entity.insert(*col_h, meta.id.clone());
+                            }
+                        }
+                    }
+                }
+                if let Ok(mut rc) = self.lua_ctx.physics_raycaster.write() {
+                    *rc = Some(scripting::PhysicsRaycaster {
+                        broad_phase: self.physics.broad_phase.clone(),
+                        narrow_phase: self.physics.narrow_phase.clone(),
+                        rigid_body_set: self.physics.rigid_body_set.clone(),
+                        collider_set: self.physics.collider_set.clone(),
+                        collider_to_entity,
+                    });
+                }
+                self.physics_snapshot_state.clear();
+                for (handle, body) in self.physics.rigid_body_set.iter() {
+                    self.physics_snapshot_state
+                        .insert(handle, (body.translation(), *body.rotation()));
+                }
+                self.physics_snapshot_collider_count = self.physics.collider_set.len();
+                self.physics_snapshot_rebuilds = self.physics_snapshot_rebuilds.wrapping_add(1);
+                self.physics_snapshot_dirty = false;
             }
 
+            self.frame_metrics
+                .end(profiling::FrameStage::PhysicsSnapshot);
+            self.frame_metrics.begin(profiling::FrameStage::LuaUpdate);
+
             // 2. Run Lua scripts update
-            for (meta, transform, script) in self.world.query_mut::<(&EntityMeta, &mut Transform, &mut ScriptComponent)>() {
+            for (meta, transform, script) in
+                self.world
+                    .query_mut::<(&EntityMeta, &mut Transform, &mut ScriptComponent)>()
+            {
                 if let Err(e) = script.update(transform, sim_dt) {
                     let err_msg = format!("Lua runtime error on '{}': {}", meta.id, e);
                     if self.last_lua_error.as_ref() != Some(&err_msg) {
@@ -3861,10 +5011,25 @@ let role_str = match self.net.role {
                     }
                 }
             }
-            scripting::process_timers_and_events(&mut self.world, &self.lua_ctx, sim_dt, &mut self.logs);
+            self.frame_metrics.end(profiling::FrameStage::LuaUpdate);
+            self.frame_metrics
+                .begin(profiling::FrameStage::TimersEvents);
+            scripting::process_timers_and_events(
+                &mut self.world,
+                &self.lua_ctx,
+                sim_dt,
+                &mut self.logs,
+            );
+            self.frame_metrics.end(profiling::FrameStage::TimersEvents);
+
+            self.frame_metrics
+                .begin(profiling::FrameStage::ForcesAndMoves);
 
             // 3. Apply forces & impulses
-            for (rb, script) in self.world.query_mut::<(&RigidBodyComponent, &mut ScriptComponent)>() {
+            for (rb, script) in self
+                .world
+                .query_mut::<(&RigidBodyComponent, &mut ScriptComponent)>()
+            {
                 if let Ok(mut forces) = script.pending_forces.lock() {
                     for f in forces.drain(..) {
                         self.physics.apply_force(rb.handle, f);
@@ -3878,15 +5043,20 @@ let role_str = match self.net.role {
             }
 
             // Apply pending collision layer/mask changes from Lua
-            let pending_groups = if let Ok(mut lock) = self.lua_ctx.pending_collision_groups.lock() {
+            let pending_groups = if let Ok(mut lock) = self.lua_ctx.pending_collision_groups.lock()
+            {
                 std::mem::take(&mut *lock)
             } else {
                 Vec::new()
             };
             if !pending_groups.is_empty() {
+                self.invalidate_physics_snapshot();
                 let mut id_to_handle = HashMap::new();
                 for entity_ref in self.world.iter() {
-                    if let (Some(meta), Some(rb)) = (entity_ref.get::<&EntityMeta>(), entity_ref.get::<&RigidBodyComponent>()) {
+                    if let (Some(meta), Some(rb)) = (
+                        entity_ref.get::<&EntityMeta>(),
+                        entity_ref.get::<&RigidBodyComponent>(),
+                    ) {
                         id_to_handle.insert(meta.id.clone(), rb.handle);
                     }
                 }
@@ -3895,11 +5065,13 @@ let role_str = match self.net.role {
                         if let Some(body) = self.physics.rigid_body_set.get(rb_handle) {
                             if let Some(&c_handle) = body.colliders().first() {
                                 if let Some(collider) = self.physics.collider_set.get(c_handle) {
-                                    let current_layer = collider.collision_groups().memberships.bits();
+                                    let current_layer =
+                                        collider.collision_groups().memberships.bits();
                                     let current_mask = collider.collision_groups().filter.bits();
                                     let new_layer = layer_opt.unwrap_or(current_layer);
                                     let new_mask = mask_opt.unwrap_or(current_mask);
-                                    self.physics.set_collision_groups(c_handle, new_layer, new_mask);
+                                    self.physics
+                                        .set_collision_groups(c_handle, new_layer, new_mask);
                                 }
                             }
                         }
@@ -3908,18 +5080,25 @@ let role_str = match self.net.role {
             }
 
             // Process pending character controller moves from Lua
-            let pending_char_moves = if let Ok(mut lock) = self.lua_ctx.pending_character_moves.lock() {
-                std::mem::take(&mut *lock)
-            } else {
-                Vec::new()
-            };
+            let pending_char_moves =
+                if let Ok(mut lock) = self.lua_ctx.pending_character_moves.lock() {
+                    std::mem::take(&mut *lock)
+                } else {
+                    Vec::new()
+                };
             for (char_id, [dx, dy, dz]) in pending_char_moves {
                 let target_opt = {
                     let mut found = None;
                     for entity_ref in self.world.iter() {
-                        if let (Some(meta), Some(rb)) = (entity_ref.get::<&EntityMeta>(), entity_ref.get::<&RigidBodyComponent>()) {
+                        if let (Some(meta), Some(rb)) = (
+                            entity_ref.get::<&EntityMeta>(),
+                            entity_ref.get::<&RigidBodyComponent>(),
+                        ) {
                             if meta.id == char_id {
-                                let cc = entity_ref.get::<&CharacterControllerComponent>().map(|c| (*c).clone()).unwrap_or_default();
+                                let cc = entity_ref
+                                    .get::<&CharacterControllerComponent>()
+                                    .map(|c| (*c).clone())
+                                    .unwrap_or_default();
                                 found = Some((entity_ref.entity(), rb.handle, cc));
                                 break;
                             }
@@ -3931,7 +5110,13 @@ let role_str = match self.net.role {
                 if let Some((entity, rb_handle, mut cc)) = target_opt {
                     if let Some(body) = self.physics.rigid_body_set.get(rb_handle) {
                         if let Some(&c_handle) = body.colliders().first() {
-                            self.physics.move_character(rb_handle, c_handle, &mut cc, Vec3::new(dx, dy, dz), sim_dt);
+                            self.physics.move_character(
+                                rb_handle,
+                                c_handle,
+                                &mut cc,
+                                Vec3::new(dx, dy, dz),
+                                sim_dt,
+                            );
                             if let Ok(mut grounded_map) = self.lua_ctx.grounded_entities.write() {
                                 grounded_map.insert(char_id.clone(), cc.is_grounded);
                             }
@@ -3941,9 +5126,17 @@ let role_str = match self.net.role {
                 }
             }
 
+            self.frame_metrics
+                .end(profiling::FrameStage::ForcesAndMoves);
+
             // 4. Step Physics
+            self.frame_metrics.begin(profiling::FrameStage::PhysicsStep);
             self.physics.step(sim_dt);
             self.physics.sync_to_ecs(&mut self.world);
+            self.frame_metrics.end(profiling::FrameStage::PhysicsStep);
+
+            self.frame_metrics
+                .begin(profiling::FrameStage::CollisionCallbacks);
 
             // 5. Handle Collision Events & dispatch on_collision to Lua
             let collisions = if let Ok(mut lock) = self.physics.collision_events.lock() {
@@ -3956,51 +5149,88 @@ let role_str = match self.net.role {
                 let mut handle_to_info = HashMap::new();
                 for entity_ref in self.world.iter() {
                     let entity = entity_ref.entity();
-                    if let (Some(meta), Some(rb)) = (entity_ref.get::<&EntityMeta>(), entity_ref.get::<&RigidBodyComponent>()) {
+                    if let (Some(meta), Some(rb)) = (
+                        entity_ref.get::<&EntityMeta>(),
+                        entity_ref.get::<&RigidBodyComponent>(),
+                    ) {
                         handle_to_info.insert(rb.handle, (entity, meta.id.clone()));
                     }
                 }
 
                 for col in collisions {
-                    let body_a = self.physics.collider_set.get(col.collider_1).and_then(|c| c.parent());
-                    let body_b = self.physics.collider_set.get(col.collider_2).and_then(|c| c.parent());
+                    let body_a = self
+                        .physics
+                        .collider_set
+                        .get(col.collider_1)
+                        .and_then(|c| c.parent());
+                    let body_b = self
+                        .physics
+                        .collider_set
+                        .get(col.collider_2)
+                        .and_then(|c| c.parent());
 
                     if let (Some(h_a), Some(h_b)) = (body_a, body_b) {
                         let a_info = handle_to_info.get(&h_a).cloned();
                         let b_info = handle_to_info.get(&h_b).cloned();
 
                         if let (Some((e_a, id_a)), Some((e_b, id_b))) = (a_info, b_info) {
-                            let is_sensor_a = self.physics.collider_set.get(col.collider_1).map(|c| c.is_sensor()).unwrap_or(false);
-                            let is_sensor_b = self.physics.collider_set.get(col.collider_2).map(|c| c.is_sensor()).unwrap_or(false);
+                            let is_sensor_a = self
+                                .physics
+                                .collider_set
+                                .get(col.collider_1)
+                                .map(|c| c.is_sensor())
+                                .unwrap_or(false);
+                            let is_sensor_b = self
+                                .physics
+                                .collider_set
+                                .get(col.collider_2)
+                                .map(|c| c.is_sensor())
+                                .unwrap_or(false);
 
                             if is_sensor_a || is_sensor_b || col.is_sensor {
                                 if col.started {
                                     if is_sensor_a {
-                                        if let Ok(script) = self.world.get::<&ScriptComponent>(e_a) {
+                                        if let Ok(script) = self.world.get::<&ScriptComponent>(e_a)
+                                        {
                                             if let Err(e) = script.on_trigger_enter(&id_a, &id_b) {
-                                                self.logs.push(format!("Trigger error on '{}': {}", id_a, e));
+                                                self.logs.push(format!(
+                                                    "Trigger error on '{}': {}",
+                                                    id_a, e
+                                                ));
                                             }
                                         }
                                     }
                                     if is_sensor_b {
-                                        if let Ok(script) = self.world.get::<&ScriptComponent>(e_b) {
+                                        if let Ok(script) = self.world.get::<&ScriptComponent>(e_b)
+                                        {
                                             if let Err(e) = script.on_trigger_enter(&id_b, &id_a) {
-                                                self.logs.push(format!("Trigger error on '{}': {}", id_b, e));
+                                                self.logs.push(format!(
+                                                    "Trigger error on '{}': {}",
+                                                    id_b, e
+                                                ));
                                             }
                                         }
                                     }
                                 } else {
                                     if is_sensor_a {
-                                        if let Ok(script) = self.world.get::<&ScriptComponent>(e_a) {
+                                        if let Ok(script) = self.world.get::<&ScriptComponent>(e_a)
+                                        {
                                             if let Err(e) = script.on_trigger_exit(&id_a, &id_b) {
-                                                self.logs.push(format!("Trigger error on '{}': {}", id_a, e));
+                                                self.logs.push(format!(
+                                                    "Trigger error on '{}': {}",
+                                                    id_a, e
+                                                ));
                                             }
                                         }
                                     }
                                     if is_sensor_b {
-                                        if let Ok(script) = self.world.get::<&ScriptComponent>(e_b) {
+                                        if let Ok(script) = self.world.get::<&ScriptComponent>(e_b)
+                                        {
                                             if let Err(e) = script.on_trigger_exit(&id_b, &id_a) {
-                                                self.logs.push(format!("Trigger error on '{}': {}", id_b, e));
+                                                self.logs.push(format!(
+                                                    "Trigger error on '{}': {}",
+                                                    id_b, e
+                                                ));
                                             }
                                         }
                                     }
@@ -4019,13 +5249,15 @@ let role_str = match self.net.role {
 
                                 if let Ok(script) = self.world.get::<&ScriptComponent>(e_a) {
                                     if let Err(e) = script.on_collision(&id_a, &id_b, norm) {
-                                        self.logs.push(format!("Collision error on '{}': {}", id_a, e));
+                                        self.logs
+                                            .push(format!("Collision error on '{}': {}", id_a, e));
                                     }
                                 }
                                 if let Ok(script) = self.world.get::<&ScriptComponent>(e_b) {
                                     let inv_norm = [-norm[0], -norm[1], -norm[2]];
                                     if let Err(e) = script.on_collision(&id_b, &id_a, inv_norm) {
-                                        self.logs.push(format!("Collision error on '{}': {}", id_b, e));
+                                        self.logs
+                                            .push(format!("Collision error on '{}': {}", id_b, e));
                                     }
                                 }
                             }
@@ -4034,12 +5266,19 @@ let role_str = match self.net.role {
                 }
             }
 
+            self.frame_metrics
+                .end(profiling::FrameStage::CollisionCallbacks);
+
             // 6. Handle pending spawns from Lua
+            self.frame_metrics.begin(profiling::FrameStage::SceneDrains);
             let pending_spawns = if let Ok(mut spawns) = self.lua_ctx.pending_spawns.lock() {
                 std::mem::take(&mut *spawns)
             } else {
                 Vec::new()
             };
+            if !pending_spawns.is_empty() {
+                self.invalidate_physics_snapshot();
+            }
             for def in pending_spawns {
                 let meta = EntityMeta {
                     id: def.id.clone(),
@@ -4061,7 +5300,7 @@ let role_str = match self.net.role {
                     blend_mode: def.blend_mode.clone(),
                     wireframe: def.wireframe,
                     uv_scroll: def.uv_scroll,
-                uv_scale: def.uv_scale,
+                    uv_scale: def.uv_scale,
                 };
                 let e = self.world.spawn((meta, transform, mesh));
 
@@ -4087,9 +5326,12 @@ let role_str = match self.net.role {
                 if let Some(vfx) = &def.vfx_emitter {
                     let recipe = if let Some(r) = &vfx.recipe {
                         r.clone()
-                    } else if let Some(p) = crate::vfx_forge::get_vfx_preset(&vfx.preset_or_recipe) {
+                    } else if let Some(p) = crate::vfx_forge::get_vfx_preset(&vfx.preset_or_recipe)
+                    {
                         p
-                    } else if let Ok(custom) = serde_json::from_str::<crate::vfx_forge::VfxRecipe>(&vfx.preset_or_recipe) {
+                    } else if let Ok(custom) =
+                        serde_json::from_str::<crate::vfx_forge::VfxRecipe>(&vfx.preset_or_recipe)
+                    {
                         custom
                     } else {
                         crate::vfx_forge::preset_fire()
@@ -4107,11 +5349,12 @@ let role_str = match self.net.role {
             }
 
             // Drain pending entity transform mutations from Lua steering
-            let pending_transforms = if let Ok(mut pt) = self.lua_ctx.pending_entity_transforms.lock() {
-                std::mem::take(&mut *pt)
-            } else {
-                Vec::new()
-            };
+            let pending_transforms =
+                if let Ok(mut pt) = self.lua_ctx.pending_entity_transforms.lock() {
+                    std::mem::take(&mut *pt)
+                } else {
+                    Vec::new()
+                };
             for (target_id, [x, y, z, ry]) in pending_transforms {
                 for (meta, transform) in self.world.query_mut::<(&EntityMeta, &mut Transform)>() {
                     if meta.id == target_id {
@@ -4130,6 +5373,9 @@ let role_str = match self.net.role {
             } else {
                 Vec::new()
             };
+            if !pending_destroys.is_empty() {
+                self.invalidate_physics_snapshot();
+            }
             for target_id in pending_destroys {
                 let to_remove: Option<(hecs::Entity, Option<rapier3d::prelude::RigidBodyHandle>)> = {
                     let mut found = None;
@@ -4137,7 +5383,8 @@ let role_str = match self.net.role {
                         let entity = entity_ref.entity();
                         if let Some(meta) = entity_ref.get::<&EntityMeta>() {
                             if meta.id == target_id {
-                                let rb_handle = entity_ref.get::<&RigidBodyComponent>().map(|r| r.handle);
+                                let rb_handle =
+                                    entity_ref.get::<&RigidBodyComponent>().map(|r| r.handle);
                                 found = Some((entity, rb_handle));
                                 break;
                             }
@@ -4164,12 +5411,19 @@ let role_str = match self.net.role {
             };
             for cmd in pending_anims {
                 match cmd {
-                    scripting::AnimationCommand::Play { entity_id, clip_name, looping, blend_duration } => {
+                    scripting::AnimationCommand::Play {
+                        entity_id,
+                        clip_name,
+                        looping,
+                        blend_duration,
+                    } => {
                         for entity_ref in self.world.iter() {
                             if let Some(meta) = entity_ref.get::<&EntityMeta>() {
                                 if meta.id == entity_id {
                                     let e = entity_ref.entity();
-                                    if let Ok(mut player) = self.world.get::<&mut crate::animation::AnimationPlayer>(e) {
+                                    if let Ok(mut player) =
+                                        self.world.get::<&mut crate::animation::AnimationPlayer>(e)
+                                    {
                                         player.play_with_blend(&clip_name, looping, blend_duration);
                                     }
                                     break;
@@ -4182,7 +5436,9 @@ let role_str = match self.net.role {
                             if let Some(meta) = entity_ref.get::<&EntityMeta>() {
                                 if meta.id == entity_id {
                                     let e = entity_ref.entity();
-                                    if let Ok(mut player) = self.world.get::<&mut crate::animation::AnimationPlayer>(e) {
+                                    if let Ok(mut player) =
+                                        self.world.get::<&mut crate::animation::AnimationPlayer>(e)
+                                    {
                                         player.speed = speed;
                                     }
                                     break;
@@ -4195,7 +5451,9 @@ let role_str = match self.net.role {
                             if let Some(meta) = entity_ref.get::<&EntityMeta>() {
                                 if meta.id == entity_id {
                                     let e = entity_ref.entity();
-                                    if let Ok(mut player) = self.world.get::<&mut crate::animation::AnimationPlayer>(e) {
+                                    if let Ok(mut player) =
+                                        self.world.get::<&mut crate::animation::AnimationPlayer>(e)
+                                    {
                                         player.stop();
                                     }
                                     break;
@@ -4203,7 +5461,10 @@ let role_str = match self.net.role {
                             }
                         }
                     }
-                    scripting::AnimationCommand::PlayPreset { entity_id, preset_name } => {
+                    scripting::AnimationCommand::PlayPreset {
+                        entity_id,
+                        preset_name,
+                    } => {
                         let mut target = None;
                         for entity_ref in self.world.iter() {
                             if let Some(meta) = entity_ref.get::<&EntityMeta>() {
@@ -4214,7 +5475,9 @@ let role_str = match self.net.role {
                             }
                         }
                         if let Some(e) = target {
-                            if let Ok(mut player) = self.world.get::<&mut crate::animation::AnimationPlayer>(e) {
+                            if let Ok(mut player) =
+                                self.world.get::<&mut crate::animation::AnimationPlayer>(e)
+                            {
                                 player.play_preset(&preset_name);
                             } else {
                                 let mut player = crate::animation::AnimationPlayer::new();
@@ -4283,7 +5546,10 @@ let role_str = match self.net.role {
                             if let Some(meta) = entity_ref.get::<&EntityMeta>() {
                                 if meta.id == entity_id {
                                     let e = entity_ref.entity();
-                                    if let Ok(mut rig) = self.world.get::<&mut crate::procedural_rig::ProceduralRig>(e) {
+                                    if let Ok(mut rig) =
+                                        self.world
+                                            .get::<&mut crate::procedural_rig::ProceduralRig>(e)
+                                    {
                                         rig.look_target = Some(target);
                                     }
                                     break;
@@ -4296,7 +5562,10 @@ let role_str = match self.net.role {
                             if let Some(meta) = entity_ref.get::<&EntityMeta>() {
                                 if meta.id == entity_id {
                                     let e = entity_ref.entity();
-                                    if let Ok(mut rig) = self.world.get::<&mut crate::procedural_rig::ProceduralRig>(e) {
+                                    if let Ok(mut rig) =
+                                        self.world
+                                            .get::<&mut crate::procedural_rig::ProceduralRig>(e)
+                                    {
                                         rig.look_target = None;
                                     }
                                     break;
@@ -4304,12 +5573,18 @@ let role_str = match self.net.role {
                             }
                         }
                     }
-                    scripting::RigCommand::TriggerRecoil { entity_id, strength } => {
+                    scripting::RigCommand::TriggerRecoil {
+                        entity_id,
+                        strength,
+                    } => {
                         for entity_ref in self.world.iter() {
                             if let Some(meta) = entity_ref.get::<&EntityMeta>() {
                                 if meta.id == entity_id {
                                     let e = entity_ref.entity();
-                                    if let Ok(mut rig) = self.world.get::<&mut crate::procedural_rig::ProceduralRig>(e) {
+                                    if let Ok(mut rig) =
+                                        self.world
+                                            .get::<&mut crate::procedural_rig::ProceduralRig>(e)
+                                    {
                                         rig.trigger_recoil(strength);
                                     }
                                     break;
@@ -4328,21 +5603,40 @@ let role_str = match self.net.role {
             };
             for cmd in pending_vfx_cmds {
                 match cmd {
-                    scripting::VfxCommand::Spawn { recipe_or_preset, position } => {
-                        let recipe = if let Some(p) = crate::vfx_forge::get_vfx_preset(&recipe_or_preset) {
+                    scripting::VfxCommand::Spawn {
+                        recipe_or_preset,
+                        position,
+                    } => {
+                        let recipe = if let Some(p) =
+                            crate::vfx_forge::get_vfx_preset(&recipe_or_preset)
+                        {
                             p
-                        } else if let Ok(custom) = serde_json::from_str::<crate::vfx_forge::VfxRecipe>(&recipe_or_preset) {
+                        } else if let Ok(custom) =
+                            serde_json::from_str::<crate::vfx_forge::VfxRecipe>(&recipe_or_preset)
+                        {
                             custom
                         } else {
                             crate::vfx_forge::preset_explosion()
                         };
-                        let count = if recipe.burst_count > 0 { recipe.burst_count } else { (recipe.rate_per_sec as usize).max(30) };
-                        self.particles.spawn_vfx(Vec3::from(position), &recipe, count);
+                        let count = if recipe.burst_count > 0 {
+                            recipe.burst_count
+                        } else {
+                            (recipe.rate_per_sec as usize).max(30)
+                        };
+                        self.particles
+                            .spawn_vfx(Vec3::from(position), &recipe, count);
                     }
-                    scripting::VfxCommand::Attach { entity_id, recipe_or_preset } => {
-                        let recipe = if let Some(p) = crate::vfx_forge::get_vfx_preset(&recipe_or_preset) {
+                    scripting::VfxCommand::Attach {
+                        entity_id,
+                        recipe_or_preset,
+                    } => {
+                        let recipe = if let Some(p) =
+                            crate::vfx_forge::get_vfx_preset(&recipe_or_preset)
+                        {
                             p
-                        } else if let Ok(custom) = serde_json::from_str::<crate::vfx_forge::VfxRecipe>(&recipe_or_preset) {
+                        } else if let Ok(custom) =
+                            serde_json::from_str::<crate::vfx_forge::VfxRecipe>(&recipe_or_preset)
+                        {
                             custom
                         } else {
                             crate::vfx_forge::preset_fire()
@@ -4372,7 +5666,10 @@ let role_str = match self.net.role {
                             }
                         }
                         if let Some(e) = target_e {
-                            if let Ok(mut emitter) = self.world.get::<&mut crate::vfx_forge::VfxEmitterComponent>(e) {
+                            if let Ok(mut emitter) =
+                                self.world
+                                    .get::<&mut crate::vfx_forge::VfxEmitterComponent>(e)
+                            {
                                 emitter.enabled = false;
                             }
                         }
@@ -4404,13 +5701,21 @@ let role_str = match self.net.role {
 
         // Evaluate persistent VFX Emitters on scene entities
         if self.play_mode != PlayMode::Pause {
-            for (_meta, transform, emitter) in self.world.query_mut::<(&EntityMeta, &Transform, &mut crate::vfx_forge::VfxEmitterComponent)>() {
+            for (_meta, transform, emitter) in self.world.query_mut::<(
+                &EntityMeta,
+                &Transform,
+                &mut crate::vfx_forge::VfxEmitterComponent,
+            )>() {
                 if emitter.enabled {
                     let world_pos = transform.position + Vec3::from(emitter.offset);
 
                     // 1. One-shot burst (if any and not yet fired)
                     if !emitter.burst_fired && emitter.recipe.burst_count > 0 {
-                        self.particles.spawn_vfx(world_pos, &emitter.recipe, emitter.recipe.burst_count);
+                        self.particles.spawn_vfx(
+                            world_pos,
+                            &emitter.recipe,
+                            emitter.recipe.burst_count,
+                        );
                         emitter.burst_fired = true;
                     }
 
@@ -4420,12 +5725,17 @@ let role_str = match self.net.role {
                         let count_to_spawn = emitter.accumulator as usize;
                         if count_to_spawn > 0 {
                             emitter.accumulator -= count_to_spawn as f32;
-                            self.particles.spawn_vfx(world_pos, &emitter.recipe, count_to_spawn.min(25));
+                            self.particles.spawn_vfx(
+                                world_pos,
+                                &emitter.recipe,
+                                count_to_spawn.min(25),
+                            );
                         }
                     }
 
                     // 3. Auto-disable if non-looping burst completed
-                    if !emitter.looping && emitter.recipe.rate_per_sec <= 0.0 && emitter.burst_fired {
+                    if !emitter.looping && emitter.recipe.rate_per_sec <= 0.0 && emitter.burst_fired
+                    {
                         emitter.enabled = false;
                     }
                 }
@@ -4446,14 +5756,30 @@ let role_str = match self.net.role {
                     self.physics.clear();
                     self.particles.clear();
                     self.selected_entity = None;
-                    assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, Some(&self.lua_ctx));
-                    crate::level_forge::sync_active_terrain_from_scene(&scene, &self.lua_ctx.active_terrain);
-                    crate::voxel_forge::sync_active_voxel_world_from_scene(&scene, &self.lua_ctx.active_voxel_world);
+                    assets::apply_scene_to_world(
+                        &scene,
+                        &mut self.world,
+                        &mut self.camera,
+                        &mut self.physics,
+                        Some(&self.lua_ctx),
+                    );
+                    self.invalidate_physics_snapshot();
+                    crate::level_forge::sync_active_terrain_from_scene(
+                        &scene,
+                        &self.lua_ctx.active_terrain,
+                    );
+                    crate::voxel_forge::sync_active_voxel_world_from_scene(
+                        &scene,
+                        &self.lua_ctx.active_voxel_world,
+                    );
                     let msg = format!("Scene transitioned to '{}'", scene_file);
                     self.logs.push(msg);
                 }
                 Err(e) => {
-                    self.logs.push(format!("Failed to transition to scene '{}': {}", scene_file, e));
+                    self.logs.push(format!(
+                        "Failed to transition to scene '{}': {}",
+                        scene_file, e
+                    ));
                 }
             }
         }
@@ -4465,10 +5791,15 @@ let role_str = match self.net.role {
             Vec::new()
         };
         for callback_name in pending_clicks {
-            for (_, script) in self.world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
+            for (_, script) in self
+                .world
+                .query_mut::<(&EntityMeta, &mut ScriptComponent)>()
+            {
                 if let Some(lua_arc) = &script.lua {
                     if let Ok(lua) = lua_arc.lock() {
-                        if let Ok(func) = lua.globals().get::<mlua::Function>(callback_name.as_str()) {
+                        if let Ok(func) =
+                            lua.globals().get::<mlua::Function>(callback_name.as_str())
+                        {
                             let _ = func.call::<()>(());
                         }
                     }
@@ -4516,11 +5847,14 @@ let role_str = match self.net.role {
                     pl.intensity = intensity;
                     pl.radius = radius;
                 } else {
-                    let _ = self.world.insert_one(entity, ecs::PointLight {
-                        color: col,
-                        intensity,
-                        radius,
-                    });
+                    let _ = self.world.insert_one(
+                        entity,
+                        ecs::PointLight {
+                            color: col,
+                            intensity,
+                            radius,
+                        },
+                    );
                 }
             }
         }
@@ -4535,9 +5869,15 @@ let role_str = match self.net.role {
             let mut body_a = None;
             let mut body_b = None;
             for er in self.world.iter() {
-                if let (Some(meta), Some(rb)) = (er.get::<&EntityMeta>(), er.get::<&RigidBodyComponent>()) {
-                    if meta.id == jcmd.entity_a { body_a = Some(rb.handle); }
-                    if meta.id == jcmd.entity_b { body_b = Some(rb.handle); }
+                if let (Some(meta), Some(rb)) =
+                    (er.get::<&EntityMeta>(), er.get::<&RigidBodyComponent>())
+                {
+                    if meta.id == jcmd.entity_a {
+                        body_a = Some(rb.handle);
+                    }
+                    if meta.id == jcmd.entity_b {
+                        body_b = Some(rb.handle);
+                    }
                 }
             }
             if let (Some(ba), Some(bb)) = (body_a, body_b) {
@@ -4578,16 +5918,21 @@ let role_str = match self.net.role {
                     spot.radius = cmd.radius;
                     spot.inner_angle = cmd.inner_angle;
                     spot.outer_angle = cmd.outer_angle;
-                    if let Some(d) = cmd.direction { spot.direction = d; }
+                    if let Some(d) = cmd.direction {
+                        spot.direction = d;
+                    }
                 } else {
-                    let _ = self.world.insert_one(entity, ecs::SpotLight {
-                        color: cmd.color,
-                        intensity: cmd.intensity,
-                        radius: cmd.radius,
-                        direction: cmd.direction.unwrap_or([0.0, -1.0, 0.0]),
-                        inner_angle: cmd.inner_angle,
-                        outer_angle: cmd.outer_angle,
-                    });
+                    let _ = self.world.insert_one(
+                        entity,
+                        ecs::SpotLight {
+                            color: cmd.color,
+                            intensity: cmd.intensity,
+                            radius: cmd.radius,
+                            direction: cmd.direction.unwrap_or([0.0, -1.0, 0.0]),
+                            inner_angle: cmd.inner_angle,
+                            outer_angle: cmd.outer_angle,
+                        },
+                    );
                 }
             }
         }
@@ -4604,14 +5949,30 @@ let role_str = match self.net.role {
                     if meta.id == update.entity_id {
                         let e = entity_ref.entity();
                         if let Ok(mut mesh) = self.world.get::<&mut MeshRender>(e) {
-                            if let Some(c) = update.color { mesh.color = c; }
-                            if let Some(em) = update.emissive { mesh.emissive = em; }
-                            if let Some(fc) = update.fresnel_color { mesh.fresnel_color = Some(fc); }
-                            if let Some(fp) = update.fresnel_power { mesh.fresnel_power = Some(fp); }
-                            if let Some(bm) = update.blend_mode { mesh.blend_mode = Some(bm); }
-                            if let Some(wf) = update.wireframe { mesh.wireframe = Some(wf); }
-                            if let Some(uv) = update.uv_scroll { mesh.uv_scroll = Some(uv); }
-                            if let Some(uvs) = update.uv_scale { mesh.uv_scale = Some(uvs); }
+                            if let Some(c) = update.color {
+                                mesh.color = c;
+                            }
+                            if let Some(em) = update.emissive {
+                                mesh.emissive = em;
+                            }
+                            if let Some(fc) = update.fresnel_color {
+                                mesh.fresnel_color = Some(fc);
+                            }
+                            if let Some(fp) = update.fresnel_power {
+                                mesh.fresnel_power = Some(fp);
+                            }
+                            if let Some(bm) = update.blend_mode {
+                                mesh.blend_mode = Some(bm);
+                            }
+                            if let Some(wf) = update.wireframe {
+                                mesh.wireframe = Some(wf);
+                            }
+                            if let Some(uv) = update.uv_scroll {
+                                mesh.uv_scroll = Some(uv);
+                            }
+                            if let Some(uvs) = update.uv_scale {
+                                mesh.uv_scale = Some(uvs);
+                            }
                         }
                         break;
                     }
@@ -4637,22 +5998,50 @@ let role_str = match self.net.role {
             }
             if let Some(e) = target_e {
                 if let Ok(mut pbr) = self.world.get::<&mut ecs::PbrMaterial>(e) {
-                    if let Some(nm) = update.normal_map { pbr.normal_map = nm; }
-                    if let Some(mr) = update.metallic_roughness_map { pbr.metallic_roughness_map = mr; }
-                    if let Some(em) = update.emissive_map { pbr.emissive_map = em; }
-                    if let Some(m) = update.metallic { pbr.metallic = m; }
-                    if let Some(r) = update.roughness { pbr.roughness = r; }
-                    if let Some(ns) = update.normal_scale { pbr.normal_scale = ns; }
-                    if let Some(ei) = update.emissive_intensity { pbr.emissive_intensity = ei; }
+                    if let Some(nm) = update.normal_map {
+                        pbr.normal_map = nm;
+                    }
+                    if let Some(mr) = update.metallic_roughness_map {
+                        pbr.metallic_roughness_map = mr;
+                    }
+                    if let Some(em) = update.emissive_map {
+                        pbr.emissive_map = em;
+                    }
+                    if let Some(m) = update.metallic {
+                        pbr.metallic = m;
+                    }
+                    if let Some(r) = update.roughness {
+                        pbr.roughness = r;
+                    }
+                    if let Some(ns) = update.normal_scale {
+                        pbr.normal_scale = ns;
+                    }
+                    if let Some(ei) = update.emissive_intensity {
+                        pbr.emissive_intensity = ei;
+                    }
                 } else {
                     let mut pbr = ecs::PbrMaterial::default();
-                    if let Some(nm) = update.normal_map { pbr.normal_map = nm; }
-                    if let Some(mr) = update.metallic_roughness_map { pbr.metallic_roughness_map = mr; }
-                    if let Some(em) = update.emissive_map { pbr.emissive_map = em; }
-                    if let Some(m) = update.metallic { pbr.metallic = m; }
-                    if let Some(r) = update.roughness { pbr.roughness = r; }
-                    if let Some(ns) = update.normal_scale { pbr.normal_scale = ns; }
-                    if let Some(ei) = update.emissive_intensity { pbr.emissive_intensity = ei; }
+                    if let Some(nm) = update.normal_map {
+                        pbr.normal_map = nm;
+                    }
+                    if let Some(mr) = update.metallic_roughness_map {
+                        pbr.metallic_roughness_map = mr;
+                    }
+                    if let Some(em) = update.emissive_map {
+                        pbr.emissive_map = em;
+                    }
+                    if let Some(m) = update.metallic {
+                        pbr.metallic = m;
+                    }
+                    if let Some(r) = update.roughness {
+                        pbr.roughness = r;
+                    }
+                    if let Some(ns) = update.normal_scale {
+                        pbr.normal_scale = ns;
+                    }
+                    if let Some(ei) = update.emissive_intensity {
+                        pbr.emissive_intensity = ei;
+                    }
                     let _ = self.world.insert_one(e, pbr);
                 }
             }
@@ -4678,7 +6067,9 @@ let role_str = match self.net.role {
                 found
             };
             if let Some(entity) = target_entity {
-                let _ = self.world.insert_one(entity, ecs::SpriteAnimation::new(cols, rows, frame));
+                let _ = self
+                    .world
+                    .insert_one(entity, ecs::SpriteAnimation::new(cols, rows, frame));
             }
         }
 
@@ -4699,7 +6090,8 @@ let role_str = match self.net.role {
             Vec::new()
         };
         for (target_id, offset, smoothness) in pending_cam_follows {
-            self.camera.follow_entity(target_id, Vec3::from(offset), smoothness);
+            self.camera
+                .follow_entity(target_id, Vec3::from(offset), smoothness);
         }
 
         let pending_cam_shakes = if let Ok(mut s) = self.lua_ctx.pending_camera_shakes.lock() {
@@ -4717,7 +6109,8 @@ let role_str = match self.net.role {
             Vec::new()
         };
         for (eye, target, duration) in pending_cam_lerps {
-            self.camera.start_lerp_to(Vec3::from(eye), Vec3::from(target), duration);
+            self.camera
+                .start_lerp_to(Vec3::from(eye), Vec3::from(target), duration);
         }
 
         // Drain Lua RTT Queues
@@ -4738,7 +6131,9 @@ let role_str = match self.net.role {
                     }
                 }
                 if let Some(e) = target_e {
-                    let _ = self.world.insert_one(e, ecs::CameraTarget::new(target_id, 320, 240, fov, hz));
+                    let _ = self
+                        .world
+                        .insert_one(e, ecs::CameraTarget::new(target_id, 320, 240, fov, hz));
                 }
             }
         }
@@ -4754,10 +6149,13 @@ let role_str = match self.net.role {
                     }
                 }
                 if let Some(e) = target_e {
-                    let _ = self.world.insert_one(e, ecs::MaterialOverrideRtt {
-                        target_id,
-                        as_emissive,
-                    });
+                    let _ = self.world.insert_one(
+                        e,
+                        ecs::MaterialOverrideRtt {
+                            target_id,
+                            as_emissive,
+                        },
+                    );
                 }
             }
         }
@@ -4768,7 +6166,8 @@ let role_str = match self.net.role {
             Vec::new()
         };
         for (target_id, distance, pitch, yaw_speed) in pending_cam_orbits {
-            self.camera.start_orbit_target(target_id, distance, pitch, yaw_speed);
+            self.camera
+                .start_orbit_target(target_id, distance, pitch, yaw_speed);
         }
 
         // Drain pending tweens from Lua
@@ -4812,9 +6211,12 @@ let role_str = match self.net.role {
             minfo.delta = [0.0, 0.0];
             minfo.buttons_just_pressed = [false; 3];
         }
+        self.frame_metrics.end(profiling::FrameStage::SceneDrains);
 
+        self.frame_metrics.begin(profiling::FrameStage::Transforms);
         // Compute world transforms (ParentWorld * Local) with cycle detection
         let world_transforms = compute_world_transforms(&self.world);
+        self.frame_metrics.end(profiling::FrameStage::Transforms);
 
         // Update camera cinematics (lerp & orbit)
         let mut entity_pos_map = HashMap::new();
@@ -4828,7 +6230,7 @@ let role_str = match self.net.role {
             }
         }
         self.camera.update_cinematics(dt, &entity_pos_map);
-// 1. Drain pending net commands from Lua
+        // 1. Drain pending net commands from Lua
         let net_cmds = if let Ok(mut cmds) = self.lua_ctx.pending_net_commands.lock() {
             std::mem::take(&mut *cmds)
         } else {
@@ -4836,15 +6238,13 @@ let role_str = match self.net.role {
         };
         for cmd in net_cmds {
             match cmd {
-                scripting::NetCommand::Host { port } => {
-                    match net::NetworkManager::host(port) {
-                        Ok(nm) => {
-                            println!("[Net] Hosting on UDP port {}", port);
-                            self.net = nm;
-                        }
-                        Err(e) => eprintln!("[Net] Host error: {}", e),
+                scripting::NetCommand::Host { port } => match net::NetworkManager::host(port) {
+                    Ok(nm) => {
+                        println!("[Net] Hosting on UDP port {}", port);
+                        self.net = nm;
                     }
-                }
+                    Err(e) => eprintln!("[Net] Host error: {}", e),
+                },
                 scripting::NetCommand::Connect { addr } => {
                     match net::NetworkManager::connect(&addr) {
                         Ok(nm) => {
@@ -4881,7 +6281,10 @@ let role_str = match self.net.role {
         // 4. Server replication: pack snapshots and broadcast over Unreliable channel
         if self.net.is_server() && self.net.peer_count() > 0 {
             let mut sync_entities = Vec::new();
-            for (transform, nsync, nid) in self.world.query_mut::<(&Transform, &mut ecs::NetworkSync, &ecs::NetworkId)>() {
+            for (transform, nsync, nid) in
+                self.world
+                    .query_mut::<(&Transform, &mut ecs::NetworkSync, &ecs::NetworkId)>()
+            {
                 let interval = 1.0 / nsync.rate_hz.max(1.0) as f64;
                 if (self.total_time as f64) - nsync.last_sync_time >= interval {
                     nsync.last_sync_time = self.total_time as f64;
@@ -4893,7 +6296,11 @@ let role_str = match self.net.role {
                     );
                     sync_entities.push(net::EntityTransformSnapshot {
                         net_id: nid.net_id,
-                        pos: [transform.position.x, transform.position.y, transform.position.z],
+                        pos: [
+                            transform.position.x,
+                            transform.position.y,
+                            transform.position.z,
+                        ],
                         rot: [q.x, q.y, q.z, q.w],
                         scale: [transform.scale.x, transform.scale.y, transform.scale.z],
                         anim_clip: None,
@@ -4940,14 +6347,19 @@ let role_str = match self.net.role {
                             let target_rot = glam::Quat::from_array(esnap.rot);
                             let target_pos = Vec3::from(esnap.pos);
                             let target_scale = Vec3::from(esnap.scale);
-                            let _ = self.world.insert_one(e, ecs::NetworkInterpolationTarget::new(
-                                target_pos,
-                                target_rot,
-                                target_scale,
-                                self.total_time as f64,
-                            ));
+                            let _ = self.world.insert_one(
+                                e,
+                                ecs::NetworkInterpolationTarget::new(
+                                    target_pos,
+                                    target_rot,
+                                    target_scale,
+                                    self.total_time as f64,
+                                ),
+                            );
                             if let Some(clip) = esnap.anim_clip {
-                                if let Ok(mut player) = self.world.get::<&mut crate::animation::AnimationPlayer>(e) {
+                                if let Ok(mut player) =
+                                    self.world.get::<&mut crate::animation::AnimationPlayer>(e)
+                                {
                                     if player.active_clip.as_deref() != Some(&clip) {
                                         player.play(&clip, true);
                                     }
@@ -4962,10 +6374,18 @@ let role_str = match self.net.role {
         }
 
         // 6. Apply smooth client-side interpolation (LERP pos, SLERP rot)
-        for (transform, target) in self.world.query_mut::<(&mut Transform, &ecs::NetworkInterpolationTarget)>() {
+        for (transform, target) in self
+            .world
+            .query_mut::<(&mut Transform, &ecs::NetworkInterpolationTarget)>()
+        {
             let factor = (dt * 15.0).clamp(0.0, 1.0);
             transform.position = transform.position.lerp(target.target_pos, factor);
-            let cur_q = glam::Quat::from_euler(glam::EulerRot::XYZ, transform.rotation.x, transform.rotation.y, transform.rotation.z);
+            let cur_q = glam::Quat::from_euler(
+                glam::EulerRot::XYZ,
+                transform.rotation.x,
+                transform.rotation.y,
+                transform.rotation.z,
+            );
             let slerped = cur_q.slerp(target.target_rot, factor);
             let (rx, ry, rz) = slerped.to_euler(glam::EulerRot::XYZ);
             transform.rotation = Vec3::new(rx, ry, rz);
@@ -5024,7 +6444,11 @@ let role_str = match self.net.role {
         }
 
         // Update camera in GPU with simulation time and environment settings
-        let fog_mode = self.environment_settings.fog_mode.as_deref().unwrap_or("exponential");
+        let fog_mode = self
+            .environment_settings
+            .fog_mode
+            .as_deref()
+            .unwrap_or("exponential");
         let fog_start = self.environment_settings.fog_start.unwrap_or(0.0);
         let fog_end = self.environment_settings.fog_end.unwrap_or(100.0);
 
@@ -5046,7 +6470,8 @@ let role_str = match self.net.role {
         );
 
         // Collect active point and spot lights into GPU uniform
-        let light_frustum = camera::Frustum::from_view_proj(self.camera.build_view_projection_matrix());
+        let light_frustum =
+            camera::Frustum::from_view_proj(self.camera.build_view_projection_matrix());
         let mut light_candidates: Vec<(f32, renderer::LightRaw)> = Vec::new();
         for entity_ref in self.world.iter() {
             let entity = entity_ref.entity();
@@ -5061,32 +6486,42 @@ let role_str = match self.net.role {
             let dist_sq = (world_pos_v - self.camera.eye).length_squared();
 
             if let Some(light) = entity_ref.get::<&ecs::PointLight>() {
-                if light_frustum.intersects_sphere(world_pos_v, light.radius) || dist_sq < light.radius * light.radius {
-                    light_candidates.push((dist_sq, renderer::LightRaw {
-                        position: world_pos,
-                        radius: light.radius,
-                        color: light.color,
-                        intensity: light.intensity,
-                        direction: [0.0, -1.0, 0.0],
-                        inner_cone: 0.0,
-                        outer_cone: 0.0,
-                        light_type: 0.0,
-                        _pad: [0.0; 2],
-                    }));
+                if light_frustum.intersects_sphere(world_pos_v, light.radius)
+                    || dist_sq < light.radius * light.radius
+                {
+                    light_candidates.push((
+                        dist_sq,
+                        renderer::LightRaw {
+                            position: world_pos,
+                            radius: light.radius,
+                            color: light.color,
+                            intensity: light.intensity,
+                            direction: [0.0, -1.0, 0.0],
+                            inner_cone: 0.0,
+                            outer_cone: 0.0,
+                            light_type: 0.0,
+                            _pad: [0.0; 2],
+                        },
+                    ));
                 }
             } else if let Some(spot) = entity_ref.get::<&ecs::SpotLight>() {
-                if light_frustum.intersects_sphere(world_pos_v, spot.radius) || dist_sq < spot.radius * spot.radius {
-                    light_candidates.push((dist_sq, renderer::LightRaw {
-                        position: world_pos,
-                        radius: spot.radius,
-                        color: spot.color,
-                        intensity: spot.intensity,
-                        direction: spot.direction,
-                        inner_cone: spot.inner_angle.cos(),
-                        outer_cone: spot.outer_angle.cos(),
-                        light_type: 1.0,
-                        _pad: [0.0; 2],
-                    }));
+                if light_frustum.intersects_sphere(world_pos_v, spot.radius)
+                    || dist_sq < spot.radius * spot.radius
+                {
+                    light_candidates.push((
+                        dist_sq,
+                        renderer::LightRaw {
+                            position: world_pos,
+                            radius: spot.radius,
+                            color: spot.color,
+                            intensity: spot.intensity,
+                            direction: spot.direction,
+                            inner_cone: spot.inner_angle.cos(),
+                            outer_cone: spot.outer_angle.cos(),
+                            light_type: 1.0,
+                            _pad: [0.0; 2],
+                        },
+                    ));
                 }
             }
         }
@@ -5119,7 +6554,10 @@ let role_str = match self.net.role {
                 found
             };
             if let Some(e) = target_e {
-                let _ = self.world.insert_one(e, ecs::TrailComponent::new(cmd.color, cmd.lifetime, cmd.width));
+                let _ = self.world.insert_one(
+                    e,
+                    ecs::TrailComponent::new(cmd.color, cmd.lifetime, cmd.width),
+                );
             }
         }
 
@@ -5163,14 +6601,26 @@ let role_str = match self.net.role {
                     side = dir.cross(Vec3::Y).normalize_or_zero();
                 }
 
-                let t_a = ((trail.lifetime - (self.total_time - p_a.time)) / trail.lifetime).clamp(0.0, 1.0);
-                let t_b = ((trail.lifetime - (self.total_time - p_b.time)) / trail.lifetime).clamp(0.0, 1.0);
+                let t_a = ((trail.lifetime - (self.total_time - p_a.time)) / trail.lifetime)
+                    .clamp(0.0, 1.0);
+                let t_b = ((trail.lifetime - (self.total_time - p_b.time)) / trail.lifetime)
+                    .clamp(0.0, 1.0);
 
                 let w_a = side * (trail.width * 0.5 * t_a);
                 let w_b = side * (trail.width * 0.5 * t_b);
 
-                let col_a = [trail.color[0], trail.color[1], trail.color[2], trail.color[3] * t_a];
-                let col_b = [trail.color[0], trail.color[1], trail.color[2], trail.color[3] * t_b];
+                let col_a = [
+                    trail.color[0],
+                    trail.color[1],
+                    trail.color[2],
+                    trail.color[3] * t_a,
+                ];
+                let col_b = [
+                    trail.color[0],
+                    trail.color[1],
+                    trail.color[2],
+                    trail.color[3] * t_b,
+                ];
 
                 let base_idx = trail_vertices.len() as u16;
                 trail_vertices.push(renderer::Vertex {
@@ -5265,21 +6715,51 @@ let role_str = match self.net.role {
             }
         }
 
+        self.frame_metrics.begin(profiling::FrameStage::BatchBuild);
+
         // Collect instances by mesh type, material key, and blend mode
         let frustum = camera::Frustum::from_view_proj(self.camera.build_view_projection_matrix());
-        let mut instances_by_batch: HashMap<(String, renderer::MaterialKey, String), Vec<InstanceRaw>> = HashMap::new();
+        let mut instances_by_batch: HashMap<
+            (String, renderer::MaterialKey, String),
+            Vec<InstanceRaw>,
+        > = HashMap::new();
         for entity_ref in self.world.iter() {
             let entity = entity_ref.entity();
-            if let (Some(transform), Some(mesh)) = (entity_ref.get::<&Transform>(), entity_ref.get::<&MeshRender>()) {
+            if let (Some(transform), Some(mesh)) = (
+                entity_ref.get::<&Transform>(),
+                entity_ref.get::<&MeshRender>(),
+            ) {
                 let is_known_unit = matches!(
                     mesh.mesh_type.as_str(),
-                    "cube" | "sphere" | "cylinder" | "quad" | "plane" | "torus" | "ring" | "cone"
-                    | "icosphere" | "sword" | "pickaxe" | "basalt_pillar" | "jagged_rock"
-                    | "crystal_cluster" | "sci_fi_crate"
+                    "cube"
+                        | "sphere"
+                        | "cylinder"
+                        | "quad"
+                        | "plane"
+                        | "torus"
+                        | "ring"
+                        | "cone"
+                        | "icosphere"
+                        | "sword"
+                        | "pickaxe"
+                        | "basalt_pillar"
+                        | "jagged_rock"
+                        | "crystal_cluster"
+                        | "sci_fi_crate"
                 );
                 if is_known_unit {
-                    let world_pos = if let Some((_, wp)) = world_transforms.get(&entity) { *wp } else { transform.position };
-                    let max_s = transform.scale.x.abs().max(transform.scale.y.abs()).max(transform.scale.z.abs()).max(0.1);
+                    let world_pos = if let Some((_, wp)) = world_transforms.get(&entity) {
+                        *wp
+                    } else {
+                        transform.position
+                    };
+                    let max_s = transform
+                        .scale
+                        .x
+                        .abs()
+                        .max(transform.scale.y.abs())
+                        .max(transform.scale.z.abs())
+                        .max(0.1);
                     if !frustum.intersects_sphere(world_pos, max_s * 1.85) {
                         continue;
                     }
@@ -5290,12 +6770,13 @@ let role_str = match self.net.role {
                     transform.matrix().to_cols_array_2d()
                 };
                 let base_uv_scale = mesh.uv_scale.unwrap_or([1.0, 1.0]);
-                let (uv_offset, uv_scale) = if let Some(anim) = entity_ref.get::<&ecs::SpriteAnimation>() {
-                    let (off, sc) = anim.uv_offset_and_scale();
-                    (off, [sc[0] * base_uv_scale[0], sc[1] * base_uv_scale[1]])
-                } else {
-                    ([0.0, 0.0], base_uv_scale)
-                };
+                let (uv_offset, uv_scale) =
+                    if let Some(anim) = entity_ref.get::<&ecs::SpriteAnimation>() {
+                        let (off, sc) = anim.uv_offset_and_scale();
+                        (off, [sc[0] * base_uv_scale[0], sc[1] * base_uv_scale[1]])
+                    } else {
+                        ([0.0, 0.0], base_uv_scale)
+                    };
                 let fresnel = if let Some(fc) = mesh.fresnel_color {
                     [fc[0], fc[1], fc[2], mesh.fresnel_power.unwrap_or(2.0)]
                 } else {
@@ -5304,38 +6785,59 @@ let role_str = match self.net.role {
                 let scroll = mesh.uv_scroll.unwrap_or([0.0, 0.0]);
                 let wire_flag = match self.view_mode {
                     renderer::ViewMode::Lit => {
-                        if mesh.wireframe.unwrap_or(false) { 2.0 } else { 0.0 }
+                        if mesh.wireframe.unwrap_or(false) {
+                            2.0
+                        } else {
+                            0.0
+                        }
                     }
                     renderer::ViewMode::Unlit => 1.0,
                     renderer::ViewMode::Wireframe => 2.0,
                 };
                 let gltf_mat = self.gpu.gltf_materials.get(&mesh.mesh_type);
-                let (mut mat_key, pbr_params) = if let Some(pbr) = entity_ref.get::<&ecs::PbrMaterial>() {
-                    (
-                        renderer::MaterialKey {
-                            diffuse: mesh.texture.clone().or_else(|| gltf_mat.and_then(|g| g.diffuse.clone())),
-                            normal: pbr.normal_map.clone().or_else(|| gltf_mat.and_then(|g| g.normal.clone())),
-                            metallic_roughness: pbr.metallic_roughness_map.clone().or_else(|| gltf_mat.and_then(|g| g.metallic_roughness.clone())),
-                            emissive: pbr.emissive_map.clone().or_else(|| gltf_mat.and_then(|g| g.emissive.clone())),
-                        },
-                        [pbr.metallic, pbr.roughness, pbr.normal_scale, pbr.emissive_intensity],
-                    )
-                } else if let Some(g) = gltf_mat {
-                    (
-                        renderer::MaterialKey {
-                            diffuse: mesh.texture.clone().or_else(|| g.diffuse.clone()),
-                            normal: g.normal.clone(),
-                            metallic_roughness: g.metallic_roughness.clone(),
-                            emissive: g.emissive.clone(),
-                        },
-                        [g.metallic, g.roughness, 1.0, 1.0],
-                    )
-                } else {
-                    (
-                        renderer::MaterialKey::simple(mesh.texture.clone()),
-                        [0.0, 0.5, 1.0, 1.0],
-                    )
-                };
+                let (mut mat_key, pbr_params) =
+                    if let Some(pbr) = entity_ref.get::<&ecs::PbrMaterial>() {
+                        (
+                            renderer::MaterialKey {
+                                diffuse: mesh
+                                    .texture
+                                    .clone()
+                                    .or_else(|| gltf_mat.and_then(|g| g.diffuse.clone())),
+                                normal: pbr
+                                    .normal_map
+                                    .clone()
+                                    .or_else(|| gltf_mat.and_then(|g| g.normal.clone())),
+                                metallic_roughness: pbr.metallic_roughness_map.clone().or_else(
+                                    || gltf_mat.and_then(|g| g.metallic_roughness.clone()),
+                                ),
+                                emissive: pbr
+                                    .emissive_map
+                                    .clone()
+                                    .or_else(|| gltf_mat.and_then(|g| g.emissive.clone())),
+                            },
+                            [
+                                pbr.metallic,
+                                pbr.roughness,
+                                pbr.normal_scale,
+                                pbr.emissive_intensity,
+                            ],
+                        )
+                    } else if let Some(g) = gltf_mat {
+                        (
+                            renderer::MaterialKey {
+                                diffuse: mesh.texture.clone().or_else(|| g.diffuse.clone()),
+                                normal: g.normal.clone(),
+                                metallic_roughness: g.metallic_roughness.clone(),
+                                emissive: g.emissive.clone(),
+                            },
+                            [g.metallic, g.roughness, 1.0, 1.0],
+                        )
+                    } else {
+                        (
+                            renderer::MaterialKey::simple(mesh.texture.clone()),
+                            [0.0, 0.5, 1.0, 1.0],
+                        )
+                    };
                 let mut emissive_val = mesh.emissive;
                 if let Some(rtt_mat) = entity_ref.get::<&ecs::MaterialOverrideRtt>() {
                     mat_key.diffuse = Some(format!("__rtt:{}", rtt_mat.target_id));
@@ -5352,7 +6854,10 @@ let role_str = match self.net.role {
                     uv_scale,
                     pbr_params,
                 };
-                let blend_mode = mesh.blend_mode.clone().unwrap_or_else(|| "opaque".to_string());
+                let blend_mode = mesh
+                    .blend_mode
+                    .clone()
+                    .unwrap_or_else(|| "opaque".to_string());
                 instances_by_batch
                     .entry((mesh.mesh_type.clone(), mat_key, blend_mode))
                     .or_default()
@@ -5373,7 +6878,11 @@ let role_str = match self.net.role {
                 pbr_params: [0.0, 0.5, 1.0, 1.0],
             };
             instances_by_batch
-                .entry(("forge_preview".to_string(), renderer::MaterialKey::simple(None), "opaque".to_string()))
+                .entry((
+                    "forge_preview".to_string(),
+                    renderer::MaterialKey::simple(None),
+                    "opaque".to_string(),
+                ))
                 .or_default()
                 .push(raw);
         }
@@ -5384,11 +6893,14 @@ let role_str = match self.net.role {
             self.gpu.ensure_mesh(mesh_id);
             self.gpu.get_or_create_material(mat_key);
         }
+        self.frame_metrics.end(profiling::FrameStage::BatchBuild);
 
         self.sim_time_ms = frame_sim_start.elapsed().as_secs_f32() * 1000.0;
 
         let output = match self.gpu.surface.get_current_texture() {
-            CurrentSurfaceTexture::Success(frame) | CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            CurrentSurfaceTexture::Success(frame) | CurrentSurfaceTexture::Suboptimal(frame) => {
+                frame
+            }
             CurrentSurfaceTexture::Lost | CurrentSurfaceTexture::Outdated => {
                 self.gpu.resize(self.gpu.size);
                 return;
@@ -5401,12 +6913,12 @@ let role_str = match self.net.role {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder =
-            self.gpu
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Main Command Encoder"),
-                });
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Main Command Encoder"),
+            });
 
         let frame_ui_start = Instant::now();
 
@@ -5754,7 +7266,12 @@ let role_str = match self.net.role {
                             // 1. MCP Server Status & Connect Button
                             ui.horizontal(|ui| {
                                 ui.colored_label(egui::Color32::from_rgb(34, 197, 94), "●");
-                                ui.label(egui::RichText::new("MCP: 3030").size(11.5).strong());
+                                let mcp_label = if self.mcp_server_addr.is_empty() {
+                                    "MCP: off".to_string()
+                                } else {
+                                    format!("MCP: {}", self.mcp_server_addr)
+                                };
+                                ui.label(egui::RichText::new(mcp_label).size(11.5).strong());
                                 if ui.small_button(egui::RichText::new("[Connect]").color(egui::Color32::from_rgb(96, 165, 250))).clicked() {
                                     self.show_connect_mcp_modal = true;
                                 }
@@ -5992,7 +7509,7 @@ let role_str = match self.net.role {
                                 let is_selected = *selected == Some(entity);
                                 let indent_str = if depth == 0 { "* " } else { "|- " };
                                 let label = format!("{}{}{} ({})", "  ".repeat(depth), indent_str, id, mesh_type);
-                                
+
                                 ui.horizontal(|ui| {
                                     if ui.selectable_label(is_selected, label).clicked() {
                                         *selected = Some(entity);
@@ -8368,15 +9885,28 @@ let role_str = match self.net.role {
                             ui.horizontal(|ui| {
                                 ui.colored_label(egui::Color32::from_rgb(34, 197, 94), "●");
                                 ui.label(egui::RichText::new("Online").strong().color(egui::Color32::from_rgb(34, 197, 94)));
-                                ui.label(egui::RichText::new("http://127.0.0.1:3030/mcp").monospace().strong());
+                                let mcp_url = if self.mcp_server_addr.is_empty() {
+                                    "http://127.0.0.1:3030/mcp".to_string()
+                                } else {
+                                    format!("http://{}/mcp", self.mcp_server_addr)
+                                };
+                                ui.label(egui::RichText::new(mcp_url).monospace().strong());
                             });
                             ui.add_space(6.0);
                             ui.separator();
                             ui.add_space(6.0);
 
                             ui.label(egui::RichText::new("Client Configuration JSON (Antigravity / OpenCode / Claude Desktop):").size(11.5));
-                            let config_json = "{\n  \"mcpServers\": {\n    \"motor-dif\": {\n      \"url\": \"http://127.0.0.1:3030/mcp\"\n    }\n  }\n}";
-                            let mut config_text = config_json.to_string();
+                            let mcp_url = if self.mcp_server_addr.is_empty() {
+                                "http://127.0.0.1:3030/mcp".to_string()
+                            } else {
+                                format!("http://{}/mcp", self.mcp_server_addr)
+                            };
+                            let config_json = format!(
+                                "{{\n  \"mcpServers\": {{\n    \"motor-dif\": {{\n      \"url\": \"{}\"\n    }}\n  }}\n}}",
+                                mcp_url
+                            );
+                            let mut config_text = config_json.clone();
                             ui.add(
                                 egui::TextEdit::multiline(&mut config_text)
                                     .font(egui::TextStyle::Monospace)
@@ -8391,7 +9921,10 @@ let role_str = match self.net.role {
                                     self.add_toast("Config copied to clipboard!", egui::Color32::from_rgb(34, 197, 94));
                                 }
                                 if ui.button(egui::RichText::new("[Copy Prompt Snippet]").strong()).clicked() {
-                                    let prompt_snippet = "Conéctate al servidor MCP de Motor-dif en http://127.0.0.1:3030/mcp. Lee get_engine_docs y captura el viewport antes y después de cada cambio.";
+                                    let prompt_snippet = format!(
+                                        "Conéctate al servidor MCP de Motor-dif en {}. Lee get_engine_docs y captura el viewport antes y después de cada cambio.",
+                                        mcp_url
+                                    );
                                     ui.ctx().copy_text(prompt_snippet.to_string());
                                     self.add_toast("Prompt snippet copied to clipboard!", egui::Color32::from_rgb(59, 130, 246));
                                 }
@@ -8967,7 +10500,10 @@ let role_str = match self.net.role {
             self.scene_path = "assets/scene.json".to_string();
             self.export_entry_scene = "assets/scene.json".to_string();
             self.logs.push("Created new empty scene".to_string());
-            self.add_toast("New empty scene created", egui::Color32::from_rgb(250, 204, 21));
+            self.add_toast(
+                "New empty scene created",
+                egui::Color32::from_rgb(250, 204, 21),
+            );
         }
 
         if let Some(template_name) = trigger_template {
@@ -8987,9 +10523,22 @@ let role_str = match self.net.role {
                     } else {
                         None
                     };
-                    assets::apply_scene_to_world(&scene, &mut self.world, &mut self.camera, &mut self.physics, ctx_opt);
-                    crate::level_forge::sync_active_terrain_from_scene(&scene, &self.lua_ctx.active_terrain);
-                    crate::voxel_forge::sync_active_voxel_world_from_scene(&scene, &self.lua_ctx.active_voxel_world);
+                    assets::apply_scene_to_world(
+                        &scene,
+                        &mut self.world,
+                        &mut self.camera,
+                        &mut self.physics,
+                        ctx_opt,
+                    );
+                    self.invalidate_physics_snapshot();
+                    crate::level_forge::sync_active_terrain_from_scene(
+                        &scene,
+                        &self.lua_ctx.active_terrain,
+                    );
+                    crate::voxel_forge::sync_active_voxel_world_from_scene(
+                        &scene,
+                        &self.lua_ctx.active_voxel_world,
+                    );
                     if let Some(env) = &scene.environment {
                         self.environment_settings = env.clone();
                     }
@@ -9000,7 +10549,8 @@ let role_str = match self.net.role {
                     self.add_toast(&msg, egui::Color32::from_rgb(56, 189, 248));
                 }
                 Err(e) => {
-                    self.logs.push(format!("Error loading template '{}': {}", template_name, e));
+                    self.logs
+                        .push(format!("Error loading template '{}': {}", template_name, e));
                 }
             }
         }
@@ -9038,10 +10588,17 @@ let role_str = match self.net.role {
                 self.script_editor_content = content.clone();
                 self.script_editor_original_content = content;
                 self.bottom_tab = BottomTab::ScriptEditor;
-                self.add_toast(format!("Opened script '{}'", path), egui::Color32::from_rgb(56, 189, 248));
+                self.add_toast(
+                    format!("Opened script '{}'", path),
+                    egui::Color32::from_rgb(56, 189, 248),
+                );
             } else {
-                self.logs.push(format!("Could not read script file '{}'", path));
-                self.add_toast(format!("Failed to open script '{}'", path), egui::Color32::from_rgb(239, 68, 68));
+                self.logs
+                    .push(format!("Could not read script file '{}'", path));
+                self.add_toast(
+                    format!("Failed to open script '{}'", path),
+                    egui::Color32::from_rgb(239, 68, 68),
+                );
             }
         }
 
@@ -9053,13 +10610,20 @@ let role_str = match self.net.role {
                         let msg = format!("Script '{}' saved and hot-reloaded", path);
                         self.logs.push(msg.clone());
                         self.hot_reload.last_reload_status = Some(msg);
-                        self.add_toast("Script saved & hot-reloaded", egui::Color32::from_rgb(34, 197, 94));
+                        self.add_toast(
+                            "Script saved & hot-reloaded",
+                            egui::Color32::from_rgb(34, 197, 94),
+                        );
                         // Trigger reload on all entities using this script only if in Play mode
                         if self.play_mode == PlayMode::Play || self.is_standalone_play {
-                            for (meta, script) in self.world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
+                            for (meta, script) in self
+                                .world
+                                .query_mut::<(&EntityMeta, &mut ScriptComponent)>()
+                            {
                                 if script.path == path {
                                     let _ = script.init_or_reload(self.lua_ctx.clone());
-                                    self.logs.push(format!("Reloaded script for entity '{}'", meta.id));
+                                    self.logs
+                                        .push(format!("Reloaded script for entity '{}'", meta.id));
                                 }
                             }
                         }
@@ -9085,10 +10649,12 @@ let role_str = match self.net.role {
             if self.viewport_rect.is_positive() {
                 let scale = self.window.scale_factor() as f32;
                 let c = self.viewport_rect.center();
-                let _ = self.window.set_cursor_position(winit::dpi::PhysicalPosition::new(
-                    (c.x * scale) as f64,
-                    (c.y * scale) as f64,
-                ));
+                let _ = self
+                    .window
+                    .set_cursor_position(winit::dpi::PhysicalPosition::new(
+                        (c.x * scale) as f64,
+                        (c.y * scale) as f64,
+                    ));
             }
         }
 
@@ -9102,9 +10668,12 @@ let role_str = match self.net.role {
         let mut textures_delta = full_output.textures_delta;
         for (id, deltas) in &textures_delta.set {
             for delta in deltas {
-                self.gpu
-                    .egui_renderer
-                    .update_texture(&self.gpu.device, &self.gpu.queue, *id, delta);
+                self.gpu.egui_renderer.update_texture(
+                    &self.gpu.device,
+                    &self.gpu.queue,
+                    *id,
+                    delta,
+                );
             }
         }
 
@@ -9123,10 +10692,17 @@ let role_str = match self.net.role {
 
         self.ui_time_ms = frame_ui_start.elapsed().as_secs_f32() * 1000.0;
         let frame_render_start = Instant::now();
+        self.frame_metrics
+            .begin(profiling::FrameStage::RenderSubmit);
+        self.gpu.instance_pool.begin_frame();
 
         // Update Post-Processing Uniform Buffer
         let pp_uniform = renderer::PostProcessUniform {
-            bloom_enabled: if self.post_process_settings.bloom_enabled { 1 } else { 0 },
+            bloom_enabled: if self.post_process_settings.bloom_enabled {
+                1
+            } else {
+                0
+            },
             bloom_intensity: self.post_process_settings.bloom_intensity,
             bloom_threshold: self.post_process_settings.bloom_threshold,
             vignette_intensity: self.post_process_settings.vignette_intensity,
@@ -9146,7 +10722,12 @@ let role_str = match self.net.role {
         );
 
         // 0. Directional Shadow Pass (Depth Only, 2048x2048)
-        self.gpu.update_shadow_camera(self.camera.target, self.active_sun_dir, self.active_sun_color, self.active_sun_intensity);
+        self.gpu.update_shadow_camera(
+            self.camera.target,
+            self.active_sun_dir,
+            self.active_sun_color,
+            self.active_sun_intensity,
+        );
         {
             let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Shadow Pass"),
@@ -9168,25 +10749,23 @@ let role_str = match self.net.role {
             shadow_pass.set_bind_group(0, &self.gpu.shadow_camera_bind_group, &[]);
 
             for ((mesh_id, mat_key, blend_mode), instances) in &instances_by_batch {
-                if blend_mode == "additive" || blend_mode == "translucent" || blend_mode == "transparent" || instances.is_empty() {
+                if blend_mode == "additive"
+                    || blend_mode == "translucent"
+                    || blend_mode == "transparent"
+                    || instances.is_empty()
+                {
                     continue;
                 }
                 if let Some(mesh_gpu) = self.gpu.meshes.get(mesh_id) {
                     let mat_bind = self.gpu.get_material(mat_key);
                     shadow_pass.set_bind_group(1, mat_bind, &[]);
 
-                    let instance_buffer = create_instance_buffer(&self.gpu.device, instances);
+                    let instance_buffer = self.gpu.pooled_instance_buffer(instances);
                     shadow_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
                     shadow_pass.set_vertex_buffer(1, instance_buffer.slice(..));
-                    shadow_pass.set_index_buffer(
-                        mesh_gpu.index_buffer.slice(..),
-                        mesh_gpu.index_format,
-                    );
-                    shadow_pass.draw_indexed(
-                        0..mesh_gpu.num_indices,
-                        0,
-                        0..instances.len() as u32,
-                    );
+                    shadow_pass
+                        .set_index_buffer(mesh_gpu.index_buffer.slice(..), mesh_gpu.index_format);
+                    shadow_pass.draw_indexed(0..mesh_gpu.num_indices, 0, 0..instances.len() as u32);
                 }
             }
         }
@@ -9199,7 +10778,10 @@ let role_str = match self.net.role {
                 if target.enabled {
                     let entity = entity_ref.entity();
                     let (pos, rot) = if let Some((_, p)) = world_transforms.get(&entity) {
-                        let r = entity_ref.get::<&Transform>().map(|t| t.rotation).unwrap_or(Vec3::ZERO);
+                        let r = entity_ref
+                            .get::<&Transform>()
+                            .map(|t| t.rotation)
+                            .unwrap_or(Vec3::ZERO);
                         (*p, r)
                     } else if let Some(t) = entity_ref.get::<&Transform>() {
                         (t.position, t.rotation)
@@ -9225,14 +10807,26 @@ let role_str = match self.net.role {
         self.last_rtt_passes = scheduled_rtt.len();
 
         for task in &scheduled_rtt {
-            let _ = self.gpu.ensure_rtt_target(&task.target_id, task.width, task.height);
+            let _ = self
+                .gpu
+                .ensure_rtt_target(&task.target_id, task.width, task.height);
             if let Some(entry) = self.gpu.rtt_registry.get(&task.target_id) {
-                let rot_mat = glam::Mat4::from_euler(glam::EulerRot::YXZ, task.rotation.y, task.rotation.x, task.rotation.z);
-                let forward = (rot_mat * glam::Vec4::new(0.0, 0.0, -1.0, 0.0)).truncate().normalize();
-                let up = (rot_mat * glam::Vec4::new(0.0, 1.0, 0.0, 0.0)).truncate().normalize();
+                let rot_mat = glam::Mat4::from_euler(
+                    glam::EulerRot::YXZ,
+                    task.rotation.y,
+                    task.rotation.x,
+                    task.rotation.z,
+                );
+                let forward = (rot_mat * glam::Vec4::new(0.0, 0.0, -1.0, 0.0))
+                    .truncate()
+                    .normalize();
+                let up = (rot_mat * glam::Vec4::new(0.0, 1.0, 0.0, 0.0))
+                    .truncate()
+                    .normalize();
 
                 let aspect = entry.desc.aspect();
-                let mut rtt_cam = crate::camera::Camera::new_3d(task.position, task.position + forward, aspect);
+                let mut rtt_cam =
+                    crate::camera::Camera::new_3d(task.position, task.position + forward, aspect);
                 rtt_cam.up = up;
                 rtt_cam.fovy = task.fov.to_radians();
 
@@ -9245,7 +10839,11 @@ let role_str = match self.net.role {
                     self.environment_settings.horizon_color,
                     self.environment_settings.fog_color,
                     self.environment_settings.fog_density,
-                    &self.environment_settings.fog_mode.clone().unwrap_or_else(|| "exponential".to_string()),
+                    &self
+                        .environment_settings
+                        .fog_mode
+                        .clone()
+                        .unwrap_or_else(|| "exponential".to_string()),
                     self.environment_settings.fog_start.unwrap_or(0.0),
                     self.environment_settings.fog_end.unwrap_or(100.0),
                     self.active_sun_dir.to_array(),
@@ -9324,7 +10922,11 @@ let role_str = match self.net.role {
 
         // 1.5. View-Model Pass (First-Person Hand/Weapon with Anti-Clipping Depth Clear)
         let active_vm = if is_playing {
-            self.lua_ctx.active_viewmodel.read().ok().and_then(|vm| vm.clone())
+            self.lua_ctx
+                .active_viewmodel
+                .read()
+                .ok()
+                .and_then(|vm| vm.clone())
         } else {
             None
         };
@@ -9346,18 +10948,33 @@ let role_str = match self.net.role {
                 let final_offset = glam::Vec3::from(vm.offset) + action_offset;
 
                 let cam_forward = (self.camera.target - self.camera.eye).normalize_or_zero();
-                let cam_fwd = if cam_forward.length_squared() > 0.001 { cam_forward } else { -glam::Vec3::Z };
+                let cam_fwd = if cam_forward.length_squared() > 0.001 {
+                    cam_forward
+                } else {
+                    -glam::Vec3::Z
+                };
                 let cam_right = cam_fwd.cross(glam::Vec3::Y).normalize_or_zero();
-                let cam_r = if cam_right.length_squared() > 0.001 { cam_right } else { glam::Vec3::X };
+                let cam_r = if cam_right.length_squared() > 0.001 {
+                    cam_right
+                } else {
+                    glam::Vec3::X
+                };
                 let cam_up = cam_r.cross(cam_fwd).normalize_or_zero();
 
                 let cam_mat = glam::Mat3::from_cols(cam_r, cam_up, -cam_fwd);
                 let cam_rot = glam::Quat::from_mat3(&cam_mat);
 
-                let vm_world_pos = self.camera.eye + cam_r * final_offset.x + cam_up * final_offset.y + cam_fwd * final_offset.z;
+                let vm_world_pos = self.camera.eye
+                    + cam_r * final_offset.x
+                    + cam_up * final_offset.y
+                    + cam_fwd * final_offset.z;
                 let vm_world_rot = cam_rot * action_rot;
                 let vm_scale = glam::Vec3::from(vm.scale);
-                let model_mat = glam::Mat4::from_scale_rotation_translation(vm_scale, vm_world_rot, vm_world_pos);
+                let model_mat = glam::Mat4::from_scale_rotation_translation(
+                    vm_scale,
+                    vm_world_rot,
+                    vm_world_pos,
+                );
 
                 let vm_instance = renderer::InstanceRaw {
                     model: model_mat.to_cols_array_2d(),
@@ -9368,7 +10985,7 @@ let role_str = match self.net.role {
                     fresnel: [0.0, 0.0, 0.0, 0.0],
                     pbr_params: [0.0, 0.5, 1.0, 1.0],
                 };
-                let vm_inst_buf = renderer::create_instance_buffer(&self.gpu.device, &[vm_instance]);
+                let vm_inst_buf = self.gpu.pooled_instance_buffer(&[vm_instance]);
 
                 let mut vm_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("View-Model Pass (Anti-Clipping)"),
@@ -9462,7 +11079,13 @@ let role_str = match self.net.role {
         textures_delta.clear();
 
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
+        self.gpu.instance_pool.end_frame();
         self.render_time_ms = frame_render_start.elapsed().as_secs_f32() * 1000.0;
+        self.frame_metrics.end(profiling::FrameStage::RenderSubmit);
+        self.frame_metrics.record(
+            profiling::FrameStage::Frame,
+            frame_sim_start.elapsed().as_secs_f32() * 1000.0,
+        );
 
         // 3. Handle pending viewport capture if requested by MCP
         if let Some(respond_to) = self.pending_viewport_capture.take() {
@@ -9491,6 +11114,7 @@ pub struct App {
     fullscreen: bool,
     enable_mcp: bool,
     mcp_token: Option<String>,
+    mcp_port: u16,
 }
 
 impl App {
@@ -9502,6 +11126,7 @@ impl App {
         fullscreen: bool,
         enable_mcp: bool,
         mcp_token: Option<String>,
+        mcp_port: u16,
     ) -> Self {
         Self {
             state: None,
@@ -9512,6 +11137,7 @@ impl App {
             fullscreen,
             enable_mcp,
             mcp_token,
+            mcp_port,
         }
     }
 }
@@ -9551,6 +11177,7 @@ impl ApplicationHandler for App {
                 self.target_scene.clone(),
                 self.enable_mcp,
                 self.mcp_token.clone(),
+                self.mcp_port,
             ));
             window.set_visible(true);
             window.set_minimized(false);
@@ -9637,7 +11264,10 @@ pub fn resolve_workspace_root() -> std::path::PathBuf {
 }
 
 pub fn run_headless_server(port: u16) {
-    println!("[Motor-dif] Starting headless dedicated server on 0.0.0.0:{}...", port);
+    println!(
+        "[Motor-dif] Starting headless dedicated server on 0.0.0.0:{}...",
+        port
+    );
     let mut net = match net::NetworkManager::host(port) {
         Ok(n) => n,
         Err(e) => {
@@ -9645,7 +11275,10 @@ pub fn run_headless_server(port: u16) {
             return;
         }
     };
-    println!("[Motor-dif Dedicated Server] Listening on UDP port {}. Simulation active at 60 Hz.", port);
+    println!(
+        "[Motor-dif Dedicated Server] Listening on UDP port {}. Simulation active at 60 Hz.",
+        port
+    );
     println!("[Motor-dif Dedicated Server] Ready for connections. Press Ctrl+C to terminate.");
 
     let tick_duration = std::time::Duration::from_millis(16);
@@ -9668,7 +11301,10 @@ pub fn run_headless_server(port: u16) {
                     println!("[Motor-dif Server] Client #{} connected.", client_id);
                 }
                 renet::ServerEvent::ClientDisconnected { client_id, reason } => {
-                    println!("[Motor-dif Server] Client #{} disconnected: {:?}", client_id, reason);
+                    println!(
+                        "[Motor-dif Server] Client #{} disconnected: {:?}",
+                        client_id, reason
+                    );
                 }
             }
         }
@@ -9682,7 +11318,10 @@ pub fn run_headless_server(port: u16) {
 
         ticks_run += 1;
         if is_test_run && ticks_run >= 30 {
-            println!("[Motor-dif Server] Test exit triggered after {} ticks.", ticks_run);
+            println!(
+                "[Motor-dif Server] Test exit triggered after {} ticks.",
+                ticks_run
+            );
             break;
         }
 
@@ -9702,6 +11341,10 @@ fn main() {
     let mut fullscreen = false;
     let mut enable_mcp = false;
     let mut mcp_token = std::env::var("MOTOR_MCP_TOKEN").ok();
+    let mut mcp_port = std::env::var("MOTOR_MCP_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(3030);
 
     if args.iter().any(|a| a == "--mcp") {
         enable_mcp = true;
@@ -9726,13 +11369,31 @@ fn main() {
         } else if args[i] == "--fullscreen" {
             fullscreen = true;
         } else if args[i] == "--export" {
-            let name = if i + 1 < args.len() { &args[i + 1] } else { "MyGame" };
-            let scene = if i + 2 < args.len() { &args[i + 2] } else { "assets/scene.json" };
-            let out = if i + 3 < args.len() { Some(args[i + 3].as_str()) } else { Some("dist") };
+            let name = if i + 1 < args.len() {
+                &args[i + 1]
+            } else {
+                "MyGame"
+            };
+            let scene = if i + 2 < args.len() {
+                &args[i + 2]
+            } else {
+                "assets/scene.json"
+            };
+            let out = if i + 3 < args.len() {
+                Some(args[i + 3].as_str())
+            } else {
+                Some("dist")
+            };
             match exporter::export_game(name, scene, out, fullscreen) {
                 Ok(res) => {
-                    println!("Standalone game exported successfully to: {:?}", res.output_dir);
-                    println!("Total size: {}, assets harvested: {}", res.total_mb, res.asset_count);
+                    println!(
+                        "Standalone game exported successfully to: {:?}",
+                        res.output_dir
+                    );
+                    println!(
+                        "Total size: {}, assets harvested: {}",
+                        res.total_mb, res.asset_count
+                    );
                     return;
                 }
                 Err(e) => {
@@ -9748,6 +11409,13 @@ fn main() {
         } else if args[i] == "--scene" {
             if i + 1 < args.len() {
                 target_scene = args[i + 1].clone();
+                i += 1;
+            }
+        } else if args[i] == "--mcp-port" {
+            if i + 1 < args.len() {
+                if let Ok(p) = args[i + 1].parse::<u16>() {
+                    mcp_port = p;
+                }
                 i += 1;
             }
         } else if args[i] == "--server" {
@@ -9769,7 +11437,10 @@ fn main() {
             }
         } else if args[i] == "--connect" {
             if i + 1 < args.len() {
-                println!("[Motor-dif] Client auto-connecting to server: {}", args[i + 1]);
+                println!(
+                    "[Motor-dif] Client auto-connecting to server: {}",
+                    args[i + 1]
+                );
                 i += 1;
             }
         } else if args[i].ends_with(".json") {
@@ -9789,8 +11460,11 @@ fn main() {
         fullscreen,
         enable_mcp,
         mcp_token,
+        mcp_port,
     );
-    event_loop.run_app(&mut app).expect("Error running event loop");
+    event_loop
+        .run_app(&mut app)
+        .expect("Error running event loop");
 }
 
 #[cfg(test)]
@@ -9899,9 +11573,15 @@ mod tests {
             let mut script_count = 0;
             for (_meta, script) in world.query::<(&EntityMeta, &ScriptComponent)>().iter() {
                 script_count += 1;
-                assert!(script.lua.is_none(), "Script must NOT be initialized in Editor mode!");
+                assert!(
+                    script.lua.is_none(),
+                    "Script must NOT be initialized in Editor mode!"
+                );
             }
-            assert!(script_count > 0, "Showcase scene must have at least one script component");
+            assert!(
+                script_count > 0,
+                "Showcase scene must have at least one script component"
+            );
 
             // 2. When entering Play mode, scripts are initialized
             let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
@@ -9911,13 +11591,19 @@ mod tests {
             for (_meta, script) in world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
                 let res = script.init_or_reload(lua_ctx.clone());
                 assert!(res.is_ok());
-                assert!(script.lua.is_some(), "Script must be initialized after Play mode starts!");
+                assert!(
+                    script.lua.is_some(),
+                    "Script must be initialized after Play mode starts!"
+                );
             }
 
             // 3. When exiting Play mode back to Edit, script.lua is cleared
             for (_meta, script) in world.query_mut::<(&EntityMeta, &mut ScriptComponent)>() {
                 script.lua = None;
-                assert!(script.lua.is_none(), "Script must be reset to None on Stop!");
+                assert!(
+                    script.lua.is_none(),
+                    "Script must be reset to None on Stop!"
+                );
             }
         }
     }
@@ -9925,20 +11611,27 @@ mod tests {
     #[test]
     fn test_resolve_workspace_root() {
         let root = resolve_workspace_root();
-        assert!(root.join("assets").is_dir(), "Resolved root must have assets directory");
+        assert!(
+            root.join("assets").is_dir(),
+            "Resolved root must have assets directory"
+        );
     }
 
     #[test]
     fn test_sync_active_terrain_from_scene() {
         let scene_path = Path::new("assets/showcase_v18_terrain.json");
         if scene_path.exists() {
-            let scene = assets::load_scene_from_file(scene_path).expect("Failed to load showcase_v18_terrain.json");
+            let scene = assets::load_scene_from_file(scene_path)
+                .expect("Failed to load showcase_v18_terrain.json");
             let active_terrain = Arc::new(RwLock::new(None));
 
             crate::level_forge::sync_active_terrain_from_scene(&scene, &active_terrain);
 
             let guard = active_terrain.read().unwrap();
-            assert!(guard.is_some(), "Expected active terrain to be populated from showcase_v18_terrain.json");
+            assert!(
+                guard.is_some(),
+                "Expected active terrain to be populated from showcase_v18_terrain.json"
+            );
 
             let hm = guard.as_ref().unwrap();
             assert!(hm.width > 0.0);
@@ -9949,18 +11642,20 @@ mod tests {
             assert!(!center_h.is_nan(), "Height at center must not be NaN");
 
             // Verify sidecar was created if not previously present
-            let hm_path = crate::level_forge::heightmap_path_for_glb("assets/models/terrain_demo.glb");
-            assert!(Path::new(&hm_path).exists(), "Companion .heightmap.json must exist after sync");
+            let hm_path =
+                crate::level_forge::heightmap_path_for_glb("assets/models/terrain_demo.glb");
+            assert!(
+                Path::new(&hm_path).exists(),
+                "Companion .heightmap.json must exist after sync"
+            );
         }
     }
 
     #[test]
     fn test_viewport_mouse_clipping_and_collider_auto_hide() {
         // 1. Viewport bounds calculation
-        let viewport_rect = egui::Rect::from_min_max(
-            egui::pos2(240.0, 48.0),
-            egui::pos2(1000.0, 700.0),
-        );
+        let viewport_rect =
+            egui::Rect::from_min_max(egui::pos2(240.0, 48.0), egui::pos2(1000.0, 700.0));
 
         // Inside 3D Viewport
         let pt_inside = egui::pos2(500.0, 350.0);
@@ -9983,7 +11678,11 @@ mod tests {
         assert!(!viewport_rect.contains(pt_console));
 
         // 2. Mouse delta & buttons masking simulation for Play mode
-        let test_masking = |is_play_mode: bool, in_viewport: bool, raw_down: [bool; 3], raw_jp: [bool; 3], raw_delta: [f32; 2]| {
+        let test_masking = |is_play_mode: bool,
+                            in_viewport: bool,
+                            raw_down: [bool; 3],
+                            raw_jp: [bool; 3],
+                            raw_delta: [f32; 2]| {
             let (buttons_down, buttons_just_pressed) = if is_play_mode && !in_viewport {
                 ([false; 3], [false; 3])
             } else {
@@ -9998,16 +11697,40 @@ mod tests {
         };
 
         // In Play mode, cursor inside viewport -> receives mouse events
-        let (down, jp, delta) = test_masking(true, true, [true, false, false], [true, false, false], [5.0, -3.0]);
+        let (down, jp, delta) = test_masking(
+            true,
+            true,
+            [true, false, false],
+            [true, false, false],
+            [5.0, -3.0],
+        );
         assert_eq!(down, [true, false, false]);
         assert_eq!(jp, [true, false, false]);
         assert_eq!(delta, [5.0, -3.0]);
 
         // In Play mode, cursor outside viewport (over Stop button or console) -> masked to 0
-        let (down_out, jp_out, delta_out) = test_masking(true, false, [true, false, false], [true, false, false], [5.0, -3.0]);
-        assert_eq!(down_out, [false, false, false], "Buttons must be masked when outside viewport in play mode");
-        assert_eq!(jp_out, [false, false, false], "Just pressed must be masked when outside viewport in play mode");
-        assert_eq!(delta_out, [0.0, 0.0], "Mouse delta must be zeroed when outside viewport in play mode");
+        let (down_out, jp_out, delta_out) = test_masking(
+            true,
+            false,
+            [true, false, false],
+            [true, false, false],
+            [5.0, -3.0],
+        );
+        assert_eq!(
+            down_out,
+            [false, false, false],
+            "Buttons must be masked when outside viewport in play mode"
+        );
+        assert_eq!(
+            jp_out,
+            [false, false, false],
+            "Just pressed must be masked when outside viewport in play mode"
+        );
+        assert_eq!(
+            delta_out,
+            [0.0, 0.0],
+            "Mouse delta must be zeroed when outside viewport in play mode"
+        );
 
         // 3. Collider wireframe visibility logic
         let debug_colliders = true;
@@ -10015,10 +11738,16 @@ mod tests {
         let is_playing_edit = false;
 
         let render_in_play = !is_playing_play && debug_colliders;
-        assert!(!render_in_play, "Colliders must be hidden when is_playing is true");
+        assert!(
+            !render_in_play,
+            "Colliders must be hidden when is_playing is true"
+        );
 
         let render_in_edit = !is_playing_edit && debug_colliders;
-        assert!(render_in_edit, "Colliders must be visible when returning to edit mode");
+        assert!(
+            render_in_edit,
+            "Colliders must be visible when returning to edit mode"
+        );
     }
 
     #[test]
@@ -10029,20 +11758,31 @@ mod tests {
         let ctx = scripting::LuaEngineContext::new(pressed_keys, audio);
 
         assert!(!ctx.pointer_locked.load(std::sync::atomic::Ordering::SeqCst));
-        assert_eq!(ctx.pointer_lock_command.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            ctx.pointer_lock_command
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
 
         // Command lock from Lua
-        ctx.pointer_lock_command.store(1, std::sync::atomic::Ordering::SeqCst);
-        let cmd = ctx.pointer_lock_command.swap(0, std::sync::atomic::Ordering::SeqCst);
+        ctx.pointer_lock_command
+            .store(1, std::sync::atomic::Ordering::SeqCst);
+        let cmd = ctx
+            .pointer_lock_command
+            .swap(0, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(cmd, 1);
 
         // Simulating locked state
-        ctx.pointer_locked.store(true, std::sync::atomic::Ordering::SeqCst);
+        ctx.pointer_locked
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(ctx.pointer_locked.load(std::sync::atomic::Ordering::SeqCst));
 
         // Command unlock from Lua
-        ctx.pointer_lock_command.store(-1, std::sync::atomic::Ordering::SeqCst);
-        let cmd_unlock = ctx.pointer_lock_command.swap(0, std::sync::atomic::Ordering::SeqCst);
+        ctx.pointer_lock_command
+            .store(-1, std::sync::atomic::Ordering::SeqCst);
+        let cmd_unlock = ctx
+            .pointer_lock_command
+            .swap(0, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(cmd_unlock, -1);
     }
 
@@ -10065,7 +11805,10 @@ mod tests {
         voxel_forge::sync_active_voxel_world_from_scene(&scene, &active_world);
         let guard = active_world.read().unwrap();
         assert!(guard.is_some());
-        assert_eq!(guard.as_ref().unwrap().get_block(1, 2, 3), voxel_forge::BlockId::Planks);
+        assert_eq!(
+            guard.as_ref().unwrap().get_block(1, 2, 3),
+            voxel_forge::BlockId::Planks
+        );
 
         let _ = std::fs::remove_file(temp_voxels);
     }
@@ -10095,8 +11838,10 @@ mod tests {
                         let half_pi = std::f32::consts::PI;
                         let curve = (p * half_pi).sin();
                         let angle = curve * 0.95 * intensity;
-                        rot = glam::Quat::from_rotation_x(-angle) * glam::Quat::from_rotation_y(-angle * 0.45);
-                        offset = glam::Vec3::new(-0.06 * curve, -0.12 * curve, 0.08 * curve) * intensity;
+                        rot = glam::Quat::from_rotation_x(-angle)
+                            * glam::Quat::from_rotation_y(-angle * 0.45);
+                        offset =
+                            glam::Vec3::new(-0.06 * curve, -0.12 * curve, 0.08 * curve) * intensity;
                     }
                     "recoil" => {
                         let recoil_curve = (1.0 - p) * (1.0 - p) * (p * 4.0).min(1.0) * intensity;
@@ -10105,7 +11850,8 @@ mod tests {
                     }
                     "bob" => {
                         let bob_x = (p * std::f32::consts::TAU).cos() * 0.02 * intensity;
-                        let bob_y = (p * std::f32::consts::TAU * 2.0).sin().abs() * 0.018 * intensity;
+                        let bob_y =
+                            (p * std::f32::consts::TAU * 2.0).sin().abs() * 0.018 * intensity;
                         offset = glam::Vec3::new(bob_x, -bob_y, 0.0);
                     }
                     _ => {}
@@ -10174,7 +11920,9 @@ mod tests {
             procedural_rig: None,
             vfx_emitter: None,
             camera_target: None,
-            material_override_rtt: None, network_id: None, network_sync: None,
+            material_override_rtt: None,
+            network_id: None,
+            network_sync: None,
         });
 
         // 1. Initial push of s1

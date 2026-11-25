@@ -1,9 +1,9 @@
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use egui;
 use glam::{camera::rh, Vec3};
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
@@ -357,7 +357,8 @@ impl RenderTargetRegistry {
             ..Default::default()
         });
 
-        let depth_texture = DepthTexture::create_depth_texture(device, w, h, &format!("{}_rtt_depth", id));
+        let depth_texture =
+            DepthTexture::create_depth_texture(device, w, h, &format!("{}_rtt_depth", id));
 
         let material_bind_group = create_material_bind_group(
             device,
@@ -424,7 +425,11 @@ impl RenderTargetRegistry {
         self.entries.get_mut(id)
     }
 
-    pub fn remove(&mut self, id: &str, mut egui_renderer: Option<&mut egui_wgpu::Renderer>) -> bool {
+    pub fn remove(
+        &mut self,
+        id: &str,
+        mut egui_renderer: Option<&mut egui_wgpu::Renderer>,
+    ) -> bool {
         self.descriptors.remove(id);
         if let Some(entry) = self.entries.remove(id) {
             if let Some(tid) = entry.egui_texture_id {
@@ -486,7 +491,11 @@ impl RttScheduler {
     }
 
     /// Filters and schedules up to `max_rtt_per_frame` cameras due for rendering.
-    pub fn schedule<'a>(&mut self, current_time: f64, candidates: &'a [RttCameraTask]) -> Vec<&'a RttCameraTask> {
+    pub fn schedule<'a>(
+        &mut self,
+        current_time: f64,
+        candidates: &'a [RttCameraTask],
+    ) -> Vec<&'a RttCameraTask> {
         if candidates.is_empty() {
             return Vec::new();
         }
@@ -502,7 +511,11 @@ impl RttScheduler {
                 } else {
                     0.0
                 };
-                let last = self.last_render_times.get(&task.target_id).copied().unwrap_or(-9999.0);
+                let last = self
+                    .last_render_times
+                    .get(&task.target_id)
+                    .copied()
+                    .unwrap_or(-9999.0);
                 (current_time - last) >= interval
             })
             .collect();
@@ -525,7 +538,8 @@ impl RttScheduler {
         };
 
         for task in &selected {
-            self.last_render_times.insert(task.target_id.clone(), current_time);
+            self.last_render_times
+                .insert(task.target_id.clone(), current_time);
         }
 
         selected
@@ -621,7 +635,11 @@ impl GpuTextureRaw {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        Self { texture, view, sampler }
+        Self {
+            texture,
+            view,
+            sampler,
+        }
     }
 }
 
@@ -689,7 +707,12 @@ pub fn generate_mipmaps_rgba(rgba: &[u8], width: u32, height: u32) -> Vec<(u32, 
         let next_w = (cur_w / 2).max(1);
         let next_h = (cur_h / 2).max(1);
         if let Some(src_img) = image::RgbaImage::from_raw(cur_w, cur_h, cur_buf) {
-            let resized = image::imageops::resize(&src_img, next_w, next_h, image::imageops::FilterType::Triangle);
+            let resized = image::imageops::resize(
+                &src_img,
+                next_w,
+                next_h,
+                image::imageops::FilterType::Triangle,
+            );
             cur_buf = resized.into_raw();
         } else {
             cur_buf = vec![255u8; (next_w * next_h * 4) as usize];
@@ -716,11 +739,19 @@ impl TextureGpu {
         bytes: &[u8],
         label: &str,
     ) -> Result<Self, String> {
-        let dummy_normal = GpuTextureRaw::create_1x1(device, queue, [128, 128, 255, 255], "temp_normal");
+        let dummy_normal =
+            GpuTextureRaw::create_1x1(device, queue, [128, 128, 255, 255], "temp_normal");
         let dummy_mr = GpuTextureRaw::create_1x1(device, queue, [255, 128, 0, 255], "temp_mr");
         let dummy_black = GpuTextureRaw::create_1x1(device, queue, [0, 0, 0, 255], "temp_black");
         Self::from_bytes_pbr(
-            device, queue, layout, bytes, &dummy_normal.view, &dummy_mr.view, &dummy_black.view, label,
+            device,
+            queue,
+            layout,
+            bytes,
+            &dummy_normal.view,
+            &dummy_mr.view,
+            &dummy_black.view,
+            label,
         )
     }
 
@@ -735,7 +766,15 @@ impl TextureGpu {
         label: &str,
     ) -> Result<Self, String> {
         Self::from_bytes_pbr_fmt(
-            device, queue, layout, bytes, normal_view, mr_view, emissive_view, label, true,
+            device,
+            queue,
+            layout,
+            bytes,
+            normal_view,
+            mr_view,
+            emissive_view,
+            label,
+            true,
         )
     }
 
@@ -750,11 +789,22 @@ impl TextureGpu {
         label: &str,
         srgb: bool,
     ) -> Result<Self, String> {
-        let img = image::load_from_memory(bytes).map_err(|e| format!("Image decode error: {}", e))?;
+        let img =
+            image::load_from_memory(bytes).map_err(|e| format!("Image decode error: {}", e))?;
         let rgba = img.to_rgba8();
         let (width, height) = rgba.dimensions();
         Self::from_rgba_pbr_fmt(
-            device, queue, layout, &rgba, width, height, normal_view, mr_view, emissive_view, label, srgb,
+            device,
+            queue,
+            layout,
+            &rgba,
+            width,
+            height,
+            normal_view,
+            mr_view,
+            emissive_view,
+            label,
+            srgb,
         )
     }
 
@@ -767,11 +817,21 @@ impl TextureGpu {
         height: u32,
         label: &str,
     ) -> Result<Self, String> {
-        let dummy_normal = GpuTextureRaw::create_1x1(device, queue, [128, 128, 255, 255], "temp_normal");
+        let dummy_normal =
+            GpuTextureRaw::create_1x1(device, queue, [128, 128, 255, 255], "temp_normal");
         let dummy_mr = GpuTextureRaw::create_1x1(device, queue, [255, 128, 0, 255], "temp_mr");
         let dummy_black = GpuTextureRaw::create_1x1(device, queue, [0, 0, 0, 255], "temp_black");
         Self::from_rgba_pbr(
-            device, queue, layout, rgba, width, height, &dummy_normal.view, &dummy_mr.view, &dummy_black.view, label,
+            device,
+            queue,
+            layout,
+            rgba,
+            width,
+            height,
+            &dummy_normal.view,
+            &dummy_mr.view,
+            &dummy_black.view,
+            label,
         )
     }
 
@@ -788,7 +848,17 @@ impl TextureGpu {
         label: &str,
     ) -> Result<Self, String> {
         Self::from_rgba_pbr_fmt(
-            device, queue, layout, rgba, width, height, normal_view, mr_view, emissive_view, label, true,
+            device,
+            queue,
+            layout,
+            rgba,
+            width,
+            height,
+            normal_view,
+            mr_view,
+            emissive_view,
+            label,
+            true,
         )
     }
 
@@ -807,7 +877,10 @@ impl TextureGpu {
     ) -> Result<Self, String> {
         let w = width.max(1);
         let h = height.max(1);
-        let is_nearest = label.contains("voxel") || label.contains("pixel") || label.contains("atlas") || label.ends_with("_nearest");
+        let is_nearest = label.contains("voxel")
+            || label.contains("pixel")
+            || label.contains("atlas")
+            || label.ends_with("_nearest");
         let mips = if is_nearest {
             vec![(w, h, rgba.to_vec())]
         } else {
@@ -909,8 +982,18 @@ impl TextureGpu {
     ) -> Self {
         let white_pixel = [255u8, 255u8, 255u8, 255u8];
         Self::from_rgba_pbr(
-            device, queue, layout, &white_pixel, 1, 1, normal_view, mr_view, emissive_view, "default_white_1x1",
-        ).expect("Failed to create default 1x1 white texture")
+            device,
+            queue,
+            layout,
+            &white_pixel,
+            1,
+            1,
+            normal_view,
+            mr_view,
+            emissive_view,
+            "default_white_1x1",
+        )
+        .expect("Failed to create default 1x1 white texture")
     }
 }
 
@@ -924,11 +1007,87 @@ pub struct GltfMaterialTextures {
     pub roughness: f32,
 }
 
+/// Reuses instance vertex buffers across frames instead of allocating one
+/// buffer per batch per frame. Buffers written during a frame are only made
+/// available again after that frame's queue submission has been issued.
+#[derive(Default)]
+pub struct InstanceBufferPool {
+    free: Mutex<HashMap<usize, Vec<wgpu::Buffer>>>,
+    used: Mutex<HashMap<usize, Vec<wgpu::Buffer>>>,
+    retired: Mutex<HashMap<usize, Vec<wgpu::Buffer>>>,
+}
+
+impl InstanceBufferPool {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Recycle buffers submitted in the previous frame.
+    pub fn begin_frame(&self) {
+        let mut free = self.free.lock().unwrap();
+        let mut retired = self.retired.lock().unwrap();
+        for (size, buffers) in retired.drain() {
+            free.entry(size).or_default().extend(buffers);
+        }
+    }
+
+    /// Retire this frame's buffers after `queue.submit`.
+    pub fn end_frame(&self) {
+        let mut used = self.used.lock().unwrap();
+        let mut retired = self.retired.lock().unwrap();
+        for (size, buffers) in used.drain() {
+            retired.entry(size).or_default().extend(buffers);
+        }
+    }
+
+    pub fn write(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        instances: &[InstanceRaw],
+    ) -> wgpu::Buffer {
+        let size = instances.len() * std::mem::size_of::<InstanceRaw>();
+        let bytes = bytemuck::cast_slice(instances);
+        let reused = self
+            .free
+            .lock()
+            .unwrap()
+            .get_mut(&size)
+            .and_then(|buffers| buffers.pop());
+
+        let buffer = match reused {
+            Some(buffer) => {
+                queue.write_buffer(&buffer, 0, bytes);
+                buffer
+            }
+            None => {
+                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Pooled Instance Buffer"),
+                    size: size.max(4) as wgpu::BufferAddress,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                queue.write_buffer(&buffer, 0, bytes);
+                buffer
+            }
+        };
+
+        self.used
+            .lock()
+            .unwrap()
+            .entry(size)
+            .or_default()
+            .push(buffer.clone());
+        buffer
+    }
+}
+
 pub struct GpuContext {
     pub instance: wgpu::Instance,
     pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    pub instance_pool: InstanceBufferPool,
     pub config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
     pub depth_texture: DepthTexture,
@@ -1532,7 +1691,11 @@ fn fs_line(in: LineVertexOutput) -> @location(0) vec4<f32> {
 
 pub const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-pub fn create_hdr_texture(device: &wgpu::Device, width: u32, height: u32) -> (wgpu::Texture, wgpu::TextureView) {
+pub fn create_hdr_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("HDR Render Target"),
         size: wgpu::Extent3d {
@@ -1829,7 +1992,12 @@ fn fs_sky(in: SkyVertexOutput) -> @location(0) vec4<f32> {
 "#;
 
 impl PostProcessPipeline {
-    pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat, width: u32, height: u32) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> Self {
         let (hdr_texture, hdr_view) = create_hdr_texture(device, width, height);
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -2036,8 +2204,12 @@ impl GpuContext {
         };
         surface.configure(&device, &config);
 
-        let depth_texture =
-            DepthTexture::create_depth_texture(&device, config.width, config.height, "depth_texture");
+        let depth_texture = DepthTexture::create_depth_texture(
+            &device,
+            config.width,
+            config.height,
+            "depth_texture",
+        );
 
         // Shader
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -2131,10 +2303,14 @@ impl GpuContext {
                 ],
             });
 
-        let dummy_normal = GpuTextureRaw::create_1x1(&device, &queue, [128, 128, 255, 255], "dummy_normal_1x1");
-        let dummy_mr = GpuTextureRaw::create_1x1(&device, &queue, [255, 128, 0, 255], "dummy_mr_1x1");
-        let dummy_black = GpuTextureRaw::create_1x1(&device, &queue, [0, 0, 0, 255], "dummy_black_1x1");
-        let dummy_white = GpuTextureRaw::create_1x1(&device, &queue, [255, 255, 255, 255], "dummy_white_1x1");
+        let dummy_normal =
+            GpuTextureRaw::create_1x1(&device, &queue, [128, 128, 255, 255], "dummy_normal_1x1");
+        let dummy_mr =
+            GpuTextureRaw::create_1x1(&device, &queue, [255, 128, 0, 255], "dummy_mr_1x1");
+        let dummy_black =
+            GpuTextureRaw::create_1x1(&device, &queue, [0, 0, 0, 255], "dummy_black_1x1");
+        let dummy_white =
+            GpuTextureRaw::create_1x1(&device, &queue, [255, 255, 255, 255], "dummy_white_1x1");
 
         let default_white_texture = TextureGpu::create_white_1x1(
             &device,
@@ -2183,7 +2359,8 @@ impl GpuContext {
         });
 
         // Shadow Mapping Resources
-        let shadow_texture = DepthTexture::create_depth_texture(&device, 2048, 2048, "shadow_depth_texture");
+        let shadow_texture =
+            DepthTexture::create_depth_texture(&device, 2048, 2048, "shadow_depth_texture");
 
         let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("shadow_sampler"),
@@ -2289,14 +2466,15 @@ impl GpuContext {
             source: wgpu::ShaderSource::Wgsl(SHADOW_SHADER_SOURCE.into()),
         });
 
-        let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Shadow Pipeline Layout"),
-            bind_group_layouts: &[
-                Some(&shadow_camera_bind_group_layout),
-                Some(&texture_bind_group_layout),
-            ],
-            immediate_size: 0,
-        });
+        let shadow_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Shadow Pipeline Layout"),
+                bind_group_layouts: &[
+                    Some(&shadow_camera_bind_group_layout),
+                    Some(&texture_bind_group_layout),
+                ],
+                immediate_size: 0,
+            });
 
         let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Shadow Render Pipeline"),
@@ -2395,104 +2573,106 @@ impl GpuContext {
             cache: None,
         });
 
-        let translucent_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("3D Translucent Render Pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Some(Vertex::desc()), Some(InstanceRaw::desc())],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_translucent"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: HDR_FORMAT,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DepthTexture::DEPTH_FORMAT,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview_mask: None,
-            cache: None,
-        });
+        let translucent_render_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("3D Translucent Render Pipeline"),
+                layout: Some(&render_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[Some(Vertex::desc()), Some(InstanceRaw::desc())],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_translucent"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: HDR_FORMAT,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    unclipped_depth: false,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DepthTexture::DEPTH_FORMAT,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: 1,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview_mask: None,
+                cache: None,
+            });
 
-        let additive_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("3D Additive Render Pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Some(Vertex::desc()), Some(InstanceRaw::desc())],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: HDR_FORMAT,
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::SrcAlpha,
-                            dst_factor: wgpu::BlendFactor::One,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::Zero,
-                            dst_factor: wgpu::BlendFactor::One,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DepthTexture::DEPTH_FORMAT,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview_mask: None,
-            cache: None,
-        });
+        let additive_render_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("3D Additive Render Pipeline"),
+                layout: Some(&render_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[Some(Vertex::desc()), Some(InstanceRaw::desc())],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: HDR_FORMAT,
+                        blend: Some(wgpu::BlendState {
+                            color: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::SrcAlpha,
+                                dst_factor: wgpu::BlendFactor::One,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                            alpha: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::Zero,
+                                dst_factor: wgpu::BlendFactor::One,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                        }),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    unclipped_depth: false,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DepthTexture::DEPTH_FORMAT,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: 1,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview_mask: None,
+                cache: None,
+            });
 
         // Line pipeline for Grid, Wireframes and Debug Colliders
         let line_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -2500,12 +2680,11 @@ impl GpuContext {
             source: wgpu::ShaderSource::Wgsl(LINE_SHADER_SOURCE.into()),
         });
 
-        let line_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Line Pipeline Layout"),
-                bind_group_layouts: &[Some(&camera_bind_group_layout)],
-                immediate_size: 0,
-            });
+        let line_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Line Pipeline Layout"),
+            bind_group_layouts: &[Some(&camera_bind_group_layout)],
+            immediate_size: 0,
+        });
 
         let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Line Render Pipeline"),
@@ -2557,11 +2736,12 @@ impl GpuContext {
             source: wgpu::ShaderSource::Wgsl(SKYBOX_SHADER_SOURCE.into()),
         });
 
-        let skybox_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Skybox Pipeline Layout"),
-            bind_group_layouts: &[Some(&camera_bind_group_layout)],
-            immediate_size: 0,
-        });
+        let skybox_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Skybox Pipeline Layout"),
+                bind_group_layouts: &[Some(&camera_bind_group_layout)],
+                immediate_size: 0,
+            });
 
         let skybox_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Skybox Render Pipeline"),
@@ -2612,14 +2792,29 @@ impl GpuContext {
         meshes.insert("sphere".to_string(), create_sphere_mesh(&device, 16, 24));
         meshes.insert("cylinder".to_string(), create_cylinder_mesh(&device, 24));
         meshes.insert("plane".to_string(), create_plane_mesh(&device));
-        meshes.insert("torus".to_string(), create_torus_mesh(&device, 0.8, 0.25, 20, 32));
+        meshes.insert(
+            "torus".to_string(),
+            create_torus_mesh(&device, 0.8, 0.25, 20, 32),
+        );
         meshes.insert("ring".to_string(), create_ring_mesh(&device, 0.5, 1.0, 32));
         meshes.insert("cone".to_string(), create_cone_mesh(&device, 0.8, 1.6, 24));
-        meshes.insert("icosphere".to_string(), create_icosphere_mesh(&device, 1.0, 2));
-        meshes.insert("basalt_pillar".to_string(), create_basalt_pillar_mesh(&device));
+        meshes.insert(
+            "icosphere".to_string(),
+            create_icosphere_mesh(&device, 1.0, 2),
+        );
+        meshes.insert(
+            "basalt_pillar".to_string(),
+            create_basalt_pillar_mesh(&device),
+        );
         meshes.insert("jagged_rock".to_string(), create_jagged_rock_mesh(&device));
-        meshes.insert("crystal_cluster".to_string(), create_crystal_cluster_mesh(&device));
-        meshes.insert("sci_fi_crate".to_string(), create_sci_fi_crate_mesh(&device));
+        meshes.insert(
+            "crystal_cluster".to_string(),
+            create_crystal_cluster_mesh(&device),
+        );
+        meshes.insert(
+            "sci_fi_crate".to_string(),
+            create_sci_fi_crate_mesh(&device),
+        );
         meshes.insert("sword".to_string(), create_sword_mesh(&device));
         meshes.insert("pickaxe".to_string(), create_pickaxe_mesh(&device));
 
@@ -2640,13 +2835,15 @@ impl GpuContext {
             egui_wgpu::RendererOptions::default(),
         );
 
-        let post_process = PostProcessPipeline::new(&device, config.format, config.width, config.height);
+        let post_process =
+            PostProcessPipeline::new(&device, config.format, config.width, config.height);
 
         Self {
             instance,
             surface,
             device,
             queue,
+            instance_pool: InstanceBufferPool::new(),
             config,
             size,
             depth_texture,
@@ -2688,7 +2885,13 @@ impl GpuContext {
         }
     }
 
-    pub fn update_shadow_camera(&self, camera_target: Vec3, light_dir: Vec3, light_color: Vec3, light_intensity: f32) {
+    pub fn update_shadow_camera(
+        &self,
+        camera_target: Vec3,
+        light_dir: Vec3,
+        light_color: Vec3,
+        light_intensity: f32,
+    ) {
         let norm_light_dir = if light_dir.length_squared() > 0.001 {
             light_dir.normalize()
         } else {
@@ -2705,7 +2908,8 @@ impl GpuContext {
             light_dir: [norm_light_dir.x, norm_light_dir.y, norm_light_dir.z, 0.0],
             light_color: [light_color.x, light_color.y, light_color.z, light_intensity],
         };
-        self.queue.write_buffer(&self.shadow_buffer, 0, bytemuck::cast_slice(&[uniform]));
+        self.queue
+            .write_buffer(&self.shadow_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
 
     pub fn get_or_load_texture(&mut self, path: &str) -> &TextureGpu {
@@ -2731,20 +2935,30 @@ impl GpuContext {
                             self.texture_cache.insert(path.to_string(), tex);
                         }
                         Err(e) => {
-                            eprintln!("[Renderer] Error decoding texture '{}': {}. Falling back to default.", path, e);
+                            eprintln!(
+                                "[Renderer] Error decoding texture '{}': {}. Falling back to default.",
+                                path, e
+                            );
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("[Renderer] Warning: Could not read texture '{}': {}. Falling back to default.", path, e);
+                    eprintln!(
+                        "[Renderer] Warning: Could not read texture '{}': {}. Falling back to default.",
+                        path, e
+                    );
                 }
             }
         }
-        self.texture_cache.get(path).unwrap_or(&self.default_white_texture)
+        self.texture_cache
+            .get(path)
+            .unwrap_or(&self.default_white_texture)
     }
 
     pub fn get_texture(&self, path: &str) -> &TextureGpu {
-        self.texture_cache.get(path).unwrap_or(&self.default_white_texture)
+        self.texture_cache
+            .get(path)
+            .unwrap_or(&self.default_white_texture)
     }
 
     pub fn invalidate_model(&mut self, path: &str) -> bool {
@@ -2776,7 +2990,8 @@ impl GpuContext {
             self.meshes.remove(key);
             self.gltf_materials.remove(key);
             let glb_prefix = format!("glb::{}::img_", key.replace('\\', "/").to_lowercase());
-            self.texture_cache.retain(|tk, _| !tk.to_lowercase().starts_with(&glb_prefix));
+            self.texture_cache
+                .retain(|tk, _| !tk.to_lowercase().starts_with(&glb_prefix));
         }
         self.material_cache.clear();
         true
@@ -2857,7 +3072,12 @@ impl GpuContext {
         if let Some(diffuse) = &key.diffuse {
             if let Some(rtt_id) = diffuse.strip_prefix("__rtt:") {
                 if self.rtt_registry.entries.contains_key(rtt_id) {
-                    return &self.rtt_registry.entries.get(rtt_id).unwrap().material_bind_group;
+                    return &self
+                        .rtt_registry
+                        .entries
+                        .get(rtt_id)
+                        .unwrap()
+                        .material_bind_group;
                 } else {
                     return &self.default_white_texture.bind_group;
                 }
@@ -2931,7 +3151,12 @@ impl GpuContext {
         if let Some(diffuse) = &key.diffuse {
             if let Some(rtt_id) = diffuse.strip_prefix("__rtt:") {
                 if self.rtt_registry.entries.contains_key(rtt_id) {
-                    return &self.rtt_registry.entries.get(rtt_id).unwrap().material_bind_group;
+                    return &self
+                        .rtt_registry
+                        .entries
+                        .get(rtt_id)
+                        .unwrap()
+                        .material_bind_group;
                 } else {
                     return &self.default_white_texture.bind_group;
                 }
@@ -2945,7 +3170,9 @@ impl GpuContext {
                 return &self.default_white_texture.bind_group;
             }
         }
-        self.material_cache.get(key).unwrap_or(&self.default_white_texture.bind_group)
+        self.material_cache
+            .get(key)
+            .unwrap_or(&self.default_white_texture.bind_group)
     }
 
     pub fn ensure_mesh(&mut self, mesh_id: &str) {
@@ -2954,83 +3181,119 @@ impl GpuContext {
         }
         match mesh_id {
             "cube" => {
-                self.meshes.insert("cube".to_string(), create_cube_mesh(&self.device));
+                self.meshes
+                    .insert("cube".to_string(), create_cube_mesh(&self.device));
             }
             "quad" => {
-                self.meshes.insert("quad".to_string(), create_quad_mesh(&self.device));
+                self.meshes
+                    .insert("quad".to_string(), create_quad_mesh(&self.device));
             }
             "sphere" => {
-                self.meshes.insert("sphere".to_string(), create_sphere_mesh(&self.device, 16, 24));
+                self.meshes.insert(
+                    "sphere".to_string(),
+                    create_sphere_mesh(&self.device, 16, 24),
+                );
             }
             "cylinder" => {
-                self.meshes.insert("cylinder".to_string(), create_cylinder_mesh(&self.device, 24));
+                self.meshes.insert(
+                    "cylinder".to_string(),
+                    create_cylinder_mesh(&self.device, 24),
+                );
             }
             "plane" => {
-                self.meshes.insert("plane".to_string(), create_plane_mesh(&self.device));
+                self.meshes
+                    .insert("plane".to_string(), create_plane_mesh(&self.device));
             }
             "torus" => {
-                self.meshes.insert("torus".to_string(), create_torus_mesh(&self.device, 0.8, 0.25, 20, 32));
+                self.meshes.insert(
+                    "torus".to_string(),
+                    create_torus_mesh(&self.device, 0.8, 0.25, 20, 32),
+                );
             }
             "ring" => {
-                self.meshes.insert("ring".to_string(), create_ring_mesh(&self.device, 0.5, 1.0, 32));
+                self.meshes.insert(
+                    "ring".to_string(),
+                    create_ring_mesh(&self.device, 0.5, 1.0, 32),
+                );
             }
             "cone" => {
-                self.meshes.insert("cone".to_string(), create_cone_mesh(&self.device, 0.8, 1.6, 24));
+                self.meshes.insert(
+                    "cone".to_string(),
+                    create_cone_mesh(&self.device, 0.8, 1.6, 24),
+                );
             }
             "icosphere" => {
-                self.meshes.insert("icosphere".to_string(), create_icosphere_mesh(&self.device, 1.0, 2));
+                self.meshes.insert(
+                    "icosphere".to_string(),
+                    create_icosphere_mesh(&self.device, 1.0, 2),
+                );
             }
             "basalt_pillar" => {
-                self.meshes.insert("basalt_pillar".to_string(), create_basalt_pillar_mesh(&self.device));
+                self.meshes.insert(
+                    "basalt_pillar".to_string(),
+                    create_basalt_pillar_mesh(&self.device),
+                );
             }
             "jagged_rock" => {
-                self.meshes.insert("jagged_rock".to_string(), create_jagged_rock_mesh(&self.device));
+                self.meshes.insert(
+                    "jagged_rock".to_string(),
+                    create_jagged_rock_mesh(&self.device),
+                );
             }
             "crystal_cluster" => {
-                self.meshes.insert("crystal_cluster".to_string(), create_crystal_cluster_mesh(&self.device));
+                self.meshes.insert(
+                    "crystal_cluster".to_string(),
+                    create_crystal_cluster_mesh(&self.device),
+                );
             }
             "sci_fi_crate" => {
-                self.meshes.insert("sci_fi_crate".to_string(), create_sci_fi_crate_mesh(&self.device));
+                self.meshes.insert(
+                    "sci_fi_crate".to_string(),
+                    create_sci_fi_crate_mesh(&self.device),
+                );
             }
             "sword" => {
-                self.meshes.insert("sword".to_string(), create_sword_mesh(&self.device));
+                self.meshes
+                    .insert("sword".to_string(), create_sword_mesh(&self.device));
             }
             "pickaxe" => {
-                self.meshes.insert("pickaxe".to_string(), create_pickaxe_mesh(&self.device));
+                self.meshes
+                    .insert("pickaxe".to_string(), create_pickaxe_mesh(&self.device));
             }
-            _ => {
-                match load_gltf_mesh_with_textures(mesh_id, &self.device) {
-                    Ok((mesh, embedded_images, gltf_mat)) => {
-                        for (key, width, height, rgba) in embedded_images {
-                            if !self.texture_cache.contains_key(&key) {
-                                if let Ok(tex) = TextureGpu::from_rgba_pbr(
-                                    &self.device,
-                                    &self.queue,
-                                    &self.texture_bind_group_layout,
-                                    &rgba,
-                                    width,
-                                    height,
-                                    &self.dummy_normal.view,
-                                    &self.dummy_mr.view,
-                                    &self.dummy_black.view,
-                                    &key,
-                                ) {
-                                    self.texture_cache.insert(key, tex);
-                                }
+            _ => match load_gltf_mesh_with_textures(mesh_id, &self.device) {
+                Ok((mesh, embedded_images, gltf_mat)) => {
+                    for (key, width, height, rgba) in embedded_images {
+                        if !self.texture_cache.contains_key(&key) {
+                            if let Ok(tex) = TextureGpu::from_rgba_pbr(
+                                &self.device,
+                                &self.queue,
+                                &self.texture_bind_group_layout,
+                                &rgba,
+                                width,
+                                height,
+                                &self.dummy_normal.view,
+                                &self.dummy_mr.view,
+                                &self.dummy_black.view,
+                                &key,
+                            ) {
+                                self.texture_cache.insert(key, tex);
                             }
                         }
-                        if let Some(mat) = gltf_mat {
-                            self.gltf_materials.insert(mesh_id.to_string(), mat);
-                        }
-                        self.meshes.insert(mesh_id.to_string(), mesh);
                     }
-                    Err(e) => {
-                        eprintln!("glTF mesh load error for '{}': {}. Falling back to cube.", mesh_id, e);
-                        let fallback = create_cube_mesh(&self.device);
-                        self.meshes.insert(mesh_id.to_string(), fallback);
+                    if let Some(mat) = gltf_mat {
+                        self.gltf_materials.insert(mesh_id.to_string(), mat);
                     }
+                    self.meshes.insert(mesh_id.to_string(), mesh);
                 }
-            }
+                Err(e) => {
+                    eprintln!(
+                        "glTF mesh load error for '{}': {}. Falling back to cube.",
+                        mesh_id, e
+                    );
+                    let fallback = create_cube_mesh(&self.device);
+                    self.meshes.insert(mesh_id.to_string(), fallback);
+                }
+            },
         }
     }
 
@@ -3043,16 +3306,20 @@ impl GpuContext {
                 color: mesh.colors.get(i).copied().unwrap_or([1.0, 1.0, 1.0, 1.0]),
             })
             .collect();
-        let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("Forge Mesh Vertex Buffer: {}", mesh_id)),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("Forge Mesh Index Buffer: {}", mesh_id)),
-            contents: bytemuck::cast_slice(&mesh.indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let vertex_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("Forge Mesh Vertex Buffer: {}", mesh_id)),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let index_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("Forge Mesh Index Buffer: {}", mesh_id)),
+                contents: bytemuck::cast_slice(&mesh.indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
         self.meshes.insert(
             mesh_id.to_string(),
             MeshGpu {
@@ -3081,16 +3348,20 @@ impl GpuContext {
                 color: colors.get(i).copied().unwrap_or([1.0, 1.0, 1.0, 1.0]),
             })
             .collect();
-        let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("Skinned Vertex Buffer: {}", mesh_id)),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("Skinned Index Buffer: {}", mesh_id)),
-            contents: bytemuck::cast_slice(indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let vertex_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("Skinned Vertex Buffer: {}", mesh_id)),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let index_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("Skinned Index Buffer: {}", mesh_id)),
+                contents: bytemuck::cast_slice(indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
         self.meshes.insert(
             mesh_id.to_string(),
             MeshGpu {
@@ -3114,7 +3385,8 @@ impl GpuContext {
                 new_size.height,
                 "depth_texture",
             );
-            self.post_process.resize(&self.device, new_size.width, new_size.height);
+            self.post_process
+                .resize(&self.device, new_size.width, new_size.height);
         }
     }
 
@@ -3125,11 +3397,8 @@ impl GpuContext {
     pub fn update_camera_with_time(&mut self, camera: &Camera, time: f32) {
         let mut uniform = CameraUniform::new();
         uniform.update_with_time(camera, time);
-        self.queue.write_buffer(
-            &self.camera_buffer,
-            0,
-            bytemuck::cast_slice(&[uniform]),
-        );
+        self.queue
+            .write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
 
     pub fn update_camera_with_environment(
@@ -3198,26 +3467,23 @@ impl GpuContext {
             sun_intensity,
             stars_visibility,
         );
-        self.queue.write_buffer(
-            &self.camera_buffer,
-            0,
-            bytemuck::cast_slice(&[uniform]),
-        );
+        self.queue
+            .write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
 
     pub fn update_lights(&self, lights: &LightsUniform) {
-        self.queue.write_buffer(
-            &self.lights_buffer,
-            0,
-            bytemuck::cast_slice(&[*lights]),
-        );
+        self.queue
+            .write_buffer(&self.lights_buffer, 0, bytemuck::cast_slice(&[*lights]));
     }
 
-    pub fn render_scene_pass(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        params: &ScenePassParams,
-    ) {
+    /// Acquire a vertex buffer for this frame's instance data.
+    /// The buffer is recycled only after the frame has been submitted.
+    pub fn pooled_instance_buffer(&self, instances: &[InstanceRaw]) -> wgpu::Buffer {
+        self.instance_pool
+            .write(&self.device, &self.queue, instances)
+    }
+
+    pub fn render_scene_pass(&self, encoder: &mut wgpu::CommandEncoder, params: &ScenePassParams) {
         let color_load = match params.clear_color {
             Some(c) => wgpu::LoadOp::Clear(c),
             None => wgpu::LoadOp::Load,
@@ -3267,28 +3533,31 @@ impl GpuContext {
 
         let is_rtt_pass = params.label == "RTT Camera Scene Pass";
         for ((mesh_id, mat_key, blend_mode), instances) in params.instances_by_batch {
-            if blend_mode == "additive" || blend_mode == "translucent" || blend_mode == "transparent" || instances.is_empty() {
+            if blend_mode == "additive"
+                || blend_mode == "translucent"
+                || blend_mode == "transparent"
+                || instances.is_empty()
+            {
                 continue;
             }
-            if is_rtt_pass && mat_key.diffuse.as_deref().map_or(false, |d| d.starts_with("__rtt:")) {
+            if is_rtt_pass
+                && mat_key
+                    .diffuse
+                    .as_deref()
+                    .map_or(false, |d| d.starts_with("__rtt:"))
+            {
                 continue;
             }
             if let Some(mesh_gpu) = self.meshes.get(mesh_id) {
                 let mat_bind = self.get_material(mat_key);
                 render_pass.set_bind_group(1, mat_bind, &[]);
 
-                let instance_buffer = create_instance_buffer(&self.device, instances);
+                let instance_buffer = self.pooled_instance_buffer(instances);
                 render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
                 render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
-                render_pass.set_index_buffer(
-                    mesh_gpu.index_buffer.slice(..),
-                    mesh_gpu.index_format,
-                );
-                render_pass.draw_indexed(
-                    0..mesh_gpu.num_indices,
-                    0,
-                    0..instances.len() as u32,
-                );
+                render_pass
+                    .set_index_buffer(mesh_gpu.index_buffer.slice(..), mesh_gpu.index_format);
+                render_pass.draw_indexed(0..mesh_gpu.num_indices, 0, 0..instances.len() as u32);
             }
         }
 
@@ -3300,25 +3569,21 @@ impl GpuContext {
             render_pass.set_bind_group(3, &self.shadow_bind_group, &[]);
 
             for ((mesh_id, mat_key, blend_mode), instances) in params.instances_by_batch {
-                if (blend_mode != "translucent" && blend_mode != "transparent") || instances.is_empty() {
+                if (blend_mode != "translucent" && blend_mode != "transparent")
+                    || instances.is_empty()
+                {
                     continue;
                 }
                 if let Some(mesh_gpu) = self.meshes.get(mesh_id) {
                     let mat_bind = self.get_material(mat_key);
                     render_pass.set_bind_group(1, mat_bind, &[]);
 
-                    let instance_buffer = create_instance_buffer(&self.device, instances);
+                    let instance_buffer = self.pooled_instance_buffer(instances);
                     render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
                     render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
-                    render_pass.set_index_buffer(
-                        mesh_gpu.index_buffer.slice(..),
-                        mesh_gpu.index_format,
-                    );
-                    render_pass.draw_indexed(
-                        0..mesh_gpu.num_indices,
-                        0,
-                        0..instances.len() as u32,
-                    );
+                    render_pass
+                        .set_index_buffer(mesh_gpu.index_buffer.slice(..), mesh_gpu.index_format);
+                    render_pass.draw_indexed(0..mesh_gpu.num_indices, 0, 0..instances.len() as u32);
                 }
             }
         }
@@ -3338,18 +3603,12 @@ impl GpuContext {
                     let mat_bind = self.get_material(mat_key);
                     render_pass.set_bind_group(1, mat_bind, &[]);
 
-                    let instance_buffer = create_instance_buffer(&self.device, instances);
+                    let instance_buffer = self.pooled_instance_buffer(instances);
                     render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
                     render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
-                    render_pass.set_index_buffer(
-                        mesh_gpu.index_buffer.slice(..),
-                        mesh_gpu.index_format,
-                    );
-                    render_pass.draw_indexed(
-                        0..mesh_gpu.num_indices,
-                        0,
-                        0..instances.len() as u32,
-                    );
+                    render_pass
+                        .set_index_buffer(mesh_gpu.index_buffer.slice(..), mesh_gpu.index_format);
+                    render_pass.draw_indexed(0..mesh_gpu.num_indices, 0, 0..instances.len() as u32);
                 }
             }
         }
@@ -3360,7 +3619,7 @@ impl GpuContext {
                 if !particle_instances.is_empty() {
                     if let Some(mesh_gpu) = self.meshes.get("quad") {
                         render_pass.set_bind_group(1, &self.default_white_texture.bind_group, &[]);
-                        let instance_buffer = create_instance_buffer(&self.device, particle_instances);
+                        let instance_buffer = self.pooled_instance_buffer(particle_instances);
                         render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
                         render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
                         render_pass.set_index_buffer(
@@ -3381,16 +3640,20 @@ impl GpuContext {
         if params.quality.includes_debug_overlays() {
             if let Some((trail_vertices, trail_indices)) = params.trail_data {
                 if !trail_indices.is_empty() {
-                    let tv_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Dynamic Trail Vertex Buffer"),
-                        contents: bytemuck::cast_slice(trail_vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
-                    let ti_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Dynamic Trail Index Buffer"),
-                        contents: bytemuck::cast_slice(trail_indices),
-                        usage: wgpu::BufferUsages::INDEX,
-                    });
+                    let tv_buf =
+                        self.device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("Dynamic Trail Vertex Buffer"),
+                                contents: bytemuck::cast_slice(trail_vertices),
+                                usage: wgpu::BufferUsages::VERTEX,
+                            });
+                    let ti_buf =
+                        self.device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("Dynamic Trail Index Buffer"),
+                                contents: bytemuck::cast_slice(trail_indices),
+                                usage: wgpu::BufferUsages::INDEX,
+                            });
                     let id_instance = InstanceRaw {
                         model: glam::Mat4::IDENTITY.to_cols_array_2d(),
                         color: [1.0, 1.0, 1.0, 1.0],
@@ -3400,7 +3663,7 @@ impl GpuContext {
                         uv_scale: [1.0, 1.0],
                         pbr_params: [0.0, 1.0, 1.0, 1.0],
                     };
-                    let inst_buf = create_instance_buffer(&self.device, &[id_instance]);
+                    let inst_buf = self.pooled_instance_buffer(&[id_instance]);
                     render_pass.set_pipeline(&self.additive_render_pipeline);
                     render_pass.set_bind_group(0, params.camera_bind_group, &[]);
                     render_pass.set_bind_group(1, &self.default_white_texture.bind_group, &[]);
@@ -3415,11 +3678,13 @@ impl GpuContext {
 
             if let Some(debug_line_vertices) = params.debug_line_vertices {
                 if !debug_line_vertices.is_empty() {
-                    let line_vbuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Debug Lines Vertex Buffer"),
-                        contents: bytemuck::cast_slice(debug_line_vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
+                    let line_vbuf =
+                        self.device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("Debug Lines Vertex Buffer"),
+                                contents: bytemuck::cast_slice(debug_line_vertices),
+                                usage: wgpu::BufferUsages::VERTEX,
+                            });
                     render_pass.set_pipeline(&self.line_pipeline);
                     render_pass.set_bind_group(0, params.camera_bind_group, &[]);
                     render_pass.set_vertex_buffer(0, line_vbuf.slice(..));
@@ -3435,11 +3700,7 @@ impl GpuContext {
                     self.grid_mesh.index_buffer.slice(..),
                     self.grid_mesh.index_format,
                 );
-                render_pass.draw_indexed(
-                    0..self.grid_mesh.num_indices,
-                    0,
-                    0..1,
-                );
+                render_pass.draw_indexed(0..self.grid_mesh.num_indices, 0, 0..1);
             }
         }
     }
@@ -3449,41 +3710,161 @@ pub fn create_cube_mesh(device: &wgpu::Device) -> MeshGpu {
     let white = [1.0, 1.0, 1.0, 1.0];
     let vertices = [
         // Front face (+Z)
-        Vertex { position: [-0.5, -0.5,  0.5], normal: [ 0.0,  0.0,  1.0], uv: [0.0, 1.0], color: white },
-        Vertex { position: [ 0.5, -0.5,  0.5], normal: [ 0.0,  0.0,  1.0], uv: [1.0, 1.0], color: white },
-        Vertex { position: [ 0.5,  0.5,  0.5], normal: [ 0.0,  0.0,  1.0], uv: [1.0, 0.0], color: white },
-        Vertex { position: [-0.5,  0.5,  0.5], normal: [ 0.0,  0.0,  1.0], uv: [0.0, 0.0], color: white },
+        Vertex {
+            position: [-0.5, -0.5, 0.5],
+            normal: [0.0, 0.0, 1.0],
+            uv: [0.0, 1.0],
+            color: white,
+        },
+        Vertex {
+            position: [0.5, -0.5, 0.5],
+            normal: [0.0, 0.0, 1.0],
+            uv: [1.0, 1.0],
+            color: white,
+        },
+        Vertex {
+            position: [0.5, 0.5, 0.5],
+            normal: [0.0, 0.0, 1.0],
+            uv: [1.0, 0.0],
+            color: white,
+        },
+        Vertex {
+            position: [-0.5, 0.5, 0.5],
+            normal: [0.0, 0.0, 1.0],
+            uv: [0.0, 0.0],
+            color: white,
+        },
         // Back face (-Z)
-        Vertex { position: [ 0.5, -0.5, -0.5], normal: [ 0.0,  0.0, -1.0], uv: [0.0, 1.0], color: white },
-        Vertex { position: [-0.5, -0.5, -0.5], normal: [ 0.0,  0.0, -1.0], uv: [1.0, 1.0], color: white },
-        Vertex { position: [-0.5,  0.5, -0.5], normal: [ 0.0,  0.0, -1.0], uv: [1.0, 0.0], color: white },
-        Vertex { position: [ 0.5,  0.5, -0.5], normal: [ 0.0,  0.0, -1.0], uv: [0.0, 0.0], color: white },
+        Vertex {
+            position: [0.5, -0.5, -0.5],
+            normal: [0.0, 0.0, -1.0],
+            uv: [0.0, 1.0],
+            color: white,
+        },
+        Vertex {
+            position: [-0.5, -0.5, -0.5],
+            normal: [0.0, 0.0, -1.0],
+            uv: [1.0, 1.0],
+            color: white,
+        },
+        Vertex {
+            position: [-0.5, 0.5, -0.5],
+            normal: [0.0, 0.0, -1.0],
+            uv: [1.0, 0.0],
+            color: white,
+        },
+        Vertex {
+            position: [0.5, 0.5, -0.5],
+            normal: [0.0, 0.0, -1.0],
+            uv: [0.0, 0.0],
+            color: white,
+        },
         // Top face (+Y)
-        Vertex { position: [-0.5,  0.5,  0.5], normal: [ 0.0,  1.0,  0.0], uv: [0.0, 1.0], color: white },
-        Vertex { position: [ 0.5,  0.5,  0.5], normal: [ 0.0,  1.0,  0.0], uv: [1.0, 1.0], color: white },
-        Vertex { position: [ 0.5,  0.5, -0.5], normal: [ 0.0,  1.0,  0.0], uv: [1.0, 0.0], color: white },
-        Vertex { position: [-0.5,  0.5, -0.5], normal: [ 0.0,  1.0,  0.0], uv: [0.0, 0.0], color: white },
+        Vertex {
+            position: [-0.5, 0.5, 0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 1.0],
+            color: white,
+        },
+        Vertex {
+            position: [0.5, 0.5, 0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [1.0, 1.0],
+            color: white,
+        },
+        Vertex {
+            position: [0.5, 0.5, -0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [1.0, 0.0],
+            color: white,
+        },
+        Vertex {
+            position: [-0.5, 0.5, -0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+            color: white,
+        },
         // Bottom face (-Y)
-        Vertex { position: [-0.5, -0.5, -0.5], normal: [ 0.0, -1.0,  0.0], uv: [0.0, 1.0], color: white },
-        Vertex { position: [ 0.5, -0.5, -0.5], normal: [ 0.0, -1.0,  0.0], uv: [1.0, 1.0], color: white },
-        Vertex { position: [ 0.5, -0.5,  0.5], normal: [ 0.0, -1.0,  0.0], uv: [1.0, 0.0], color: white },
-        Vertex { position: [-0.5, -0.5,  0.5], normal: [ 0.0, -1.0,  0.0], uv: [0.0, 0.0], color: white },
+        Vertex {
+            position: [-0.5, -0.5, -0.5],
+            normal: [0.0, -1.0, 0.0],
+            uv: [0.0, 1.0],
+            color: white,
+        },
+        Vertex {
+            position: [0.5, -0.5, -0.5],
+            normal: [0.0, -1.0, 0.0],
+            uv: [1.0, 1.0],
+            color: white,
+        },
+        Vertex {
+            position: [0.5, -0.5, 0.5],
+            normal: [0.0, -1.0, 0.0],
+            uv: [1.0, 0.0],
+            color: white,
+        },
+        Vertex {
+            position: [-0.5, -0.5, 0.5],
+            normal: [0.0, -1.0, 0.0],
+            uv: [0.0, 0.0],
+            color: white,
+        },
         // Right face (+X)
-        Vertex { position: [ 0.5, -0.5,  0.5], normal: [ 1.0,  0.0,  0.0], uv: [0.0, 1.0], color: white },
-        Vertex { position: [ 0.5, -0.5, -0.5], normal: [ 1.0,  0.0,  0.0], uv: [1.0, 1.0], color: white },
-        Vertex { position: [ 0.5,  0.5, -0.5], normal: [ 1.0,  0.0,  0.0], uv: [1.0, 0.0], color: white },
-        Vertex { position: [ 0.5,  0.5,  0.5], normal: [ 1.0,  0.0,  0.0], uv: [0.0, 0.0], color: white },
+        Vertex {
+            position: [0.5, -0.5, 0.5],
+            normal: [1.0, 0.0, 0.0],
+            uv: [0.0, 1.0],
+            color: white,
+        },
+        Vertex {
+            position: [0.5, -0.5, -0.5],
+            normal: [1.0, 0.0, 0.0],
+            uv: [1.0, 1.0],
+            color: white,
+        },
+        Vertex {
+            position: [0.5, 0.5, -0.5],
+            normal: [1.0, 0.0, 0.0],
+            uv: [1.0, 0.0],
+            color: white,
+        },
+        Vertex {
+            position: [0.5, 0.5, 0.5],
+            normal: [1.0, 0.0, 0.0],
+            uv: [0.0, 0.0],
+            color: white,
+        },
         // Left face (-X)
-        Vertex { position: [-0.5, -0.5, -0.5], normal: [-1.0,  0.0,  0.0], uv: [0.0, 1.0], color: white },
-        Vertex { position: [-0.5, -0.5,  0.5], normal: [-1.0,  0.0,  0.0], uv: [1.0, 1.0], color: white },
-        Vertex { position: [-0.5,  0.5,  0.5], normal: [-1.0,  0.0,  0.0], uv: [1.0, 0.0], color: white },
-        Vertex { position: [-0.5,  0.5, -0.5], normal: [-1.0,  0.0,  0.0], uv: [0.0, 0.0], color: white },
+        Vertex {
+            position: [-0.5, -0.5, -0.5],
+            normal: [-1.0, 0.0, 0.0],
+            uv: [0.0, 1.0],
+            color: white,
+        },
+        Vertex {
+            position: [-0.5, -0.5, 0.5],
+            normal: [-1.0, 0.0, 0.0],
+            uv: [1.0, 1.0],
+            color: white,
+        },
+        Vertex {
+            position: [-0.5, 0.5, 0.5],
+            normal: [-1.0, 0.0, 0.0],
+            uv: [1.0, 0.0],
+            color: white,
+        },
+        Vertex {
+            position: [-0.5, 0.5, -0.5],
+            normal: [-1.0, 0.0, 0.0],
+            uv: [0.0, 0.0],
+            color: white,
+        },
     ];
 
     let indices: [u16; 36] = [
-         0,  1,  2,  0,  2,  3, // Front
-         4,  5,  6,  4,  6,  7, // Back
-         8,  9, 10,  8, 10, 11, // Top
+        0, 1, 2, 0, 2, 3, // Front
+        4, 5, 6, 4, 6, 7, // Back
+        8, 9, 10, 8, 10, 11, // Top
         12, 13, 14, 12, 14, 15, // Bottom
         16, 17, 18, 16, 18, 19, // Right
         20, 21, 22, 20, 22, 23, // Left
@@ -3512,10 +3893,30 @@ pub fn create_cube_mesh(device: &wgpu::Device) -> MeshGpu {
 pub fn create_quad_mesh(device: &wgpu::Device) -> MeshGpu {
     let white = [1.0, 1.0, 1.0, 1.0];
     let vertices = [
-        Vertex { position: [-0.5, -0.5, 0.0], normal: [0.0, 0.0, 1.0], uv: [0.0, 1.0], color: white },
-        Vertex { position: [ 0.5, -0.5, 0.0], normal: [0.0, 0.0, 1.0], uv: [1.0, 1.0], color: white },
-        Vertex { position: [ 0.5,  0.5, 0.0], normal: [0.0, 0.0, 1.0], uv: [1.0, 0.0], color: white },
-        Vertex { position: [-0.5,  0.5, 0.0], normal: [0.0, 0.0, 1.0], uv: [0.0, 0.0], color: white },
+        Vertex {
+            position: [-0.5, -0.5, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            uv: [0.0, 1.0],
+            color: white,
+        },
+        Vertex {
+            position: [0.5, -0.5, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            uv: [1.0, 1.0],
+            color: white,
+        },
+        Vertex {
+            position: [0.5, 0.5, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            uv: [1.0, 0.0],
+            color: white,
+        },
+        Vertex {
+            position: [-0.5, 0.5, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            uv: [0.0, 0.0],
+            color: white,
+        },
     ];
 
     let indices: [u16; 6] = [0, 1, 2, 0, 2, 3];
@@ -3556,8 +3957,18 @@ pub fn create_grid_mesh(device: &wgpu::Device) -> MeshGpu {
     while z <= half_size + 0.001 {
         let is_center = z.abs() < 0.001;
         let color = if is_center { x_axis_color } else { grid_color };
-        vertices.push(Vertex { position: [-half_size, 0.0, z], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color });
-        vertices.push(Vertex { position: [ half_size, 0.0, z], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color });
+        vertices.push(Vertex {
+            position: [-half_size, 0.0, z],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+            color,
+        });
+        vertices.push(Vertex {
+            position: [half_size, 0.0, z],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+            color,
+        });
         indices.push(idx);
         indices.push(idx + 1);
         idx += 2;
@@ -3568,8 +3979,18 @@ pub fn create_grid_mesh(device: &wgpu::Device) -> MeshGpu {
     while x <= half_size + 0.001 {
         let is_center = x.abs() < 0.001;
         let color = if is_center { z_axis_color } else { grid_color };
-        vertices.push(Vertex { position: [x, 0.0, -half_size], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color });
-        vertices.push(Vertex { position: [x, 0.0,  half_size], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color });
+        vertices.push(Vertex {
+            position: [x, 0.0, -half_size],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+            color,
+        });
+        vertices.push(Vertex {
+            position: [x, 0.0, half_size],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+            color,
+        });
         indices.push(idx);
         indices.push(idx + 1);
         idx += 2;
@@ -3599,14 +4020,54 @@ pub fn create_grid_mesh(device: &wgpu::Device) -> MeshGpu {
 pub fn create_wireframe_cube_mesh(device: &wgpu::Device) -> MeshGpu {
     let yellow = [1.0, 0.9, 0.2, 0.9];
     let vertices = [
-        Vertex { position: [-0.5, -0.5, -0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: yellow },
-        Vertex { position: [ 0.5, -0.5, -0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: yellow },
-        Vertex { position: [ 0.5,  0.5, -0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: yellow },
-        Vertex { position: [-0.5,  0.5, -0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: yellow },
-        Vertex { position: [-0.5, -0.5,  0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: yellow },
-        Vertex { position: [ 0.5, -0.5,  0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: yellow },
-        Vertex { position: [ 0.5,  0.5,  0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: yellow },
-        Vertex { position: [-0.5,  0.5,  0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: yellow },
+        Vertex {
+            position: [-0.5, -0.5, -0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+            color: yellow,
+        },
+        Vertex {
+            position: [0.5, -0.5, -0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+            color: yellow,
+        },
+        Vertex {
+            position: [0.5, 0.5, -0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+            color: yellow,
+        },
+        Vertex {
+            position: [-0.5, 0.5, -0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+            color: yellow,
+        },
+        Vertex {
+            position: [-0.5, -0.5, 0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+            color: yellow,
+        },
+        Vertex {
+            position: [0.5, -0.5, 0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+            color: yellow,
+        },
+        Vertex {
+            position: [0.5, 0.5, 0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+            color: yellow,
+        },
+        Vertex {
+            position: [-0.5, 0.5, 0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+            color: yellow,
+        },
     ];
 
     let indices: [u16; 24] = [
@@ -3713,9 +4174,19 @@ pub fn create_cylinder_mesh(device: &wgpu::Device, segments: u32) -> MeshGpu {
         let normal = [cos_t, 0.0, sin_t];
 
         // Bottom vertex
-        vertices.push(Vertex { position: [x, -half_h, z], normal, uv: [u, 1.0], color: white });
+        vertices.push(Vertex {
+            position: [x, -half_h, z],
+            normal,
+            uv: [u, 1.0],
+            color: white,
+        });
         // Top vertex
-        vertices.push(Vertex { position: [x,  half_h, z], normal, uv: [u, 0.0], color: white });
+        vertices.push(Vertex {
+            position: [x, half_h, z],
+            normal,
+            uv: [u, 0.0],
+            color: white,
+        });
     }
 
     for i in 0..segments {
@@ -3735,13 +4206,23 @@ pub fn create_cylinder_mesh(device: &wgpu::Device, segments: u32) -> MeshGpu {
 
     // Top cap
     let top_center_idx = vertices.len() as u16;
-    vertices.push(Vertex { position: [0.0, half_h, 0.0], normal: [0.0, 1.0, 0.0], uv: [0.5, 0.5], color: white });
+    vertices.push(Vertex {
+        position: [0.0, half_h, 0.0],
+        normal: [0.0, 1.0, 0.0],
+        uv: [0.5, 0.5],
+        color: white,
+    });
     let top_start_idx = vertices.len() as u16;
     for i in 0..=segments {
         let theta = 2.0 * std::f32::consts::PI * (i as f32 / segments as f32);
         let u = (theta.cos() + 1.0) * 0.5;
         let v = (theta.sin() + 1.0) * 0.5;
-        vertices.push(Vertex { position: [radius * theta.cos(), half_h, radius * theta.sin()], normal: [0.0, 1.0, 0.0], uv: [u, v], color: white });
+        vertices.push(Vertex {
+            position: [radius * theta.cos(), half_h, radius * theta.sin()],
+            normal: [0.0, 1.0, 0.0],
+            uv: [u, v],
+            color: white,
+        });
     }
     for i in 0..segments {
         indices.push(top_center_idx);
@@ -3751,13 +4232,23 @@ pub fn create_cylinder_mesh(device: &wgpu::Device, segments: u32) -> MeshGpu {
 
     // Bottom cap
     let bot_center_idx = vertices.len() as u16;
-    vertices.push(Vertex { position: [0.0, -half_h, 0.0], normal: [0.0, -1.0, 0.0], uv: [0.5, 0.5], color: white });
+    vertices.push(Vertex {
+        position: [0.0, -half_h, 0.0],
+        normal: [0.0, -1.0, 0.0],
+        uv: [0.5, 0.5],
+        color: white,
+    });
     let bot_start_idx = vertices.len() as u16;
     for i in 0..=segments {
         let theta = 2.0 * std::f32::consts::PI * (i as f32 / segments as f32);
         let u = (theta.cos() + 1.0) * 0.5;
         let v = (theta.sin() + 1.0) * 0.5;
-        vertices.push(Vertex { position: [radius * theta.cos(), -half_h, radius * theta.sin()], normal: [0.0, -1.0, 0.0], uv: [u, v], color: white });
+        vertices.push(Vertex {
+            position: [radius * theta.cos(), -half_h, radius * theta.sin()],
+            normal: [0.0, -1.0, 0.0],
+            uv: [u, v],
+            color: white,
+        });
     }
     for i in 0..segments {
         indices.push(bot_center_idx);
@@ -3788,10 +4279,30 @@ pub fn create_cylinder_mesh(device: &wgpu::Device, segments: u32) -> MeshGpu {
 pub fn create_plane_mesh(device: &wgpu::Device) -> MeshGpu {
     let white = [1.0, 1.0, 1.0, 1.0];
     let vertices = [
-        Vertex { position: [-0.5, 0.0, -0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], color: white },
-        Vertex { position: [ 0.5, 0.0, -0.5], normal: [0.0, 1.0, 0.0], uv: [1.0, 0.0], color: white },
-        Vertex { position: [ 0.5, 0.0,  0.5], normal: [0.0, 1.0, 0.0], uv: [1.0, 1.0], color: white },
-        Vertex { position: [-0.5, 0.0,  0.5], normal: [0.0, 1.0, 0.0], uv: [0.0, 1.0], color: white },
+        Vertex {
+            position: [-0.5, 0.0, -0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+            color: white,
+        },
+        Vertex {
+            position: [0.5, 0.0, -0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [1.0, 0.0],
+            color: white,
+        },
+        Vertex {
+            position: [0.5, 0.0, 0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [1.0, 1.0],
+            color: white,
+        },
+        Vertex {
+            position: [-0.5, 0.0, 0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 1.0],
+            color: white,
+        },
     ];
 
     let indices: [u16; 6] = [0, 2, 1, 0, 3, 2];
@@ -3816,7 +4327,13 @@ pub fn create_plane_mesh(device: &wgpu::Device) -> MeshGpu {
     }
 }
 
-pub fn create_torus_mesh(device: &wgpu::Device, major_radius: f32, minor_radius: f32, radial_segments: usize, tubular_segments: usize) -> MeshGpu {
+pub fn create_torus_mesh(
+    device: &wgpu::Device,
+    major_radius: f32,
+    minor_radius: f32,
+    radial_segments: usize,
+    tubular_segments: usize,
+) -> MeshGpu {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     let white = [1.0, 1.0, 1.0, 1.0];
@@ -3884,7 +4401,12 @@ pub fn create_torus_mesh(device: &wgpu::Device, major_radius: f32, minor_radius:
     }
 }
 
-pub fn create_ring_mesh(device: &wgpu::Device, inner_radius: f32, outer_radius: f32, segments: usize) -> MeshGpu {
+pub fn create_ring_mesh(
+    device: &wgpu::Device,
+    inner_radius: f32,
+    outer_radius: f32,
+    segments: usize,
+) -> MeshGpu {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     let white = [1.0, 1.0, 1.0, 1.0];
@@ -3944,7 +4466,12 @@ pub fn create_ring_mesh(device: &wgpu::Device, inner_radius: f32, outer_radius: 
     }
 }
 
-pub fn create_cone_mesh(device: &wgpu::Device, radius: f32, height: f32, segments: usize) -> MeshGpu {
+pub fn create_cone_mesh(
+    device: &wgpu::Device,
+    radius: f32,
+    height: f32,
+    segments: usize,
+) -> MeshGpu {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     let white = [1.0, 1.0, 1.0, 1.0];
@@ -4037,35 +4564,52 @@ pub fn create_icosphere_mesh(device: &wgpu::Device, radius: f32, subdivisions: u
     let white = [1.0, 1.0, 1.0, 1.0];
 
     let mut positions = vec![
-        [-1.0,  t,  0.0],
-        [ 1.0,  t,  0.0],
-        [-1.0, -t,  0.0],
-        [ 1.0, -t,  0.0],
-        [ 0.0, -1.0,  t],
-        [ 0.0,  1.0,  t],
-        [ 0.0, -1.0, -t],
-        [ 0.0,  1.0, -t],
-        [  t,  0.0, -1.0],
-        [  t,  0.0,  1.0],
-        [ -t,  0.0, -1.0],
-        [ -t,  0.0,  1.0],
+        [-1.0, t, 0.0],
+        [1.0, t, 0.0],
+        [-1.0, -t, 0.0],
+        [1.0, -t, 0.0],
+        [0.0, -1.0, t],
+        [0.0, 1.0, t],
+        [0.0, -1.0, -t],
+        [0.0, 1.0, -t],
+        [t, 0.0, -1.0],
+        [t, 0.0, 1.0],
+        [-t, 0.0, -1.0],
+        [-t, 0.0, 1.0],
     ];
 
     for p in &mut positions {
-        let len = (p[0]*p[0] + p[1]*p[1] + p[2]*p[2]).sqrt();
+        let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
         p[0] /= len;
         p[1] /= len;
         p[2] /= len;
     }
 
     let mut faces = vec![
-        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
-        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
-        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
-        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+        [0, 11, 5],
+        [0, 5, 1],
+        [0, 1, 7],
+        [0, 7, 10],
+        [0, 10, 11],
+        [1, 5, 9],
+        [5, 11, 4],
+        [11, 10, 2],
+        [10, 7, 6],
+        [7, 1, 8],
+        [3, 9, 4],
+        [3, 4, 2],
+        [3, 2, 6],
+        [3, 6, 8],
+        [3, 8, 9],
+        [4, 9, 5],
+        [2, 4, 11],
+        [6, 2, 10],
+        [8, 6, 7],
+        [9, 8, 1],
     ];
 
-    let mut midpoint_cache: std::collections::HashMap<(u16, u16), u16> = std::collections::HashMap::new();
+    let mut midpoint_cache: std::collections::HashMap<(u16, u16), u16> =
+        std::collections::HashMap::new();
 
     let mut get_midpoint = |p1: u16, p2: u16, positions: &mut Vec<[f32; 3]>| -> u16 {
         let key = if p1 < p2 { (p1, p2) } else { (p2, p1) };
@@ -4079,7 +4623,7 @@ pub fn create_icosphere_mesh(device: &wgpu::Device, radius: f32, subdivisions: u
             (pos1[1] + pos2[1]) * 0.5,
             (pos1[2] + pos2[2]) * 0.5,
         ];
-        let len = (mid[0]*mid[0] + mid[1]*mid[1] + mid[2]*mid[2]).sqrt();
+        let len = (mid[0] * mid[0] + mid[1] * mid[1] + mid[2] * mid[2]).sqrt();
         let normalized = [mid[0] / len, mid[1] / len, mid[2] / len];
         let new_idx = positions.len() as u16;
         positions.push(normalized);
@@ -4167,9 +4711,24 @@ fn add_flat_triangle(
     let normal = [cx / len, cy / len, cz / len];
 
     let base_idx = vertices.len() as u16;
-    vertices.push(Vertex { position: p0, normal, uv: uv0, color });
-    vertices.push(Vertex { position: p1, normal, uv: uv1, color });
-    vertices.push(Vertex { position: p2, normal, uv: uv2, color });
+    vertices.push(Vertex {
+        position: p0,
+        normal,
+        uv: uv0,
+        color,
+    });
+    vertices.push(Vertex {
+        position: p1,
+        normal,
+        uv: uv1,
+        color,
+    });
+    vertices.push(Vertex {
+        position: p2,
+        normal,
+        uv: uv2,
+        color,
+    });
     indices.push(base_idx);
     indices.push(base_idx + 1);
     indices.push(base_idx + 2);
@@ -4184,8 +4743,28 @@ fn add_flat_quad(
     p3: [f32; 3],
     color: [f32; 4],
 ) {
-    add_flat_triangle(vertices, indices, p0, p1, p2, [0.0, 0.0], [1.0, 0.0], [1.0, 1.0], color);
-    add_flat_triangle(vertices, indices, p0, p2, p3, [0.0, 0.0], [1.0, 1.0], [0.0, 1.0], color);
+    add_flat_triangle(
+        vertices,
+        indices,
+        p0,
+        p1,
+        p2,
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [1.0, 1.0],
+        color,
+    );
+    add_flat_triangle(
+        vertices,
+        indices,
+        p0,
+        p2,
+        p3,
+        [0.0, 0.0],
+        [1.0, 1.0],
+        [0.0, 1.0],
+        color,
+    );
 }
 
 pub fn create_basalt_pillar_mesh(device: &wgpu::Device) -> MeshGpu {
@@ -4210,19 +4789,47 @@ pub fn create_basalt_pillar_mesh(device: &wgpu::Device) -> MeshGpu {
 
     for i in 0..sides {
         let next = (i + 1) % sides;
-        add_flat_quad(&mut vertices, &mut indices, bot_pts[i], bot_pts[next], top_pts[next], top_pts[i], white);
+        add_flat_quad(
+            &mut vertices,
+            &mut indices,
+            bot_pts[i],
+            bot_pts[next],
+            top_pts[next],
+            top_pts[i],
+            white,
+        );
     }
 
     let apex = [0.0, cap_h, 0.0];
     for i in 0..sides {
         let next = (i + 1) % sides;
-        add_flat_triangle(&mut vertices, &mut indices, top_pts[i], top_pts[next], apex, [0.5, 0.5], [1.0, 0.5], [0.5, 1.0], white);
+        add_flat_triangle(
+            &mut vertices,
+            &mut indices,
+            top_pts[i],
+            top_pts[next],
+            apex,
+            [0.5, 0.5],
+            [1.0, 0.5],
+            [0.5, 1.0],
+            white,
+        );
     }
 
     let base_center = [0.0, 0.0, 0.0];
     for i in 0..sides {
         let next = (i + 1) % sides;
-        add_flat_triangle(&mut vertices, &mut indices, bot_pts[next], bot_pts[i], base_center, [0.5, 0.5], [1.0, 0.5], [0.5, 1.0], white);
+        add_flat_triangle(
+            &mut vertices,
+            &mut indices,
+            bot_pts[next],
+            bot_pts[i],
+            base_center,
+            [0.5, 0.5],
+            [1.0, 0.5],
+            [0.5, 1.0],
+            white,
+        );
     }
 
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -4250,9 +4857,18 @@ pub fn create_jagged_rock_mesh(device: &wgpu::Device) -> MeshGpu {
     let t = (1.0 + 5.0f32.sqrt()) / 2.0;
 
     let mut base_pts = vec![
-        [-1.0,  t,  0.0], [ 1.0,  t,  0.0], [-1.0, -t,  0.0], [ 1.0, -t,  0.0],
-        [ 0.0, -1.0,  t], [ 0.0,  1.0,  t], [ 0.0, -1.0, -t], [ 0.0,  1.0, -t],
-        [  t,  0.0, -1.0], [  t,  0.0,  1.0], [ -t,  0.0, -1.0], [ -t,  0.0,  1.0],
+        [-1.0, t, 0.0],
+        [1.0, t, 0.0],
+        [-1.0, -t, 0.0],
+        [1.0, -t, 0.0],
+        [0.0, -1.0, t],
+        [0.0, 1.0, t],
+        [0.0, -1.0, -t],
+        [0.0, 1.0, -t],
+        [t, 0.0, -1.0],
+        [t, 0.0, 1.0],
+        [-t, 0.0, -1.0],
+        [-t, 0.0, 1.0],
     ];
 
     for (i, p) in base_pts.iter_mut().enumerate() {
@@ -4264,14 +4880,40 @@ pub fn create_jagged_rock_mesh(device: &wgpu::Device) -> MeshGpu {
     }
 
     let faces: [[usize; 3]; 20] = [
-        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
-        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
-        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
-        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+        [0, 11, 5],
+        [0, 5, 1],
+        [0, 1, 7],
+        [0, 7, 10],
+        [0, 10, 11],
+        [1, 5, 9],
+        [5, 11, 4],
+        [11, 10, 2],
+        [10, 7, 6],
+        [7, 1, 8],
+        [3, 9, 4],
+        [3, 4, 2],
+        [3, 2, 6],
+        [3, 6, 8],
+        [3, 8, 9],
+        [4, 9, 5],
+        [2, 4, 11],
+        [6, 2, 10],
+        [8, 6, 7],
+        [9, 8, 1],
     ];
 
     for f in faces {
-        add_flat_triangle(&mut vertices, &mut indices, base_pts[f[0]], base_pts[f[1]], base_pts[f[2]], [0.0, 0.0], [1.0, 0.0], [0.5, 1.0], white);
+        add_flat_triangle(
+            &mut vertices,
+            &mut indices,
+            base_pts[f[0]],
+            base_pts[f[1]],
+            base_pts[f[2]],
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [0.5, 1.0],
+            white,
+        );
     }
 
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -4297,42 +4939,61 @@ pub fn create_crystal_cluster_mesh(device: &wgpu::Device) -> MeshGpu {
     let mut indices = Vec::new();
     let white = [1.0, 1.0, 1.0, 1.0];
 
-    let mut add_shard = |center: [f32; 3], tilt_axis: [f32; 3], tilt_angle_deg: f32, radius: f32, height: f32| {
-        let sides = 6;
-        let rad = tilt_angle_deg.to_radians();
-        let sin_t = rad.sin();
-        let cos_t = rad.cos();
+    let mut add_shard =
+        |center: [f32; 3], tilt_axis: [f32; 3], tilt_angle_deg: f32, radius: f32, height: f32| {
+            let sides = 6;
+            let rad = tilt_angle_deg.to_radians();
+            let sin_t = rad.sin();
+            let cos_t = rad.cos();
 
-        let rotate = |p: [f32; 3]| -> [f32; 3] {
-            let along = p[0] * tilt_axis[0] + p[2] * tilt_axis[2];
-            let perp = p[0] * (-tilt_axis[2]) + p[2] * tilt_axis[0];
-            let rotated_along = along * cos_t - p[1] * sin_t;
-            let rotated_y = along * sin_t + p[1] * cos_t;
-            [
-                rotated_along * tilt_axis[0] + perp * (-tilt_axis[2]) + center[0],
-                rotated_y + center[1],
-                rotated_along * tilt_axis[2] + perp * tilt_axis[0] + center[2],
-            ]
+            let rotate = |p: [f32; 3]| -> [f32; 3] {
+                let along = p[0] * tilt_axis[0] + p[2] * tilt_axis[2];
+                let perp = p[0] * (-tilt_axis[2]) + p[2] * tilt_axis[0];
+                let rotated_along = along * cos_t - p[1] * sin_t;
+                let rotated_y = along * sin_t + p[1] * cos_t;
+                [
+                    rotated_along * tilt_axis[0] + perp * (-tilt_axis[2]) + center[0],
+                    rotated_y + center[1],
+                    rotated_along * tilt_axis[2] + perp * tilt_axis[0] + center[2],
+                ]
+            };
+
+            let mut bot = Vec::new();
+            let mut mid = Vec::new();
+            let mid_h = height * 0.75;
+            for i in 0..sides {
+                let a = i as f32 * std::f32::consts::TAU / sides as f32;
+                let c = a.cos() * radius;
+                let s = a.sin() * radius;
+                bot.push(rotate([c, 0.0, s]));
+                mid.push(rotate([c * 0.95, mid_h, s * 0.95]));
+            }
+            let tip = rotate([0.0, height, 0.0]);
+
+            for i in 0..sides {
+                let next = (i + 1) % sides;
+                add_flat_quad(
+                    &mut vertices,
+                    &mut indices,
+                    bot[i],
+                    bot[next],
+                    mid[next],
+                    mid[i],
+                    white,
+                );
+                add_flat_triangle(
+                    &mut vertices,
+                    &mut indices,
+                    mid[i],
+                    mid[next],
+                    tip,
+                    [0.0, 0.0],
+                    [1.0, 0.0],
+                    [0.5, 1.0],
+                    white,
+                );
+            }
         };
-
-        let mut bot = Vec::new();
-        let mut mid = Vec::new();
-        let mid_h = height * 0.75;
-        for i in 0..sides {
-            let a = i as f32 * std::f32::consts::TAU / sides as f32;
-            let c = a.cos() * radius;
-            let s = a.sin() * radius;
-            bot.push(rotate([c, 0.0, s]));
-            mid.push(rotate([c * 0.95, mid_h, s * 0.95]));
-        }
-        let tip = rotate([0.0, height, 0.0]);
-
-        for i in 0..sides {
-            let next = (i + 1) % sides;
-            add_flat_quad(&mut vertices, &mut indices, bot[i], bot[next], mid[next], mid[i], white);
-            add_flat_triangle(&mut vertices, &mut indices, mid[i], mid[next], tip, [0.0, 0.0], [1.0, 0.0], [0.5, 1.0], white);
-        }
-    };
 
     add_shard([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 6.0, 0.42, 2.7);
     add_shard([-0.42, 0.0, 0.25], [-0.8, 0.0, 0.6], 26.0, 0.28, 1.8);
@@ -4375,16 +5036,48 @@ pub fn create_sci_fi_crate_mesh(device: &wgpu::Device) -> MeshGpu {
     ];
 
     for (pos, right, up) in faces {
-        let p0 = [pos[0] - right[0]*b - up[0]*b, pos[1] - right[1]*b - up[1]*b, pos[2] - right[2]*b - up[2]*b];
-        let p1 = [pos[0] + right[0]*b - up[0]*b, pos[1] + right[1]*b - up[1]*b, pos[2] + right[2]*b - up[2]*b];
-        let p2 = [pos[0] + right[0]*b + up[0]*b, pos[1] + right[1]*b + up[1]*b, pos[2] + right[2]*b + up[2]*b];
-        let p3 = [pos[0] - right[0]*b + up[0]*b, pos[1] - right[1]*b + up[1]*b, pos[2] - right[2]*b + up[2]*b];
+        let p0 = [
+            pos[0] - right[0] * b - up[0] * b,
+            pos[1] - right[1] * b - up[1] * b,
+            pos[2] - right[2] * b - up[2] * b,
+        ];
+        let p1 = [
+            pos[0] + right[0] * b - up[0] * b,
+            pos[1] + right[1] * b - up[1] * b,
+            pos[2] + right[2] * b - up[2] * b,
+        ];
+        let p2 = [
+            pos[0] + right[0] * b + up[0] * b,
+            pos[1] + right[1] * b + up[1] * b,
+            pos[2] + right[2] * b + up[2] * b,
+        ];
+        let p3 = [
+            pos[0] - right[0] * b + up[0] * b,
+            pos[1] - right[1] * b + up[1] * b,
+            pos[2] - right[2] * b + up[2] * b,
+        ];
         add_flat_quad(&mut vertices, &mut indices, p0, p1, p2, p3, white);
 
-        let q0 = [pos[0] - right[0]*half_w - up[0]*b, pos[1] - right[1]*half_w - up[1]*b, pos[2] - right[2]*half_w - up[2]*b];
-        let q1 = [pos[0] + right[0]*half_w - up[0]*b, pos[1] + right[1]*half_w - up[1]*b, pos[2] + right[2]*half_w - up[2]*b];
-        let q2 = [pos[0] + right[0]*half_w + up[0]*b, pos[1] + right[1]*half_w + up[1]*b, pos[2] + right[2]*half_w + up[2]*b];
-        let q3 = [pos[0] - right[0]*half_w + up[0]*b, pos[1] - right[1]*half_w + up[1]*b, pos[2] - right[2]*half_w + up[2]*b];
+        let q0 = [
+            pos[0] - right[0] * half_w - up[0] * b,
+            pos[1] - right[1] * half_w - up[1] * b,
+            pos[2] - right[2] * half_w - up[2] * b,
+        ];
+        let q1 = [
+            pos[0] + right[0] * half_w - up[0] * b,
+            pos[1] + right[1] * half_w - up[1] * b,
+            pos[2] + right[2] * half_w - up[2] * b,
+        ];
+        let q2 = [
+            pos[0] + right[0] * half_w + up[0] * b,
+            pos[1] + right[1] * half_w + up[1] * b,
+            pos[2] + right[2] * half_w + up[2] * b,
+        ];
+        let q3 = [
+            pos[0] - right[0] * half_w + up[0] * b,
+            pos[1] - right[1] * half_w + up[1] * b,
+            pos[2] - right[2] * half_w + up[2] * b,
+        ];
 
         add_flat_quad(&mut vertices, &mut indices, p1, q1, q2, p2, white);
         add_flat_quad(&mut vertices, &mut indices, p3, q3, q0, p0, white);
@@ -4424,21 +5117,77 @@ fn push_box_mesh(
 
     let base = vertices.len() as u16;
     let faces = [
-        ([cx-hw, cy-hh, cz+hd], [cx+hw, cy-hh, cz+hd], [cx+hw, cy+hh, cz+hd], [cx-hw, cy+hh, cz+hd], [0.0, 0.0, 1.0]),
-        ([cx+hw, cy-hh, cz-hd], [cx-hw, cy-hh, cz-hd], [cx-hw, cy+hh, cz-hd], [cx+hw, cy+hh, cz-hd], [0.0, 0.0, -1.0]),
-        ([cx-hw, cy+hh, cz+hd], [cx+hw, cy+hh, cz+hd], [cx+hw, cy+hh, cz-hd], [cx-hw, cy+hh, cz-hd], [0.0, 1.0, 0.0]),
-        ([cx-hw, cy-hh, cz-hd], [cx+hw, cy-hh, cz-hd], [cx+hw, cy-hh, cz+hd], [cx-hw, cy-hh, cz+hd], [0.0, -1.0, 0.0]),
-        ([cx+hw, cy-hh, cz+hd], [cx+hw, cy-hh, cz-hd], [cx+hw, cy+hh, cz-hd], [cx+hw, cy+hh, cz+hd], [1.0, 0.0, 0.0]),
-        ([cx-hw, cy-hh, cz-hd], [cx-hw, cy-hh, cz+hd], [cx-hw, cy+hh, cz+hd], [cx-hw, cy+hh, cz-hd], [-1.0, 0.0, 0.0]),
+        (
+            [cx - hw, cy - hh, cz + hd],
+            [cx + hw, cy - hh, cz + hd],
+            [cx + hw, cy + hh, cz + hd],
+            [cx - hw, cy + hh, cz + hd],
+            [0.0, 0.0, 1.0],
+        ),
+        (
+            [cx + hw, cy - hh, cz - hd],
+            [cx - hw, cy - hh, cz - hd],
+            [cx - hw, cy + hh, cz - hd],
+            [cx + hw, cy + hh, cz - hd],
+            [0.0, 0.0, -1.0],
+        ),
+        (
+            [cx - hw, cy + hh, cz + hd],
+            [cx + hw, cy + hh, cz + hd],
+            [cx + hw, cy + hh, cz - hd],
+            [cx - hw, cy + hh, cz - hd],
+            [0.0, 1.0, 0.0],
+        ),
+        (
+            [cx - hw, cy - hh, cz - hd],
+            [cx + hw, cy - hh, cz - hd],
+            [cx + hw, cy - hh, cz + hd],
+            [cx - hw, cy - hh, cz + hd],
+            [0.0, -1.0, 0.0],
+        ),
+        (
+            [cx + hw, cy - hh, cz + hd],
+            [cx + hw, cy - hh, cz - hd],
+            [cx + hw, cy + hh, cz - hd],
+            [cx + hw, cy + hh, cz + hd],
+            [1.0, 0.0, 0.0],
+        ),
+        (
+            [cx - hw, cy - hh, cz - hd],
+            [cx - hw, cy - hh, cz + hd],
+            [cx - hw, cy + hh, cz + hd],
+            [cx - hw, cy + hh, cz - hd],
+            [-1.0, 0.0, 0.0],
+        ),
     ];
 
     for (f_idx, (p0, p1, p2, p3, n)) in faces.iter().enumerate() {
         let b = base + (f_idx as u16) * 4;
-        vertices.push(Vertex { position: *p0, normal: *n, uv: [0.0, 1.0], color });
-        vertices.push(Vertex { position: *p1, normal: *n, uv: [1.0, 1.0], color });
-        vertices.push(Vertex { position: *p2, normal: *n, uv: [1.0, 0.0], color });
-        vertices.push(Vertex { position: *p3, normal: *n, uv: [0.0, 0.0], color });
-        indices.extend_from_slice(&[b, b+1, b+2, b, b+2, b+3]);
+        vertices.push(Vertex {
+            position: *p0,
+            normal: *n,
+            uv: [0.0, 1.0],
+            color,
+        });
+        vertices.push(Vertex {
+            position: *p1,
+            normal: *n,
+            uv: [1.0, 1.0],
+            color,
+        });
+        vertices.push(Vertex {
+            position: *p2,
+            normal: *n,
+            uv: [1.0, 0.0],
+            color,
+        });
+        vertices.push(Vertex {
+            position: *p3,
+            normal: *n,
+            uv: [0.0, 0.0],
+            color,
+        });
+        indices.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
     }
 }
 
@@ -4450,15 +5199,45 @@ pub fn create_sword_mesh(device: &wgpu::Device) -> MeshGpu {
     let brown = [0.45, 0.28, 0.16, 1.0];
 
     // Handle
-    push_box_mesh(&mut vertices, &mut indices, [0.0, -0.15, 0.0], [0.05, 0.26, 0.05], brown);
+    push_box_mesh(
+        &mut vertices,
+        &mut indices,
+        [0.0, -0.15, 0.0],
+        [0.05, 0.26, 0.05],
+        brown,
+    );
     // Pommel
-    push_box_mesh(&mut vertices, &mut indices, [0.0, -0.30, 0.0], [0.08, 0.06, 0.08], gold);
+    push_box_mesh(
+        &mut vertices,
+        &mut indices,
+        [0.0, -0.30, 0.0],
+        [0.08, 0.06, 0.08],
+        gold,
+    );
     // Crossguard
-    push_box_mesh(&mut vertices, &mut indices, [0.0, 0.0, 0.0], [0.34, 0.05, 0.07], gold);
+    push_box_mesh(
+        &mut vertices,
+        &mut indices,
+        [0.0, 0.0, 0.0],
+        [0.34, 0.05, 0.07],
+        gold,
+    );
     // Blade
-    push_box_mesh(&mut vertices, &mut indices, [0.0, 0.45, 0.0], [0.08, 0.85, 0.02], steel);
+    push_box_mesh(
+        &mut vertices,
+        &mut indices,
+        [0.0, 0.45, 0.0],
+        [0.08, 0.85, 0.02],
+        steel,
+    );
     // Tip
-    push_box_mesh(&mut vertices, &mut indices, [0.0, 0.92, 0.0], [0.04, 0.12, 0.015], steel);
+    push_box_mesh(
+        &mut vertices,
+        &mut indices,
+        [0.0, 0.92, 0.0],
+        [0.04, 0.12, 0.015],
+        steel,
+    );
 
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Sword Vertex Buffer"),
@@ -4485,13 +5264,37 @@ pub fn create_pickaxe_mesh(device: &wgpu::Device) -> MeshGpu {
     let iron = [0.70, 0.72, 0.78, 1.0];
 
     // Shaft / handle
-    push_box_mesh(&mut vertices, &mut indices, [0.0, -0.18, 0.0], [0.05, 0.75, 0.05], wood);
+    push_box_mesh(
+        &mut vertices,
+        &mut indices,
+        [0.0, -0.18, 0.0],
+        [0.05, 0.75, 0.05],
+        wood,
+    );
     // Center connector
-    push_box_mesh(&mut vertices, &mut indices, [0.0, 0.22, 0.0], [0.08, 0.10, 0.08], iron);
+    push_box_mesh(
+        &mut vertices,
+        &mut indices,
+        [0.0, 0.22, 0.0],
+        [0.08, 0.10, 0.08],
+        iron,
+    );
     // Left pick
-    push_box_mesh(&mut vertices, &mut indices, [-0.20, 0.20, 0.0], [0.34, 0.06, 0.05], iron);
+    push_box_mesh(
+        &mut vertices,
+        &mut indices,
+        [-0.20, 0.20, 0.0],
+        [0.34, 0.06, 0.05],
+        iron,
+    );
     // Right pick
-    push_box_mesh(&mut vertices, &mut indices, [0.20, 0.20, 0.0], [0.34, 0.06, 0.05], iron);
+    push_box_mesh(
+        &mut vertices,
+        &mut indices,
+        [0.20, 0.20, 0.0],
+        [0.34, 0.06, 0.05],
+        iron,
+    );
 
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Pickaxe Vertex Buffer"),
@@ -4561,7 +5364,14 @@ fn gltf_image_to_rgba8(img: &gltf::image::Data) -> Vec<u8> {
 pub fn load_gltf_mesh_with_textures(
     path: impl AsRef<Path>,
     device: &wgpu::Device,
-) -> Result<(MeshGpu, Vec<(String, u32, u32, Vec<u8>)>, Option<GltfMaterialTextures>), String> {
+) -> Result<
+    (
+        MeshGpu,
+        Vec<(String, u32, u32, Vec<u8>)>,
+        Option<GltfMaterialTextures>,
+    ),
+    String,
+> {
     let p = path.as_ref();
     let (document, buffers, images) = gltf::import(p)
         .map_err(|e| format!("Failed to import glTF model '{}': {}", p.display(), e))?;
@@ -4575,11 +5385,23 @@ pub fn load_gltf_mesh_with_textures(
             if first_mat.is_none() {
                 let mat = primitive.material();
                 let pbr = mat.pbr_metallic_roughness();
-                let diffuse = pbr.base_color_texture().map(|t| gltf_embedded_tex_key(p, t.texture().source().index()));
-                let metallic_roughness = pbr.metallic_roughness_texture().map(|t| gltf_embedded_tex_key(p, t.texture().source().index()));
-                let normal = mat.normal_texture().map(|t| gltf_embedded_tex_key(p, t.texture().source().index()));
-                let emissive = mat.emissive_texture().map(|t| gltf_embedded_tex_key(p, t.texture().source().index()));
-                if diffuse.is_some() || normal.is_some() || metallic_roughness.is_some() || emissive.is_some() {
+                let diffuse = pbr
+                    .base_color_texture()
+                    .map(|t| gltf_embedded_tex_key(p, t.texture().source().index()));
+                let metallic_roughness = pbr
+                    .metallic_roughness_texture()
+                    .map(|t| gltf_embedded_tex_key(p, t.texture().source().index()));
+                let normal = mat
+                    .normal_texture()
+                    .map(|t| gltf_embedded_tex_key(p, t.texture().source().index()));
+                let emissive = mat
+                    .emissive_texture()
+                    .map(|t| gltf_embedded_tex_key(p, t.texture().source().index()));
+                if diffuse.is_some()
+                    || normal.is_some()
+                    || metallic_roughness.is_some()
+                    || emissive.is_some()
+                {
                     first_mat = Some(GltfMaterialTextures {
                         diffuse,
                         normal,
@@ -4620,9 +5442,21 @@ pub fn load_gltf_mesh_with_textures(
             for i in 0..positions.len() {
                 vertices.push(Vertex {
                     position: positions[i],
-                    normal: if i < normals.len() { normals[i] } else { [0.0, 1.0, 0.0] },
-                    uv: if i < tex_coords.len() { tex_coords[i] } else { [0.0, 0.0] },
-                    color: if i < colors.len() { colors[i] } else { [1.0, 1.0, 1.0, 1.0] },
+                    normal: if i < normals.len() {
+                        normals[i]
+                    } else {
+                        [0.0, 1.0, 0.0]
+                    },
+                    uv: if i < tex_coords.len() {
+                        tex_coords[i]
+                    } else {
+                        [0.0, 0.0]
+                    },
+                    color: if i < colors.len() {
+                        colors[i]
+                    } else {
+                        [1.0, 1.0, 1.0, 1.0]
+                    },
                 });
             }
 
@@ -4639,7 +5473,10 @@ pub fn load_gltf_mesh_with_textures(
     }
 
     if vertices.is_empty() || indices.is_empty() {
-        return Err(format!("glTF model '{}' contains no vertices or indices", p.display()));
+        return Err(format!(
+            "glTF model '{}' contains no vertices or indices",
+            p.display()
+        ));
     }
 
     let mut embedded_images = Vec::with_capacity(images.len());
@@ -4754,10 +5591,10 @@ pub fn generate_test_spritesheet(path: &Path) -> Result<(), String> {
             let col = x >= width / 2;
             let row = y >= height / 2;
             let color = match (col, row) {
-                (false, false) => [240u8, 60u8, 60u8, 255u8],   // Frame 0 (top-left): Red
-                (true, false) => [60u8, 220u8, 60u8, 255u8],   // Frame 1 (top-right): Green
-                (false, true) => [60u8, 120u8, 240u8, 255u8],  // Frame 2 (bottom-left): Blue
-                (true, true) => [240u8, 220u8, 40u8, 255u8],   // Frame 3 (bottom-right): Yellow
+                (false, false) => [240u8, 60u8, 60u8, 255u8], // Frame 0 (top-left): Red
+                (true, false) => [60u8, 220u8, 60u8, 255u8],  // Frame 1 (top-right): Green
+                (false, true) => [60u8, 120u8, 240u8, 255u8], // Frame 2 (bottom-left): Blue
+                (true, true) => [240u8, 220u8, 40u8, 255u8],  // Frame 3 (bottom-right): Yellow
             };
             img.put_pixel(x, y, image::Rgba(color));
         }

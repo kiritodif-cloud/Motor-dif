@@ -10,13 +10,18 @@ local drag = 4.0
 local steer_speed = 2.4
 local yaw = 0.0
 
-function on_init()
+local initialized = false
+
+function on_init(entity)
     print("[Vehicle Controller] Initialized")
-    local _, ry, _ = get_rotation()
-    yaw = ry or 0.0
+    yaw = entity.ry or 0.0
 end
 
-function on_update(dt)
+function on_update(entity, dt)
+    if not initialized then
+        initialized = true
+        on_init(entity)
+    end
     -- Steering (steers more effectively when moving)
     local steer_factor = math.min(1.0, math.abs(speed) / 4.0)
     if speed < 0.0 then
@@ -63,7 +68,7 @@ function on_update(dt)
     local forward_x = -math.sin(yaw)
     local forward_z = -math.cos(yaw)
 
-    local x, y, z = get_position()
+    local x, y, z = entity.x, entity.y, entity.z
     local new_x = x + forward_x * speed * dt
     local new_z = z + forward_z * speed * dt
 
@@ -74,8 +79,8 @@ function on_update(dt)
         y = 0.6
     end
 
-    set_position(new_x, y, new_z)
-    set_rotation(0.0, yaw, 0.0)
+    entity.x, entity.y, entity.z = new_x, y, new_z
+    entity.ry = yaw
 
     -- Dynamic follow camera with lag behind the vehicle
     local cam_dist = 8.0 + (math.abs(speed) / max_speed) * 3.0

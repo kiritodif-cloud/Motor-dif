@@ -72,12 +72,14 @@ function on_update(entity, dt)
             emissive = 1.0
         })
 
-        set_hud_text("08_JEFE", "☠️ ¡LEVIATÁN APOPHIS DERROTADO! NÚCLEO DE HIPERNOVA LIBERADO (+500 TJ)")
+        ui_panel("boss_hud_bg", "top_center", 0, 16, 680, 40, 0.12, 0.04, 0.06, 0.82)
+        ui_label("08_JEFE", "top_center", 12, 28, "☠️ ¡LEVIATÁN APOPHIS DERROTADO! NÚCLEO DE HIPERNOVA LIBERADO (+500 TJ)", 16, 1.0, 0.85, 0.25)
         destroy_entity("boss_apophis")
         return
     end
 
     -- Update Boss HUD Bar
     local pct = math.floor((boss_hp / boss_max_hp) * 100)
-    set_hud_text("08_JEFE", string.format("Apophis, Leviatán del Vacío — [%d / %d HP] (%d%%)", math.floor(boss_hp), math.floor(boss_max_hp), pct))
+    ui_panel("boss_hud_bg", "top_center", 0, 16, 680, 40, 0.12, 0.04, 0.06, 0.82)
+    ui_label("08_JEFE", "top_center", 12, 28, string.format("Apophis, Leviatán del Vacío — [%d / %d HP] (%d%%)", math.floor(boss_hp), math.floor(boss_max_hp), pct), 16, 1.0, 0.45, 0.4)
 end

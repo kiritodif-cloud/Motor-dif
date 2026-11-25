@@ -120,7 +120,7 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `set_rtt_frozen(target_id, frozen)`: Freeze/unfreeze RTT camera updates.
   - `ui_panel(id, anchor, x, y, w, h, r, g, b, a)`: Background container card.
   - `ui_bar(id, anchor, x, y, w, h, value_0_to_1, r, g, b, a)`: Dynamic progress/health bar.
-  - `ui_label(id, anchor, x, y, text, size, r, g, b, a)`: Text label (re-call with same ID to update text).
+  - `ui_label(id, anchor, x, y, text, size, r, g, b)`: Text label (re-call with same ID to update text; no alpha argument).
   - `ui_button(id, anchor, x, y, w, h, text, callback_name)`: Interactive button triggering global Lua function.
   - `ui_image(path, x, y, w, h, [uv_rect])`: Draws 2D texture/sprite from `assets/`. `uv_rect` optional `{u0,v0,u1,v1}` for atlas slicing.
   - `ui_slot(x, y, size, [texture_path], [uv_rect], [count_text], [selected], [hotkey_label])`: Styled inventory/hotbar slot with gold highlight, icon, count, and hotkey.
@@ -185,7 +185,7 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - Template source files persist in `assets/scripts/templates/<type>_controller.lua`.
 
 ## mcp_workflow
-Recommended 4-step autonomous loop for AI agents (`http://127.0.0.1:3030/mcp`):
+Recommended 4-step autonomous loop for AI agents (default `http://127.0.0.1:3030/mcp`; the real bound port is printed at startup and shown in the UI):
 1. **Query Docs:** Call `get_engine_docs({ topic: "all" })` (or specific topic) to verify signatures and workspace root without exploring source files.
 2. **Author Content:**
    - Save new scene to `assets/<name>.json` and Lua scripts to `assets/scripts/<name>.lua`.
@@ -195,6 +195,7 @@ Recommended 4-step autonomous loop for AI agents (`http://127.0.0.1:3030/mcp`):
    - Call `set_play_mode({ playing: true })` to start simulation, initialize scripts, and hide editor gizmos.
 4. **Inspect & Validate:**
    - Query `get_console_logs({ filter: "error" })` or `get_engine_logs` to ensure 0 Lua runtime errors.
+   - Call `lint_lua({ path } | { code })` to catch deprecated APIs before running (generated controllers are linted automatically), then `smoke_test_scene({ path })` to parse a scene, lint every referenced script and check player-controller candidates.
    - Call `capture_viewport` to visually inspect scene composition, lighting, and HUD in Base64 PNG.
    - Call `get_performance_stats` to verify 60+ FPS, draw calls, and entity counts.
    - To stop or reset: call `set_play_mode({ playing: false })`.
@@ -204,7 +205,7 @@ MCP Tools Directory:
 - `inspect_world()`: Returns active camera and entity definitions JSON.
 - `upsert_entity(entity_def)`: Dynamically adds or modifies an entity in active scene.
 - `delete_entity({ id })`: Removes entity by ID.
-- `execute_lua({ code })`: Runs Lua code immediately in active environment.
+- `run_lua_snippet({ code })`: Runs Lua code immediately in active environment.
 - `get_console_logs({ filter })`: Retrieves engine/script log buffer.
 - `get_engine_logs()`: Compact diagnostic metrics (FPS, logs, Lua error string).
 - `capture_viewport()`: Captures rendered frame as Base64 PNG data.
@@ -231,5 +232,8 @@ MCP Tools Directory:
 - `find_path({ from, to, max_steps })`: Computes 3D A* path between coordinates.
 - `configure_rtt({ target_id, width, height, camera_entity, display_entity, fov, update_hz, as_emissive })`: Configures RTT target and camera projection.
 - `net_status()`: Inspects network role, peer count, RTT latency, throughput TX/RX, and replicated entities.
-- Editor Shortcuts: `F3` (Profiler CPU/GPU, RTT & Net metrics), `F11` (Fullscreen), `Ctrl+Z` (Undo), `Ctrl+Y` (Redo), `Ctrl+S` (Save), `W`/`E`/`R` (Gizmos), `🧲 Snap`. CLI: `--server [port]`, `--port <p>`, `--connect <ip:p>`.
+- `get_frame_metrics()`: Rolling CPU stage histograms (last 120 frames) with count/avg/min/p50/p95/p99/max in ms. Keys: `mcp_hot_reload`, `physics_snapshot`, `lua_update`, `timers_events`, `forces_and_moves`, `physics_step`, `collision_callbacks`, `scene_drains`, `transforms`, `batch_build`, `render_submit`, `frame`. `run_benchmark({ name, iterations })`: Runs an in-engine micro-benchmark on the engine thread (blocks one frame; iterations clamped to 1..=1000). Names: `world_transforms`, `nav_bake`, `nav_find_path`, `json_to_lua`, `scene_apply_extract`, `voxel_raycast`, `all`. Returns the same stats shape as `get_frame_metrics`; use `all` for a baseline sweep before optimizing.
+- `lint_lua({ path } | { code })`: Static Lua contract linter (forbidden `set_hud_text`, `on_update` signature, legacy transform globals, degree rotations, reset cleanup, mouse-delta shape, `hit.block_y`), returning `error_count`, `warning_count` and line/column diagnostics. `smoke_test_scene({ path })`: Parses a scene JSON, lints every referenced script, reports diagnostics and lists `player_controller_candidates`.
+- Path safety: all MCP path arguments must be workspace-relative. Absolute paths, Windows drive/UNC prefixes and `..` components are rejected with `-32602`; symlinks pointing outside the workspace are rejected too. Names used to build paths (`entity_id`, `output_name`, `filename`, etc.) cannot contain separators.
+- Editor Shortcuts: `F3` (Profiler CPU stage p95 histogram, Snapshot Rebuilds counter, RTT & Net metrics), `F11` (Fullscreen), `Ctrl+Z` (Undo), `Ctrl+Y` (Redo), `Ctrl+S` (Save), `W`/`E`/`R` (Gizmos), `🧲 Snap`. CLI: `--server [port]` (headless UDP game server), `--port <p>` (also headless UDP), `--mcp-port <p>` or `MOTOR_MCP_PORT` (MCP TCP port, default 3030), `--connect <ip:p>`.
 - Auth: Optional `--mcp-token <TOKEN>` (or `MOTOR_MCP_TOKEN`), requires `Authorization: Bearer <TOKEN>` header.

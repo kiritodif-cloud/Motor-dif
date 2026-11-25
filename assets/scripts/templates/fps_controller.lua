@@ -11,12 +11,18 @@ local vy = 0.0
 local gravity = -20.0
 local voxel_collision = false
 
-function on_init()
+local initialized = false
+
+function on_init(entity)
     print("[FPS Controller] Initialized for entity")
     set_pointer_lock(true)
 end
 
-function on_update(dt)
+function on_update(entity, dt)
+    if not initialized then
+        initialized = true
+        on_init(entity)
+    end
     -- Click to lock pointer if unlocked
     if is_mouse_button_just_pressed(1) then
         set_pointer_lock(true)
@@ -24,9 +30,9 @@ function on_update(dt)
 
     -- Mouse look (only when pointer locked)
     if is_pointer_locked() then
-        local mdx, mdy = get_mouse_delta()
-        yaw = yaw - mdx * mouse_sensitivity
-        pitch = pitch - mdy * mouse_sensitivity
+        local mouse_delta = get_mouse_delta()
+        yaw = yaw - mouse_delta.dx * mouse_sensitivity
+        pitch = pitch - mouse_delta.dy * mouse_sensitivity
 
         -- Clamp pitch between ~ -85 and +85 degrees
         if pitch > 1.48 then pitch = 1.48 end
@@ -70,7 +76,7 @@ function on_update(dt)
         move_z = 0.0
     end
 
-    local x, y, z = get_position()
+    local x, y, z = entity.x, entity.y, entity.z
 
     -- Ground check & jumping
     if voxel_collision then
@@ -78,8 +84,8 @@ function on_update(dt)
         if hit and hit.hit then
             is_grounded = true
             vy = 0.0
-            if y < (hit.block_y + 1.0) then
-                y = hit.block_y + 1.0
+            if y < (hit.y + 1.0) then
+                y = hit.y + 1.0
             end
         else
             is_grounded = false
@@ -116,8 +122,8 @@ function on_update(dt)
     -- Update position and rotation
     local new_x = x + move_x
     local new_z = z + move_z
-    set_position(new_x, y, new_z)
-    set_rotation(0.0, yaw, 0.0)
+    entity.x, entity.y, entity.z = new_x, y, new_z
+    entity.ry = yaw
 
     -- Update camera to eye level
     local eye_x = new_x

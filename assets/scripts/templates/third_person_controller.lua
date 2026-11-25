@@ -12,12 +12,18 @@ local vy = 0.0
 local gravity = -20.0
 local first_person = false
 
-function on_init()
+local initialized = false
+
+function on_init(entity)
     print("[Third-Person Controller] Initialized")
     set_pointer_lock(true)
 end
 
-function on_update(dt)
+function on_update(entity, dt)
+    if not initialized then
+        initialized = true
+        on_init(entity)
+    end
     -- Click to lock pointer
     if is_mouse_button_just_pressed(1) then
         set_pointer_lock(true)
@@ -30,9 +36,9 @@ function on_update(dt)
 
     -- Camera Orbit
     if is_pointer_locked() then
-        local mdx, mdy = get_mouse_delta()
-        yaw = yaw - mdx * mouse_sensitivity
-        pitch = pitch + mdy * mouse_sensitivity
+        local mouse_delta = get_mouse_delta()
+        yaw = yaw - mouse_delta.dx * mouse_sensitivity
+        pitch = pitch + mouse_delta.dy * mouse_sensitivity
         if pitch > 1.2 then pitch = 1.2 end
         if pitch < -0.3 then pitch = -0.3 end
     end
@@ -62,7 +68,7 @@ function on_update(dt)
         input_z = input_z - right_z
     end
 
-    local x, y, z = get_position()
+    local x, y, z = entity.x, entity.y, entity.z
 
     -- Move and rotate character facing direction
     local move_len = math.sqrt(input_x * input_x + input_z * input_z)
@@ -70,7 +76,7 @@ function on_update(dt)
         input_x = (input_x / move_len) * speed * dt
         input_z = (input_z / move_len) * speed * dt
         local target_rot_y = math.atan2(-input_x, -input_z)
-        set_rotation(0.0, target_rot_y, 0.0)
+        entity.ry = target_rot_y
     else
         input_x = 0.0
         input_z = 0.0
@@ -95,7 +101,7 @@ function on_update(dt)
 
     local new_x = x + input_x
     local new_z = z + input_z
-    set_position(new_x, y, new_z)
+    entity.x, entity.y, entity.z = new_x, y, new_z
 
     -- Camera Position
     if first_person then

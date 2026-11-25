@@ -347,11 +347,12 @@ function on_update(entity, dt)
     local shield_text = shield_timer > 0.0 and string.format("Escudo Cósmico (%.1fs)", shield_timer) or "Vulnerable"
     local speed_text = speed_boost_timer > 0.0 and string.format("Warp Acelerado (%.1fs)", speed_boost_timer) or "Propulsión Estándar"
 
-    set_hud_text("01_TITULO", "COSMOS.IO 3D — INCURSIÓN ESTELAR")
-    set_hud_text("02_MASA", string.format("%.1f TJ (Bariónica) | Radio Estelar: %.2f", mass, target_radius))
-    set_hud_text("03_ERA", string.format("%s [%s]", era_name, era_rank))
-    set_hud_text("04_PLANETAS", string.format("%d/5 Satélites en Órbita  [E: Forjar Planeta | Q: Lanzar Misil]", #orbiting_moons))
-    set_hud_text("05_ESTADO", string.format("%s | %s | %s", sanctuary_status, shield_text, speed_text))
-    set_hud_text("06_CONTROLES", "[WASD] Dirección | [Shift] Dash Turbo | [Espacio] Disparo Plasma | [C] Pozo Succión | [F] Mina")
-    set_hud_text("07_MISIÓN", "¡Consume materia estelar para evolucionar y destruir al Leviatán Apophis!")
+    ui_panel("cosmos_hud_bg", "top_left", 16, 16, 620, 150, 0.05, 0.08, 0.12, 0.82)
+    ui_label("01_TITULO", "top_left", 28, 26, "COSMOS.IO 3D — INCURSIÓN ESTELAR", 16, 1.0, 0.86, 0.35)
+    ui_label("02_MASA", "top_left", 28, 46, string.format("%.1f TJ (Bariónica) | Radio Estelar: %.2f", mass, target_radius), 14, 0.55, 0.9, 1.0)
+    ui_label("03_ERA", "top_left", 28, 66, string.format("%s [%s]", era_name, era_rank), 14, 0.75, 0.85, 1.0)
+    ui_label("04_PLANETAS", "top_left", 28, 86, string.format("%d/5 Satélites en Órbita  [E: Forjar Planeta | Q: Lanzar Misil]", #orbiting_moons), 13, 0.8, 0.8, 0.85)
+    ui_label("05_ESTADO", "top_left", 28, 106, string.format("%s | %s | %s", sanctuary_status, shield_text, speed_text), 13, 0.6, 1.0, 0.7)
+    ui_label("06_CONTROLES", "top_left", 28, 126, "[WASD] Dirección | [Shift] Dash Turbo | [Espacio] Disparo Plasma | [C] Pozo Succión | [F] Mina", 12, 0.75, 0.78, 0.85)
+    ui_label("07_MISIÓN", "top_left", 28, 146, "¡Consume materia estelar para evolucionar y destruir al Leviatán Apophis!", 12, 1.0, 0.55, 0.4)
 end

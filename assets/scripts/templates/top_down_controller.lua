@@ -5,11 +5,17 @@ local speed = 9.0
 local cam_height = 14.0
 local cam_back = 8.0
 
-function on_init()
+local initialized = false
+
+function on_init(entity)
     print("[Top-Down Controller] Initialized")
 end
 
-function on_update(dt)
+function on_update(entity, dt)
+    if not initialized then
+        initialized = true
+        on_init(entity)
+    end
     local dx = 0.0
     local dz = 0.0
 
@@ -26,7 +32,7 @@ function on_update(dt)
         dx = dx + 1.0
     end
 
-    local x, y, z = get_position()
+    local x, y, z = entity.x, entity.y, entity.z
 
     local len = math.sqrt(dx * dx + dz * dz)
     if len > 0.001 then
@@ -34,7 +40,7 @@ function on_update(dt)
         dz = (dz / len) * speed * dt
 
         local angle = math.atan2(-dx, -dz)
-        set_rotation(0.0, angle, 0.0)
+        entity.ry = angle
     else
         dx = 0.0
         dz = 0.0
@@ -49,7 +55,7 @@ function on_update(dt)
 
     local new_x = x + dx
     local new_z = z + dz
-    set_position(new_x, y, new_z)
+    entity.x, entity.y, entity.z = new_x, y, new_z
 
     local cam_x = new_x
     local cam_y = y + cam_height
