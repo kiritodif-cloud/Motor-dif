@@ -175,6 +175,9 @@ pub struct LuaEngineContext {
     pub gamepad_info: Arc<RwLock<crate::input_map::GamepadState>>,
     pub pending_ui_tweens: Arc<Mutex<Vec<crate::tweens::UiTween>>>,
     pub active_ui_tweens: Arc<Mutex<Vec<crate::tweens::UiTween>>>,
+    pub pending_rtt_targets: Arc<Mutex<Vec<(String, u32, u32)>>>,
+    pub pending_rtt_cameras: Arc<Mutex<Vec<(String, String, f32, f32)>>>,
+    pub pending_rtt_materials: Arc<Mutex<Vec<(String, String, bool)>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -401,6 +404,9 @@ impl LuaEngineContext {
             gamepad_info: Arc::new(RwLock::new(crate::input_map::GamepadState::default())),
             pending_ui_tweens: Arc::new(Mutex::new(Vec::new())),
             active_ui_tweens: Arc::new(Mutex::new(Vec::new())),
+            pending_rtt_targets: Arc::new(Mutex::new(Vec::new())),
+            pending_rtt_cameras: Arc::new(Mutex::new(Vec::new())),
+            pending_rtt_materials: Arc::new(Mutex::new(Vec::new())),
             active_camera: Arc::new(RwLock::new(crate::camera::Camera::new_3d(glam::Vec3::new(0.0, 3.5, 9.0), glam::Vec3::ZERO, 16.0 / 9.0))),
             nav_grid: Arc::new(RwLock::new(crate::nav::NavGrid::new(1.0, 20.0))),
             pending_nav_bake: Arc::new(Mutex::new(None)),
@@ -3345,6 +3351,66 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register list_saves: {}", e))?;
         lua.globals().set("list_saves", list_saves).map_err(|e| e.to_string())?;
 
+        // 78. create_render_target(id, width, height)
+        let rtt_targets_ref = ctx.pending_rtt_targets.clone();
+        let create_render_target = lua
+            .create_function(move |_, (id, width, height): (String, u32, u32)| {
+                if let Ok(mut list) = rtt_targets_ref.lock() {
+                    list.push((id, width.max(1), height.max(1)));
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register create_render_target: {}", e))?;
+        lua.globals().set("create_render_target", create_render_target).map_err(|e| e.to_string())?;
+
+        // 79. attach_camera_rtt(entity_id, target_id, [fov], [update_hz])
+        let rtt_cams_ref = ctx.pending_rtt_cameras.clone();
+        let attach_camera_rtt = lua
+            .create_function(move |_, (entity_id, target_id, fov, update_hz): (String, String, Option<f32>, Option<f32>)| {
+                if let Ok(mut list) = rtt_cams_ref.lock() {
+                    list.push((entity_id, target_id, fov.unwrap_or(60.0), update_hz.unwrap_or(30.0)));
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register attach_camera_rtt: {}", e))?;
+        lua.globals().set("attach_camera_rtt", attach_camera_rtt).map_err(|e| e.to_string())?;
+
+        // 80. set_material_rtt(entity_id, target_id, [as_emissive])
+        let rtt_mats_ref = ctx.pending_rtt_materials.clone();
+        let set_material_rtt = lua
+            .create_function(move |_, (entity_id, target_id, as_emissive): (String, String, Option<bool>)| {
+                if let Ok(mut list) = rtt_mats_ref.lock() {
+                    list.push((entity_id, target_id, as_emissive.unwrap_or(false)));
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register set_material_rtt: {}", e))?;
+        lua.globals().set("set_material_rtt", set_material_rtt).map_err(|e| e.to_string())?;
+
+        // 81. ui_draw_rtt(target_id, x, y, width, height)
+        let ui_rtt_ref = ctx.game_ui_elements.clone();
+        let ui_draw_rtt = lua
+            .create_function(move |_, (target_id, x, y, w, h): (String, f32, f32, f32, f32)| {
+                let elem_id = format!("rtt_{}", target_id);
+                if let Ok(mut list) = ui_rtt_ref.write() {
+                    list.retain(|e| match e {
+                        crate::game_ui::UiElement::RttView { id, .. } => id != &elem_id,
+                        _ => true,
+                    });
+                    list.push(crate::game_ui::UiElement::RttView {
+                        id: elem_id,
+                        target_id,
+                        x,
+                        y,
+                        width: w,
+                        height: h,
+                    });
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register ui_draw_rtt: {}", e))?;
+        lua.globals().set("ui_draw_rtt", ui_draw_rtt).map_err(|e| e.to_string())?;
+
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
             .exec()
@@ -4771,5 +4837,49 @@ mod tests {
         assert_eq!(tweens[0].start, 1.0);
         assert_eq!(tweens[0].target, 0.3);
         assert_eq!(tweens[0].easing, crate::tweens::Easing::EaseOutQuad);
+    }
+    #[test]
+    fn test_rtt_lua_bindings() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        let test_script = r#"
+            create_render_target("cctv_hallway", 640, 480)
+            attach_camera_rtt("cam_ent", "cctv_hallway", 75.0, 15.0)
+            set_material_rtt("monitor_ent", "cctv_hallway", true)
+            ui_draw_rtt("cctv_hallway", 20.0, 20.0, 320.0, 240.0)
+        "#;
+        let script_path = "assets/scripts/temp_rtt_test.lua";
+        std::fs::write(script_path, test_script).unwrap();
+
+        let mut comp = ScriptComponent::new(script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        let _ = std::fs::remove_file(script_path);
+        assert!(res.is_ok(), "RTT lua execution failed: {:?}", res.err());
+
+        let targets = ctx.pending_rtt_targets.lock().unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0], ("cctv_hallway".to_string(), 640, 480));
+
+        let cams = ctx.pending_rtt_cameras.lock().unwrap();
+        assert_eq!(cams.len(), 1);
+        assert_eq!(cams[0], ("cam_ent".to_string(), "cctv_hallway".to_string(), 75.0, 15.0));
+
+        let mats = ctx.pending_rtt_materials.lock().unwrap();
+        assert_eq!(mats.len(), 1);
+        assert_eq!(mats[0], ("monitor_ent".to_string(), "cctv_hallway".to_string(), true));
+
+        let ui_elems = ctx.game_ui_elements.read().unwrap();
+        assert_eq!(ui_elems.len(), 1);
+        match &ui_elems[0] {
+            crate::game_ui::UiElement::RttView { target_id, width, height, .. } => {
+                assert_eq!(target_id, "cctv_hallway");
+                assert_eq!(*width, 320.0);
+                assert_eq!(*height, 240.0);
+            }
+            _ => panic!("Expected RttView element"),
+        }
     }
 }

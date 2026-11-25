@@ -205,6 +205,17 @@ pub enum McpCommand {
         max_steps: Option<usize>,
         respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
     },
+    ConfigureRtt {
+        target_id: String,
+        width: u32,
+        height: u32,
+        camera_entity: Option<String>,
+        display_entity: Option<String>,
+        fov: Option<f32>,
+        update_hz: Option<f32>,
+        as_emissive: Option<bool>,
+        respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1787,6 +1798,54 @@ pub async fn handle_jsonrpc(
                         Err(_) => Some(JsonRpcResponse::error(id, -32000, "Engine dropped response")),
                     }
                 }
+                "configure_rtt" => {
+                    let target_id = match args.get("target_id").and_then(|v| v.as_str()) {
+                        Some(s) if !s.is_empty() => s.to_string(),
+                        _ => {
+                            return Some(JsonRpcResponse::error(
+                                id,
+                                -32602,
+                                mcp_param_error(
+                                    "configure_rtt",
+                                    "target_id",
+                                    "{\n  \"target_id\": \"cctv1\",\n  \"width\": 640,\n  \"height\": 480\n}",
+                                ),
+                            ));
+                        }
+                    };
+                    let width = args.get("width").and_then(|v| v.as_u64()).unwrap_or(320) as u32;
+                    let height = args.get("height").and_then(|v| v.as_u64()).unwrap_or(240) as u32;
+                    let camera_entity = args.get("camera_entity").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let display_entity = args.get("display_entity").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let fov = args.get("fov").and_then(|v| v.as_f64()).map(|f| f as f32);
+                    let update_hz = args.get("update_hz").and_then(|v| v.as_f64()).map(|f| f as f32);
+                    let as_emissive = args.get("as_emissive").and_then(|v| v.as_bool());
+
+                    let (resp_tx, resp_rx) = oneshot::channel();
+                    let send_res = cmd_tx
+                        .send(McpCommand::ConfigureRtt {
+                            target_id,
+                            width,
+                            height,
+                            camera_entity,
+                            display_entity,
+                            fov,
+                            update_hz,
+                            as_emissive,
+                            respond_to: resp_tx,
+                        })
+                        .await;
+
+                    if send_res.is_err() {
+                        return Some(JsonRpcResponse::error(id, -32000, "Engine channel closed"));
+                    }
+
+                    match resp_rx.await {
+                        Ok(Ok(val)) => Some(JsonRpcResponse::success(id, val)),
+                        Ok(Err(e)) => Some(JsonRpcResponse::error(id, -32000, e)),
+                        Err(_) => Some(JsonRpcResponse::error(id, -32000, "Engine dropped response")),
+                    }
+                }
                 _ => Some(JsonRpcResponse::error(id, -32601, format!("Herramienta desconocida: {}", tool_name))),
             }
         }
@@ -2423,6 +2482,71 @@ mod tests {
         let val = serde_json::to_value(&resp).unwrap();
         assert_eq!(val["result"]["found"], true);
         assert_eq!(val["result"]["count"], 2);
+
+        rt.block_on(handle).unwrap();
+    }
+    #[test]
+    fn test_mcp_configure_rtt_dispatch() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(99)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "configure_rtt",
+                "arguments": {
+                    "target_id": "cctv_plaza",
+                    "width": 640,
+                    "height": 480,
+                    "camera_entity": "cam1",
+                    "display_entity": "screen1",
+                    "fov": 70.0,
+                    "update_hz": 20.0,
+                    "as_emissive": true
+                }
+            })),
+        };
+
+        let handle = rt.spawn(async move {
+            if let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    McpCommand::ConfigureRtt {
+                        target_id,
+                        width,
+                        height,
+                        camera_entity,
+                        display_entity,
+                        fov,
+                        update_hz,
+                        as_emissive,
+                        respond_to,
+                    } => {
+                        assert_eq!(target_id, "cctv_plaza");
+                        assert_eq!(width, 640);
+                        assert_eq!(height, 480);
+                        assert_eq!(camera_entity, Some("cam1".to_string()));
+                        assert_eq!(display_entity, Some("screen1".to_string()));
+                        assert_eq!(fov, Some(70.0));
+                        assert_eq!(update_hz, Some(20.0));
+                        assert_eq!(as_emissive, Some(true));
+                        let _ = respond_to.send(Ok(json!({
+                            "status": "success",
+                            "target_id": target_id
+                        })));
+                    }
+                    _ => panic!("Expected ConfigureRtt command"),
+                }
+            }
+        });
+
+        let resp = rt.block_on(async {
+            handle_jsonrpc(&cmd_tx, req).await
+        }).expect("Response expected");
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["result"]["status"], "success");
+        assert_eq!(val["result"]["target_id"], "cctv_plaza");
 
         rt.block_on(handle).unwrap();
     }

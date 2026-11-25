@@ -743,6 +743,10 @@ impl EngineState {
                             ui.label(egui::RichText::new(format!("{}", self.last_draw_calls)).size(11.0).strong().color(egui::Color32::from_rgb(56, 189, 248)));
                             ui.end_row();
 
+                            ui.label(egui::RichText::new("RTT Passes / Targets:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
+                            ui.label(egui::RichText::new(format!("{} passes | {} targets", self.last_rtt_passes, self.gpu.rtt_registry.target_count())).size(11.0).strong().color(egui::Color32::from_rgb(168, 85, 247)));
+                            ui.end_row();
+
                             ui.label(egui::RichText::new("Entities:").size(11.0).color(egui::Color32::from_rgb(142, 149, 165)));
                             ui.label(egui::RichText::new(format!("{}", self.world.len())).size(11.0).strong());
                             ui.end_row();
@@ -3277,6 +3281,76 @@ impl EngineState {
                     };
                     let _ = respond_to.send(Ok(res));
                 }
+                McpCommand::ConfigureRtt {
+                    target_id,
+                    width,
+                    height,
+                    camera_entity,
+                    display_entity,
+                    fov,
+                    update_hz,
+                    as_emissive,
+                    respond_to,
+                } => {
+                    let res = self.gpu.ensure_rtt_target(&target_id, width, height);
+                    if let Err(e) = res {
+                        let _ = respond_to.send(Err(e));
+                        continue;
+                    }
+
+                    let mut cam_e = None;
+                    let mut disp_e = None;
+
+                    for er in self.world.iter() {
+                        let entity = er.entity();
+                        if let Some(meta) = er.get::<&EntityMeta>() {
+                            if let Some(cam_id) = &camera_entity {
+                                if meta.id == *cam_id {
+                                    cam_e = Some(entity);
+                                }
+                            }
+                            if let Some(disp_id) = &display_entity {
+                                if meta.id == *disp_id {
+                                    disp_e = Some(entity);
+                                }
+                            }
+                        }
+                    }
+
+                    let cam_attached = if let Some(e) = cam_e {
+                        let comp = ecs::CameraTarget::new(
+                            target_id.clone(),
+                            width,
+                            height,
+                            fov.unwrap_or(60.0),
+                            update_hz.unwrap_or(30.0),
+                        );
+                        let _ = self.world.insert_one(e, comp);
+                        true
+                    } else {
+                        false
+                    };
+
+                    let disp_attached = if let Some(e) = disp_e {
+                        let comp = ecs::MaterialOverrideRtt {
+                            target_id: target_id.clone(),
+                            as_emissive: as_emissive.unwrap_or(false),
+                        };
+                        let _ = self.world.insert_one(e, comp);
+                        true
+                    } else {
+                        false
+                    };
+
+                    let _ = respond_to.send(Ok(serde_json::json!({
+                        "status": "success",
+                        "target_id": target_id,
+                        "width": width,
+                        "height": height,
+                        "camera_attached": cam_attached,
+                        "display_attached": disp_attached,
+                    })));
+                }
             }
         }
     }
@@ -4424,6 +4498,48 @@ impl EngineState {
             self.camera.start_lerp_to(Vec3::from(eye), Vec3::from(target), duration);
         }
 
+        // Drain Lua RTT Queues
+        if let Ok(mut targets) = self.lua_ctx.pending_rtt_targets.lock() {
+            for (id, w, h) in targets.drain(..) {
+                let _ = self.gpu.ensure_rtt_target(&id, w, h);
+            }
+        }
+        if let Ok(mut cams) = self.lua_ctx.pending_rtt_cameras.lock() {
+            for (ent_id, target_id, fov, hz) in cams.drain(..) {
+                let mut target_e = None;
+                for er in self.world.iter() {
+                    if let Some(meta) = er.get::<&EntityMeta>() {
+                        if meta.id == ent_id {
+                            target_e = Some(er.entity());
+                            break;
+                        }
+                    }
+                }
+                if let Some(e) = target_e {
+                    let _ = self.world.insert_one(e, ecs::CameraTarget::new(target_id, 320, 240, fov, hz));
+                }
+            }
+        }
+        if let Ok(mut mats) = self.lua_ctx.pending_rtt_materials.lock() {
+            for (ent_id, target_id, as_emissive) in mats.drain(..) {
+                let mut target_e = None;
+                for er in self.world.iter() {
+                    if let Some(meta) = er.get::<&EntityMeta>() {
+                        if meta.id == ent_id {
+                            target_e = Some(er.entity());
+                            break;
+                        }
+                    }
+                }
+                if let Some(e) = target_e {
+                    let _ = self.world.insert_one(e, ecs::MaterialOverrideRtt {
+                        target_id,
+                        as_emissive,
+                    });
+                }
+            }
+        }
+
         let pending_cam_orbits = if let Ok(mut c) = self.lua_ctx.pending_camera_orbits.lock() {
             std::mem::take(&mut *c)
         } else {
@@ -4967,7 +5083,7 @@ impl EngineState {
 
                             // Declarative In-Game UI from Lua (game_ui)
                             if let Ok(elements) = self.lua_ctx.game_ui_elements.read() {
-                                game_ui::render_declarative_ui(ui.ctx(), &painter, viewport_rect, &elements, &self.lua_ctx.pending_button_clicks, &mut self.ui_texture_cache);
+                                game_ui::render_declarative_ui(ui.ctx(), &painter, viewport_rect, &elements, &self.lua_ctx.pending_button_clicks, &mut self.ui_texture_cache, Some(&self.gpu.rtt_registry));
                             }
 
                             if let Ok(labels) = self.lua_ctx.world_labels.read() {
@@ -7005,7 +7121,7 @@ impl EngineState {
                         // 5b. Declarative In-Game UI from Lua (game_ui)
                         if self.play_mode == PlayMode::Play {
                             if let Ok(elements) = self.lua_ctx.game_ui_elements.read() {
-                                game_ui::render_declarative_ui(ui.ctx(), &painter.with_clip_rect(viewport_rect), viewport_rect, &elements, &self.lua_ctx.pending_button_clicks, &mut self.ui_texture_cache);
+                                game_ui::render_declarative_ui(ui.ctx(), &painter.with_clip_rect(viewport_rect), viewport_rect, &elements, &self.lua_ctx.pending_button_clicks, &mut self.ui_texture_cache, Some(&self.gpu.rtt_registry));
                             }
                         }
 

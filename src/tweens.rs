@@ -110,6 +110,13 @@ pub fn get_ui_element_prop(elem: &crate::game_ui::UiElement, prop: &str) -> Opti
             "size" | "width" | "height" => Some(*size),
             _ => None,
         },
+        crate::game_ui::UiElement::RttView { x, y, width, height, .. } => match prop.to_lowercase().as_str() {
+            "x" | "offset_x" => Some(*x),
+            "y" | "offset_y" => Some(*y),
+            "width" | "w" => Some(*width),
+            "height" | "h" => Some(*height),
+            _ => None,
+        },
     }
 }
 
@@ -154,6 +161,13 @@ pub fn set_ui_element_prop(elem: &mut crate::game_ui::UiElement, prop: &str, val
             "x" | "offset_x" => *x = val,
             "y" | "offset_y" => *y = val,
             "size" | "width" | "height" => *size = val.max(1.0),
+            _ => {},
+        },
+        crate::game_ui::UiElement::RttView { x, y, width, height, .. } => match prop.to_lowercase().as_str() {
+            "x" | "offset_x" => *x = val,
+            "y" | "offset_y" => *y = val,
+            "width" | "w" => *width = val,
+            "height" | "h" => *height = val,
             _ => {},
         },
     }

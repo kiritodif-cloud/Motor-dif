@@ -63,6 +63,14 @@ pub enum UiElement {
         selected: bool,
         hotkey_label: Option<String>,
     },
+    RttView {
+        id: String,
+        target_id: String,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    },
 }
 
 impl UiElement {
@@ -74,6 +82,7 @@ impl UiElement {
             UiElement::Button { id, .. } => id,
             UiElement::Image { id, .. } => id,
             UiElement::Slot { id, .. } => id,
+            UiElement::RttView { id, .. } => id,
         }
     }
 }
@@ -177,6 +186,7 @@ pub fn render_declarative_ui(
     elements: &[UiElement],
     pending_clicks: &Arc<Mutex<Vec<String>>>,
     texture_cache: &mut HashMap<String, egui::TextureHandle>,
+    rtt_registry: Option<&crate::renderer::RenderTargetRegistry>,
 ) {
     let painter = painter.with_clip_rect(viewport_rect);
     for elem in elements {
@@ -380,6 +390,26 @@ pub fn render_declarative_ui(
                         );
                     }
                 }
+            }
+            UiElement::RttView {
+                target_id,
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => {
+                let px = if *x < 0.0 { viewport_rect.max.x + *x } else { viewport_rect.min.x + *x };
+                let py = if *y < 0.0 { viewport_rect.max.y + *y } else { viewport_rect.min.y + *y };
+                let rect = Rect::from_min_size(Pos2::new(px, py), Vec2::new(*width, *height));
+                painter.rect_filled(rect, CornerRadius::same(4), Color32::from_rgb(10, 12, 16));
+                if let Some(rtt) = rtt_registry.and_then(|r| r.get(target_id)) {
+                    if let Some(tid) = rtt.egui_texture_id {
+                        let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
+                        painter.image(tid, rect, uv, Color32::WHITE);
+                    }
+                }
+                painter.rect_stroke(rect, CornerRadius::same(4), Stroke::new(1.0, Color32::from_rgb(56, 189, 248)), StrokeKind::Outside);
             }
         }
     }
