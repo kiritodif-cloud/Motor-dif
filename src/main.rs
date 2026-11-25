@@ -1648,7 +1648,7 @@ let role_str = match self.net.role {
                         _ => false,
                     };
                     if is_escape {
-                        if self.play_mode == PlayMode::Play && !self.is_paused {
+                        if self.play_mode == PlayMode::Play {
                             if !self.is_paused {
                                 self.is_paused = true;
                                 self.set_pointer_lock(false);
@@ -1694,7 +1694,7 @@ let role_str = match self.net.role {
                 }
 
                 // Keyboard Shortcuts when not focused on egui text edit (Editor mode only)
-                if !self.is_standalone_play && is_pressed && !egui_wants_kbd {
+                if !self.is_standalone_play && self.play_mode == PlayMode::Edit && is_pressed && !egui_wants_kbd {
                     let (_ctrl, do_s, do_z, do_y, do_d, do_del, do_w, do_e, do_r, do_f) = {
                         let set = self.pressed_keys.read().unwrap();
                         let ctrl_down = set.contains("CONTROL") || set.contains("CONTROLRIGHT") || set.contains("CONTROLLEFT");
