@@ -86,7 +86,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "arena_inner",
@@ -129,7 +131,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "rig_beacon",
@@ -180,7 +184,9 @@
       },
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "rig_beacon_ring1",
@@ -223,7 +229,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "mech_root",
@@ -280,7 +288,9 @@
         "breath_speed": 2.2,
         "breath_amplitude": 0.035
       },
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "mech_torso",
@@ -323,7 +333,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "mech_head",
@@ -366,7 +378,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "mech_arm_l",
@@ -405,7 +419,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "mech_arm_r",
@@ -444,7 +460,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "mech_weapon",
@@ -487,7 +505,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "mech_leg_l",
@@ -526,7 +546,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "mech_leg_r",
@@ -565,7 +587,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "spider_root",
@@ -622,7 +646,9 @@
         "breath_speed": 1.8,
         "breath_amplitude": 0.02
       },
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "spider_torso",
@@ -665,7 +691,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "spider_eye",
@@ -708,7 +736,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "spider_leg_fl",
@@ -747,7 +777,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "spider_leg_fr",
@@ -786,7 +818,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "spider_leg_bl",
@@ -825,7 +859,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "spider_leg_br",
@@ -864,7 +900,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "turret_root",
@@ -921,7 +959,9 @@
         "breath_speed": 1.5,
         "breath_amplitude": 0.03
       },
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "turret_base",
@@ -960,7 +1000,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "turret_ring",
@@ -1003,7 +1045,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "turret_dome",
@@ -1046,7 +1090,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "turret_cannons",
@@ -1089,7 +1135,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "trooper_root",
@@ -1146,7 +1194,9 @@
         "breath_speed": 2.4,
         "breath_amplitude": 0.025
       },
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "trooper_torso",
@@ -1189,7 +1239,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "trooper_head",
@@ -1232,7 +1284,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "trooper_arm_l",
@@ -1271,7 +1325,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "trooper_arm_r",
@@ -1310,7 +1366,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "trooper_weapon",
@@ -1353,7 +1411,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "trooper_leg_l",
@@ -1392,7 +1452,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     },
     {
       "id": "trooper_leg_r",
@@ -1431,7 +1493,9 @@
       "point_light": null,
       "animation_player": null,
       "procedural_rig": null,
-      "vfx_emitter": null
+      "vfx_emitter": null,
+      "camera_target": null,
+      "material_override_rtt": null
     }
   ]
 }

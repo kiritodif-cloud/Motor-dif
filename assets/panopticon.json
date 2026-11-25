@@ -1,0 +1,3310 @@
+{
+    "camera":  {
+                   "mode":  "3d",
+                   "position":  [
+                                    0,
+                                    6.8,
+                                    -19.5
+                                ],
+                   "target":  [
+                                  0,
+                                  1.2,
+                                  4
+                              ],
+                   "ortho_size":  15
+               },
+    "post_process":  {
+                         "bloom_enabled":  true,
+                         "bloom_intensity":  0.35,
+                         "bloom_threshold":  0.85,
+                         "vignette_intensity":  0.35,
+                         "exposure":  1
+                     },
+    "environment":  {
+                        "sky_mode":  "gradient",
+                        "zenith_color":  [
+                                             0.07,
+                                             0.14,
+                                             0.28
+                                         ],
+                        "horizon_color":  [
+                                              0.35,
+                                              0.48,
+                                              0.68
+                                          ],
+                        "fog_color":  [
+                                          0.18,
+                                          0.24,
+                                          0.34
+                                      ],
+                        "fog_density":  0.0018,
+                        "time_of_day":  12
+                    },
+    "entities":  [
+                     {
+                         "id":  "panopticon_core",
+                         "mesh":  "cube",
+                         "position":  [
+                                          0,
+                                          -20,
+                                          0
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.2,
+                                       0.2,
+                                       0.2
+                                   ],
+                         "color":  [
+                                       0.1,
+                                       0.1,
+                                       0.1,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "script":  "assets/scripts/panopticon.lua"
+                     },
+                     {
+                         "id":  "ground_asphalt",
+                         "mesh":  "plane",
+                         "position":  [
+                                          0,
+                                          -0.05,
+                                          0
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       86,
+                                       1,
+                                       86
+                                   ],
+                         "color":  [
+                                       0.16,
+                                       0.17,
+                                       0.2,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_asphalt.png"
+                     },
+                     {
+                         "id":  "plaza_floor",
+                         "mesh":  "plane",
+                         "position":  [
+                                          0,
+                                          0.01,
+                                          2
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       26,
+                                       1,
+                                       26
+                                   ],
+                         "color":  [
+                                       0.32,
+                                       0.38,
+                                       0.46,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_plaza.png"
+                     },
+                     {
+                         "id":  "road_north",
+                         "mesh":  "plane",
+                         "position":  [
+                                          0,
+                                          0.005,
+                                          -13
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       64,
+                                       1,
+                                       4.2
+                                   ],
+                         "color":  [
+                                       0.12,
+                                       0.13,
+                                       0.16,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_asphalt.png"
+                     },
+                     {
+                         "id":  "road_south",
+                         "mesh":  "plane",
+                         "position":  [
+                                          0,
+                                          0.005,
+                                          17
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       64,
+                                       1,
+                                       4.2
+                                   ],
+                         "color":  [
+                                       0.12,
+                                       0.13,
+                                       0.16,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_asphalt.png"
+                     },
+                     {
+                         "id":  "road_west",
+                         "mesh":  "plane",
+                         "position":  [
+                                          -14.5,
+                                          0.005,
+                                          2
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       4.2,
+                                       1,
+                                       34
+                                   ],
+                         "color":  [
+                                       0.12,
+                                       0.13,
+                                       0.16,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_asphalt.png"
+                     },
+                     {
+                         "id":  "road_east",
+                         "mesh":  "plane",
+                         "position":  [
+                                          14.5,
+                                          0.005,
+                                          2
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       4.2,
+                                       1,
+                                       34
+                                   ],
+                         "color":  [
+                                       0.12,
+                                       0.13,
+                                       0.16,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_asphalt.png"
+                     },
+                     {
+                         "id":  "plaza_monument_base",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          0,
+                                          0.35,
+                                          2
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       4.2,
+                                       0.7,
+                                       4.2
+                                   ],
+                         "color":  [
+                                       0.25,
+                                       0.28,
+                                       0.34,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "plaza_monument_pillar",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          0,
+                                          2.5,
+                                          2
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       1.1,
+                                       4.2,
+                                       1.1
+                                   ],
+                         "color":  [
+                                       0.28,
+                                       0.32,
+                                       0.4,
+                                       1
+                                   ],
+                         "emissive":  0.05,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "plaza_monument_beacon",
+                         "mesh":  "icosphere",
+                         "position":  [
+                                          0,
+                                          5.1,
+                                          2
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.85,
+                                       0.85,
+                                       0.85
+                                   ],
+                         "color":  [
+                                       0.2,
+                                       0.75,
+                                       1,
+                                       1
+                                   ],
+                         "emissive":  0.6,
+                         "blend_mode":  "opaque",
+                         "point_light":  {
+                                             "radius":  18,
+                                             "color":  [
+                                                           0.25,
+                                                           0.75,
+                                                           1
+                                                       ],
+                                             "intensity":  3.2
+                                         }
+                     },
+                     {
+                         "id":  "lamp_nw_pole",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          -11,
+                                          2.5,
+                                          -9
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.24,
+                                       5,
+                                       0.24
+                                   ],
+                         "color":  [
+                                       0.22,
+                                       0.24,
+                                       0.28,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "lamp_nw_bulb",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          -11,
+                                          5.2,
+                                          -9
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.55,
+                                       0.45,
+                                       0.55
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.88,
+                                       0.65,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque",
+                         "point_light":  {
+                                             "radius":  14,
+                                             "color":  [
+                                                           1,
+                                                           0.86,
+                                                           0.62
+                                                       ],
+                                             "intensity":  2.4
+                                         }
+                     },
+                     {
+                         "id":  "lamp_ne_pole",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          11,
+                                          2.5,
+                                          -9
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.24,
+                                       5,
+                                       0.24
+                                   ],
+                         "color":  [
+                                       0.22,
+                                       0.24,
+                                       0.28,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "lamp_ne_bulb",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          11,
+                                          5.2,
+                                          -9
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.55,
+                                       0.45,
+                                       0.55
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.88,
+                                       0.65,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque",
+                         "point_light":  {
+                                             "radius":  14,
+                                             "color":  [
+                                                           1,
+                                                           0.86,
+                                                           0.62
+                                                       ],
+                                             "intensity":  2.4
+                                         }
+                     },
+                     {
+                         "id":  "lamp_sw_pole",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          -11,
+                                          2.5,
+                                          13
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.24,
+                                       5,
+                                       0.24
+                                   ],
+                         "color":  [
+                                       0.22,
+                                       0.24,
+                                       0.28,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "lamp_sw_bulb",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          -11,
+                                          5.2,
+                                          13
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.55,
+                                       0.45,
+                                       0.55
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.88,
+                                       0.65,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque",
+                         "point_light":  {
+                                             "radius":  14,
+                                             "color":  [
+                                                           1,
+                                                           0.86,
+                                                           0.62
+                                                       ],
+                                             "intensity":  2.4
+                                         }
+                     },
+                     {
+                         "id":  "lamp_se_pole",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          11,
+                                          2.5,
+                                          13
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.24,
+                                       5,
+                                       0.24
+                                   ],
+                         "color":  [
+                                       0.22,
+                                       0.24,
+                                       0.28,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "lamp_se_bulb",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          11,
+                                          5.2,
+                                          13
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.55,
+                                       0.45,
+                                       0.55
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.88,
+                                       0.65,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque",
+                         "point_light":  {
+                                             "radius":  14,
+                                             "color":  [
+                                                           1,
+                                                           0.86,
+                                                           0.62
+                                                       ],
+                                             "intensity":  2.4
+                                         }
+                     },
+                     {
+                         "id":  "bldg_w1",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -22,
+                                          4,
+                                          -10
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       8,
+                                       8,
+                                       6
+                                   ],
+                         "color":  [
+                                       0.32,
+                                       0.34,
+                                       0.4,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "bldg_w2",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -30,
+                                          5.5,
+                                          2
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       6,
+                                       11,
+                                       22
+                                   ],
+                         "color":  [
+                                       0.28,
+                                       0.3,
+                                       0.36,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "bldg_w3",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -21,
+                                          3.8,
+                                          14
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       9,
+                                       7.6,
+                                       5
+                                   ],
+                         "color":  [
+                                       0.3,
+                                       0.33,
+                                       0.38,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "market_stall_1",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -21,
+                                          1.1,
+                                          2
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       3.2,
+                                       2.2,
+                                       2
+                                   ],
+                         "color":  [
+                                       0.75,
+                                       0.32,
+                                       0.22,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "market_stall_2",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -24.5,
+                                          1.1,
+                                          7
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       2.4,
+                                       2.2,
+                                       3.2
+                                   ],
+                         "color":  [
+                                       0.22,
+                                       0.55,
+                                       0.68,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "crate_1",
+                         "mesh":  "sci_fi_crate",
+                         "position":  [
+                                          -19,
+                                          0.6,
+                                          7.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0.4,
+                                          0
+                                      ],
+                         "scale":  [
+                                       1.2,
+                                       1.2,
+                                       1.2
+                                   ],
+                         "color":  [
+                                       0.55,
+                                       0.48,
+                                       0.36,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "crate_2",
+                         "mesh":  "sci_fi_crate",
+                         "position":  [
+                                          19,
+                                          0.6,
+                                          1.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          -0.3,
+                                          0
+                                      ],
+                         "scale":  [
+                                       1.2,
+                                       1.2,
+                                       1.2
+                                   ],
+                         "color":  [
+                                       0.55,
+                                       0.48,
+                                       0.36,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "bldg_e1",
+                         "mesh":  "cube",
+                         "position":  [
+                                          23,
+                                          4.5,
+                                          12
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       9,
+                                       9,
+                                       7
+                                   ],
+                         "color":  [
+                                       0.3,
+                                       0.32,
+                                       0.38,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "bldg_e2",
+                         "mesh":  "cube",
+                         "position":  [
+                                          30,
+                                          5.5,
+                                          -2
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       6,
+                                       11,
+                                       20
+                                   ],
+                         "color":  [
+                                       0.28,
+                                       0.3,
+                                       0.36,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "bldg_s1",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -11,
+                                          4.5,
+                                          24
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       14,
+                                       9,
+                                       6
+                                   ],
+                         "color":  [
+                                       0.28,
+                                       0.31,
+                                       0.37,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "bldg_s2",
+                         "mesh":  "cube",
+                         "position":  [
+                                          11,
+                                          4.5,
+                                          24
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       14,
+                                       9,
+                                       6
+                                   ],
+                         "color":  [
+                                       0.28,
+                                       0.31,
+                                       0.37,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "substation_core",
+                         "mesh":  "cube",
+                         "position":  [
+                                          24,
+                                          1.6,
+                                          -20
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       3.6,
+                                       3.2,
+                                       3.6
+                                   ],
+                         "color":  [
+                                       0.8,
+                                       0.55,
+                                       0.18,
+                                       1
+                                   ],
+                         "emissive":  0.08,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_hazard.png",
+                         "point_light":  {
+                                             "radius":  13,
+                                             "color":  [
+                                                           1,
+                                                           0.65,
+                                                           0.2
+                                                       ],
+                                             "intensity":  2.5
+                                         }
+                     },
+                     {
+                         "id":  "substation_trans_1",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          19.5,
+                                          1.3,
+                                          -18
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       1.6,
+                                       2.6,
+                                       1.6
+                                   ],
+                         "color":  [
+                                       0.42,
+                                       0.44,
+                                       0.48,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_hazard.png"
+                     },
+                     {
+                         "id":  "substation_trans_2",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          27.5,
+                                          1.3,
+                                          -23.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       1.6,
+                                       2.6,
+                                       1.6
+                                   ],
+                         "color":  [
+                                       0.42,
+                                       0.44,
+                                       0.48,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_hazard.png"
+                     },
+                     {
+                         "id":  "antenna_1_base",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -8,
+                                          0.6,
+                                          15
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       1.6,
+                                       1.2,
+                                       1.6
+                                   ],
+                         "color":  [
+                                       0.25,
+                                       0.28,
+                                       0.32,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "antenna_1_mast",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          -8,
+                                          3.6,
+                                          15
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.22,
+                                       5.2,
+                                       0.22
+                                   ],
+                         "color":  [
+                                       0.5,
+                                       0.55,
+                                       0.6,
+                                       1
+                                   ],
+                         "emissive":  0.05,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "antenna_1_tip",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          -8,
+                                          6.4,
+                                          15
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.55,
+                                       0.55,
+                                       0.55
+                                   ],
+                         "color":  [
+                                       0.2,
+                                       0.85,
+                                       0.4,
+                                       1
+                                   ],
+                         "emissive":  0.6,
+                         "blend_mode":  "opaque",
+                         "point_light":  {
+                                             "radius":  10,
+                                             "color":  [
+                                                           0.2,
+                                                           0.9,
+                                                           0.4
+                                                       ],
+                                             "intensity":  2
+                                         }
+                     },
+                     {
+                         "id":  "antenna_2_base",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -25.5,
+                                          0.6,
+                                          11
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       1.6,
+                                       1.2,
+                                       1.6
+                                   ],
+                         "color":  [
+                                       0.25,
+                                       0.28,
+                                       0.32,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "antenna_2_mast",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          -25.5,
+                                          3.6,
+                                          11
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.22,
+                                       5.2,
+                                       0.22
+                                   ],
+                         "color":  [
+                                       0.5,
+                                       0.55,
+                                       0.6,
+                                       1
+                                   ],
+                         "emissive":  0.05,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "antenna_2_tip",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          -25.5,
+                                          6.4,
+                                          11
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.55,
+                                       0.55,
+                                       0.55
+                                   ],
+                         "color":  [
+                                       0.2,
+                                       0.85,
+                                       0.4,
+                                       1
+                                   ],
+                         "emissive":  0.6,
+                         "blend_mode":  "opaque",
+                         "point_light":  {
+                                             "radius":  10,
+                                             "color":  [
+                                                           0.2,
+                                                           0.9,
+                                                           0.4
+                                                       ],
+                                             "intensity":  2
+                                         }
+                     },
+                     {
+                         "id":  "antenna_3_base",
+                         "mesh":  "cube",
+                         "position":  [
+                                          24.5,
+                                          0.6,
+                                          -16.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       1.6,
+                                       1.2,
+                                       1.6
+                                   ],
+                         "color":  [
+                                       0.25,
+                                       0.28,
+                                       0.32,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "antenna_3_mast",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          24.5,
+                                          3.6,
+                                          -16.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.22,
+                                       5.2,
+                                       0.22
+                                   ],
+                         "color":  [
+                                       0.5,
+                                       0.55,
+                                       0.6,
+                                       1
+                                   ],
+                         "emissive":  0.05,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "antenna_3_tip",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          24.5,
+                                          6.4,
+                                          -16.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.55,
+                                       0.55,
+                                       0.55
+                                   ],
+                         "color":  [
+                                       0.2,
+                                       0.85,
+                                       0.4,
+                                       1
+                                   ],
+                         "emissive":  0.6,
+                         "blend_mode":  "opaque",
+                         "point_light":  {
+                                             "radius":  10,
+                                             "color":  [
+                                                           0.2,
+                                                           0.9,
+                                                           0.4
+                                                       ],
+                                             "intensity":  2
+                                         }
+                     },
+                     {
+                         "id":  "fuse_box_1",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -19.5,
+                                          1,
+                                          -4.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       1.1,
+                                       1.8,
+                                       0.8
+                                   ],
+                         "color":  [
+                                       0.9,
+                                       0.6,
+                                       0.15,
+                                       1
+                                   ],
+                         "emissive":  0.12,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_hazard.png"
+                     },
+                     {
+                         "id":  "fuse_box_2",
+                         "mesh":  "cube",
+                         "position":  [
+                                          19.5,
+                                          1,
+                                          5.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       1.1,
+                                       1.8,
+                                       0.8
+                                   ],
+                         "color":  [
+                                       0.9,
+                                       0.6,
+                                       0.15,
+                                       1
+                                   ],
+                         "emissive":  0.12,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_hazard.png"
+                     },
+                     {
+                         "id":  "keycard_1",
+                         "mesh":  "cube",
+                         "position":  [
+                                          22.5,
+                                          0.9,
+                                          -17.5
+                                      ],
+                         "rotation":  [
+                                          0.2,
+                                          0.5,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.55,
+                                       0.35,
+                                       0.1
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.82,
+                                       0.15,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "keycard_2",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -22.5,
+                                          0.9,
+                                          5.5
+                                      ],
+                         "rotation":  [
+                                          -0.2,
+                                          0.8,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.55,
+                                       0.35,
+                                       0.1
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.82,
+                                       0.15,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "prison_pad",
+                         "mesh":  "plane",
+                         "position":  [
+                                          -23,
+                                          0.02,
+                                          -22
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       7,
+                                       1,
+                                       7
+                                   ],
+                         "color":  [
+                                       0.15,
+                                       0.25,
+                                       0.45,
+                                       1
+                                   ],
+                         "emissive":  0.08,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_plaza.png"
+                     },
+                     {
+                         "id":  "prison_frame_l",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -26.2,
+                                          1.8,
+                                          -22
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.6,
+                                       3.6,
+                                       7
+                                   ],
+                         "color":  [
+                                       0.24,
+                                       0.28,
+                                       0.36,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "prison_frame_b",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -23,
+                                          1.8,
+                                          -25.2
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       7,
+                                       3.6,
+                                       0.6
+                                   ],
+                         "color":  [
+                                       0.24,
+                                       0.28,
+                                       0.36,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "prison_beacon",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          -23,
+                                          4,
+                                          -22
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.6,
+                                       0.6,
+                                       0.6
+                                   ],
+                         "color":  [
+                                       0.2,
+                                       0.5,
+                                       1,
+                                       1
+                                   ],
+                         "emissive":  0.6,
+                         "blend_mode":  "opaque",
+                         "point_light":  {
+                                             "radius":  12,
+                                             "color":  [
+                                                           0.25,
+                                                           0.55,
+                                                           1
+                                                       ],
+                                             "intensity":  2.2
+                                         }
+                     },
+                     {
+                         "id":  "tower_wall_back",
+                         "mesh":  "cube",
+                         "position":  [
+                                          0,
+                                          4.5,
+                                          -28
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       18,
+                                       9,
+                                       0.8
+                                   ],
+                         "color":  [
+                                       0.22,
+                                       0.25,
+                                       0.32,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "tower_wall_left",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -9,
+                                          4.5,
+                                          -22
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.8,
+                                       9,
+                                       12
+                                   ],
+                         "color":  [
+                                       0.22,
+                                       0.25,
+                                       0.32,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "tower_wall_right",
+                         "mesh":  "cube",
+                         "position":  [
+                                          9,
+                                          4.5,
+                                          -22
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.8,
+                                       9,
+                                       12
+                                   ],
+                         "color":  [
+                                       0.22,
+                                       0.25,
+                                       0.32,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "tower_upper_floor",
+                         "mesh":  "cube",
+                         "position":  [
+                                          0,
+                                          5,
+                                          -22
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       17.2,
+                                       0.4,
+                                       11.2
+                                   ],
+                         "color":  [
+                                       0.18,
+                                       0.2,
+                                       0.25,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_plaza.png"
+                     },
+                     {
+                         "id":  "tower_roof",
+                         "mesh":  "cube",
+                         "position":  [
+                                          0,
+                                          9,
+                                          -22
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       18.8,
+                                       0.6,
+                                       12.8
+                                   ],
+                         "color":  [
+                                       0.18,
+                                       0.2,
+                                       0.26,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "tower_front_lower_c",
+                         "mesh":  "cube",
+                         "position":  [
+                                          0,
+                                          2.7,
+                                          -16
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       7.5,
+                                       5.4,
+                                       0.6
+                                   ],
+                         "color":  [
+                                       0.25,
+                                       0.28,
+                                       0.35,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_facade.png"
+                     },
+                     {
+                         "id":  "tower_window",
+                         "mesh":  "cube",
+                         "position":  [
+                                          0,
+                                          6.8,
+                                          -16
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       16.4,
+                                       3.2,
+                                       0.2
+                                   ],
+                         "color":  [
+                                       0.35,
+                                       0.78,
+                                       0.95,
+                                       0.12
+                                   ],
+                         "emissive":  0.03,
+                         "blend_mode":  "translucent"
+                     },
+                     {
+                         "id":  "tower_desk",
+                         "mesh":  "cube",
+                         "position":  [
+                                          0,
+                                          5.25,
+                                          -17.8
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       8,
+                                       0.5,
+                                       1.2
+                                   ],
+                         "color":  [
+                                       0.14,
+                                       0.16,
+                                       0.22,
+                                       1
+                                   ],
+                         "emissive":  0.05,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_server.png",
+                         "point_light":  {
+                                             "radius":  9,
+                                             "color":  [
+                                                           0.2,
+                                                           0.7,
+                                                           1
+                                                       ],
+                                             "intensity":  1.6
+                                         }
+                     },
+                     {
+                         "id":  "tower_mon_1",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -3.8,
+                                          5.85,
+                                          -17.6
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0.2,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.9,
+                                       0.45,
+                                       0.1
+                                   ],
+                         "color":  [
+                                       0.15,
+                                       0.85,
+                                       0.75,
+                                       1
+                                   ],
+                         "emissive":  0.45,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_server.png"
+                     },
+                     {
+                         "id":  "tower_mon_2",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -2.7,
+                                          5.85,
+                                          -17.6
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0.08,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.9,
+                                       0.45,
+                                       0.1
+                                   ],
+                         "color":  [
+                                       0.15,
+                                       0.85,
+                                       0.75,
+                                       1
+                                   ],
+                         "emissive":  0.45,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_server.png"
+                     },
+                     {
+                         "id":  "tower_mon_3",
+                         "mesh":  "cube",
+                         "position":  [
+                                          2.7,
+                                          5.85,
+                                          -17.6
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          -0.08,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.9,
+                                       0.45,
+                                       0.1
+                                   ],
+                         "color":  [
+                                       0.15,
+                                       0.85,
+                                       0.75,
+                                       1
+                                   ],
+                         "emissive":  0.45,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_server.png"
+                     },
+                     {
+                         "id":  "tower_mon_4",
+                         "mesh":  "cube",
+                         "position":  [
+                                          3.8,
+                                          5.85,
+                                          -17.6
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          -0.2,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.9,
+                                       0.45,
+                                       0.1
+                                   ],
+                         "color":  [
+                                       0.15,
+                                       0.85,
+                                       0.75,
+                                       1
+                                   ],
+                         "emissive":  0.45,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_server.png"
+                     },
+                     {
+                         "id":  "central_server",
+                         "mesh":  "cube",
+                         "position":  [
+                                          0,
+                                          1.9,
+                                          -24.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       2.6,
+                                       3.8,
+                                       2
+                                   ],
+                         "color":  [
+                                       0.15,
+                                       0.65,
+                                       1,
+                                       1
+                                   ],
+                         "emissive":  0.45,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_server.png",
+                         "point_light":  {
+                                             "radius":  12,
+                                             "color":  [
+                                                           0.15,
+                                                           0.75,
+                                                           1
+                                                       ],
+                                             "intensity":  2.8
+                                         }
+                     },
+                     {
+                         "id":  "sec_door_west",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -6,
+                                          4.2,
+                                          -16
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       3.8,
+                                       3.2,
+                                       0.45
+                                   ],
+                         "color":  [
+                                       0.95,
+                                       0.35,
+                                       0.15,
+                                       1
+                                   ],
+                         "emissive":  0.25,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_hazard.png"
+                     },
+                     {
+                         "id":  "sec_door_east",
+                         "mesh":  "cube",
+                         "position":  [
+                                          6,
+                                          4.2,
+                                          -16
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       3.8,
+                                       3.2,
+                                       0.45
+                                   ],
+                         "color":  [
+                                       0.95,
+                                       0.35,
+                                       0.15,
+                                       1
+                                   ],
+                         "emissive":  0.25,
+                         "blend_mode":  "opaque",
+                         "texture":  "assets/textures/panopticon_hazard.png"
+                     },
+                     {
+                         "id":  "cctv_1_pole",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          -12,
+                                          4.1,
+                                          -10
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.22,
+                                       8.2,
+                                       0.22
+                                   ],
+                         "color":  [
+                                       0.28,
+                                       0.3,
+                                       0.34,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "cctv_1_head",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -12,
+                                          8.2,
+                                          -10
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.7,
+                                       0.5,
+                                       0.9
+                                   ],
+                         "color":  [
+                                       0.15,
+                                       0.95,
+                                       0.45,
+                                       1
+                                   ],
+                         "emissive":  0.5,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "cctv_2_pole",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          12,
+                                          4.1,
+                                          13
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.22,
+                                       8.2,
+                                       0.22
+                                   ],
+                         "color":  [
+                                       0.28,
+                                       0.3,
+                                       0.34,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "cctv_2_head",
+                         "mesh":  "cube",
+                         "position":  [
+                                          12,
+                                          8.2,
+                                          13
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.7,
+                                       0.5,
+                                       0.9
+                                   ],
+                         "color":  [
+                                       0.15,
+                                       0.95,
+                                       0.45,
+                                       1
+                                   ],
+                         "emissive":  0.5,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "cctv_3_pole",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          -16.5,
+                                          3.6,
+                                          -4
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.22,
+                                       7.2,
+                                       0.22
+                                   ],
+                         "color":  [
+                                       0.28,
+                                       0.3,
+                                       0.34,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "cctv_3_head",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -16.5,
+                                          7.2,
+                                          -4
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.7,
+                                       0.5,
+                                       0.9
+                                   ],
+                         "color":  [
+                                       0.15,
+                                       0.95,
+                                       0.45,
+                                       1
+                                   ],
+                         "emissive":  0.5,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "cctv_4_pole",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          16.5,
+                                          3.6,
+                                          -11
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.22,
+                                       7.2,
+                                       0.22
+                                   ],
+                         "color":  [
+                                       0.28,
+                                       0.3,
+                                       0.34,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "cctv_4_head",
+                         "mesh":  "cube",
+                         "position":  [
+                                          16.5,
+                                          7.2,
+                                          -11
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.7,
+                                       0.5,
+                                       0.9
+                                   ],
+                         "color":  [
+                                       0.15,
+                                       0.95,
+                                       0.45,
+                                       1
+                                   ],
+                         "emissive":  0.5,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "cctv_5_head",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          0,
+                                          -15,
+                                          0
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.45,
+                                       0.45,
+                                       0.45
+                                   ],
+                         "color":  [
+                                       0.2,
+                                       0.9,
+                                       1,
+                                       1
+                                   ],
+                         "emissive":  0.6,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "police_body",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          5,
+                                          0.85,
+                                          -8
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.75,
+                                       1.5,
+                                       0.75
+                                   ],
+                         "color":  [
+                                       0.12,
+                                       0.35,
+                                       0.85,
+                                       1
+                                   ],
+                         "emissive":  0.08,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "police_head",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          5,
+                                          1.85,
+                                          -8
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.55,
+                                       0.55,
+                                       0.55
+                                   ],
+                         "color":  [
+                                       0.85,
+                                       0.85,
+                                       0.92,
+                                       1
+                                   ],
+                         "emissive":  0.05,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "police_beacon",
+                         "mesh":  "cube",
+                         "position":  [
+                                          5,
+                                          2.25,
+                                          -8
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.45,
+                                       0.18,
+                                       0.28
+                                   ],
+                         "color":  [
+                                       0.2,
+                                       0.6,
+                                       1,
+                                       1
+                                   ],
+                         "emissive":  0.7,
+                         "blend_mode":  "opaque",
+                         "point_light":  {
+                                             "radius":  11,
+                                             "color":  [
+                                                           0.25,
+                                                           0.65,
+                                                           1
+                                                       ],
+                                             "intensity":  2.4
+                                         }
+                     },
+                     {
+                         "id":  "tech_body",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          -5,
+                                          0.85,
+                                          -7
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.68,
+                                       1.45,
+                                       0.68
+                                   ],
+                         "color":  [
+                                       0.28,
+                                       0.65,
+                                       0.58,
+                                       1
+                                   ],
+                         "emissive":  0.05,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "tech_head",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          -5,
+                                          1.8,
+                                          -7
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.5,
+                                       0.5,
+                                       0.5
+                                   ],
+                         "color":  [
+                                       0.88,
+                                       0.8,
+                                       0.72,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "tech_pack",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -5,
+                                          1.1,
+                                          -7.4
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.45,
+                                       0.65,
+                                       0.3
+                                   ],
+                         "color":  [
+                                       0.95,
+                                       0.7,
+                                       0.2,
+                                       1
+                                   ],
+                         "emissive":  0.15,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_1_body",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          7.5,
+                                          0.8,
+                                          2
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.62,
+                                       1.4,
+                                       0.62
+                                   ],
+                         "color":  [
+                                       0.55,
+                                       0.6,
+                                       0.66,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_1_head",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          7.5,
+                                          1.72,
+                                          2
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.46,
+                                       0.46,
+                                       0.46
+                                   ],
+                         "color":  [
+                                       0.88,
+                                       0.78,
+                                       0.7,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_1_item",
+                         "mesh":  "cube",
+                         "position":  [
+                                          7.5,
+                                          -6,
+                                          2
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.32,
+                                       0.32,
+                                       0.32
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.25,
+                                       0.25,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_2_body",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          6.5,
+                                          0.8,
+                                          5.75
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.62,
+                                       1.4,
+                                       0.62
+                                   ],
+                         "color":  [
+                                       0.68,
+                                       0.52,
+                                       0.42,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_2_head",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          6.5,
+                                          1.72,
+                                          5.75
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.46,
+                                       0.46,
+                                       0.46
+                                   ],
+                         "color":  [
+                                       0.88,
+                                       0.78,
+                                       0.7,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_2_item",
+                         "mesh":  "cube",
+                         "position":  [
+                                          6.5,
+                                          -6,
+                                          5.75
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.32,
+                                       0.32,
+                                       0.32
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.25,
+                                       0.25,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_3_body",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          3.75,
+                                          0.8,
+                                          8.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.62,
+                                       1.4,
+                                       0.62
+                                   ],
+                         "color":  [
+                                       0.45,
+                                       0.62,
+                                       0.52,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_3_head",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          3.75,
+                                          1.72,
+                                          8.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.46,
+                                       0.46,
+                                       0.46
+                                   ],
+                         "color":  [
+                                       0.88,
+                                       0.78,
+                                       0.7,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_3_item",
+                         "mesh":  "cube",
+                         "position":  [
+                                          3.75,
+                                          -6,
+                                          8.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.32,
+                                       0.32,
+                                       0.32
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.25,
+                                       0.25,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_4_body",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          0,
+                                          0.8,
+                                          9.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.62,
+                                       1.4,
+                                       0.62
+                                   ],
+                         "color":  [
+                                       0.62,
+                                       0.55,
+                                       0.7,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_4_head",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          0,
+                                          1.72,
+                                          9.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.46,
+                                       0.46,
+                                       0.46
+                                   ],
+                         "color":  [
+                                       0.88,
+                                       0.78,
+                                       0.7,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_4_item",
+                         "mesh":  "cube",
+                         "position":  [
+                                          0,
+                                          -6,
+                                          9.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.32,
+                                       0.32,
+                                       0.32
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.25,
+                                       0.25,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_5_body",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          -3.75,
+                                          0.8,
+                                          8.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.62,
+                                       1.4,
+                                       0.62
+                                   ],
+                         "color":  [
+                                       0.7,
+                                       0.64,
+                                       0.44,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_5_head",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          -3.75,
+                                          1.72,
+                                          8.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.46,
+                                       0.46,
+                                       0.46
+                                   ],
+                         "color":  [
+                                       0.88,
+                                       0.78,
+                                       0.7,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_5_item",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -3.75,
+                                          -6,
+                                          8.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.32,
+                                       0.32,
+                                       0.32
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.25,
+                                       0.25,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_6_body",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          -6.5,
+                                          0.8,
+                                          5.75
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.62,
+                                       1.4,
+                                       0.62
+                                   ],
+                         "color":  [
+                                       0.42,
+                                       0.58,
+                                       0.68,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_6_head",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          -6.5,
+                                          1.72,
+                                          5.75
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.46,
+                                       0.46,
+                                       0.46
+                                   ],
+                         "color":  [
+                                       0.88,
+                                       0.78,
+                                       0.7,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_6_item",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -6.5,
+                                          -6,
+                                          5.75
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.32,
+                                       0.32,
+                                       0.32
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.25,
+                                       0.25,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_7_body",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          -7.5,
+                                          0.8,
+                                          2
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.62,
+                                       1.4,
+                                       0.62
+                                   ],
+                         "color":  [
+                                       0.64,
+                                       0.46,
+                                       0.52,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_7_head",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          -7.5,
+                                          1.72,
+                                          2
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.46,
+                                       0.46,
+                                       0.46
+                                   ],
+                         "color":  [
+                                       0.88,
+                                       0.78,
+                                       0.7,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_7_item",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -7.5,
+                                          -6,
+                                          2
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.32,
+                                       0.32,
+                                       0.32
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.25,
+                                       0.25,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_8_body",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          -6.5,
+                                          0.8,
+                                          -1.75
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.62,
+                                       1.4,
+                                       0.62
+                                   ],
+                         "color":  [
+                                       0.52,
+                                       0.64,
+                                       0.46,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_8_head",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          -6.5,
+                                          1.72,
+                                          -1.75
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.46,
+                                       0.46,
+                                       0.46
+                                   ],
+                         "color":  [
+                                       0.88,
+                                       0.78,
+                                       0.7,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_8_item",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -6.5,
+                                          -6,
+                                          -1.75
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.32,
+                                       0.32,
+                                       0.32
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.25,
+                                       0.25,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_9_body",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          -3.75,
+                                          0.8,
+                                          -4.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.62,
+                                       1.4,
+                                       0.62
+                                   ],
+                         "color":  [
+                                       0.58,
+                                       0.58,
+                                       0.62,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_9_head",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          -3.75,
+                                          1.72,
+                                          -4.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.46,
+                                       0.46,
+                                       0.46
+                                   ],
+                         "color":  [
+                                       0.88,
+                                       0.78,
+                                       0.7,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_9_item",
+                         "mesh":  "cube",
+                         "position":  [
+                                          -3.75,
+                                          -6,
+                                          -4.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.32,
+                                       0.32,
+                                       0.32
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.25,
+                                       0.25,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_10_body",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          0,
+                                          0.8,
+                                          -5.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.62,
+                                       1.4,
+                                       0.62
+                                   ],
+                         "color":  [
+                                       0.66,
+                                       0.58,
+                                       0.48,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_10_head",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          0,
+                                          1.72,
+                                          -5.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.46,
+                                       0.46,
+                                       0.46
+                                   ],
+                         "color":  [
+                                       0.88,
+                                       0.78,
+                                       0.7,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_10_item",
+                         "mesh":  "cube",
+                         "position":  [
+                                          0,
+                                          -6,
+                                          -5.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.32,
+                                       0.32,
+                                       0.32
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.25,
+                                       0.25,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_11_body",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          3.75,
+                                          0.8,
+                                          -4.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.62,
+                                       1.4,
+                                       0.62
+                                   ],
+                         "color":  [
+                                       0.48,
+                                       0.56,
+                                       0.68,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_11_head",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          3.75,
+                                          1.72,
+                                          -4.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.46,
+                                       0.46,
+                                       0.46
+                                   ],
+                         "color":  [
+                                       0.88,
+                                       0.78,
+                                       0.7,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_11_item",
+                         "mesh":  "cube",
+                         "position":  [
+                                          3.75,
+                                          -6,
+                                          -4.5
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.32,
+                                       0.32,
+                                       0.32
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.25,
+                                       0.25,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_12_body",
+                         "mesh":  "cylinder",
+                         "position":  [
+                                          6.5,
+                                          0.8,
+                                          -1.75
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.62,
+                                       1.4,
+                                       0.62
+                                   ],
+                         "color":  [
+                                       0.6,
+                                       0.5,
+                                       0.46,
+                                       1
+                                   ],
+                         "emissive":  0.02,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_12_head",
+                         "mesh":  "sphere",
+                         "position":  [
+                                          6.5,
+                                          1.72,
+                                          -1.75
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.46,
+                                       0.46,
+                                       0.46
+                                   ],
+                         "color":  [
+                                       0.88,
+                                       0.78,
+                                       0.7,
+                                       1
+                                   ],
+                         "emissive":  0,
+                         "blend_mode":  "opaque"
+                     },
+                     {
+                         "id":  "npc_12_item",
+                         "mesh":  "cube",
+                         "position":  [
+                                          6.5,
+                                          -6,
+                                          -1.75
+                                      ],
+                         "rotation":  [
+                                          0,
+                                          0,
+                                          0
+                                      ],
+                         "scale":  [
+                                       0.32,
+                                       0.32,
+                                       0.32
+                                   ],
+                         "color":  [
+                                       1,
+                                       0.25,
+                                       0.25,
+                                       1
+                                   ],
+                         "emissive":  0.55,
+                         "blend_mode":  "opaque"
+                     }
+                 ]
+}

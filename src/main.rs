@@ -11,6 +11,7 @@ pub mod input_map;
 pub mod level_forge;
 pub mod mcp_server;
 pub mod modeler;
+pub mod net;
 pub mod music_forge;
 pub mod nav;
 pub mod particles;
@@ -239,6 +240,7 @@ pub struct EngineState {
     pub last_draw_calls: usize,
     pub rtt_scheduler: renderer::RttScheduler,
     pub last_rtt_passes: usize,
+    pub net: net::NetworkManager,
 
     // Mouse & Gizmo Interaction
     pub mouse_pos: [f32; 2],
@@ -602,6 +604,7 @@ impl EngineState {
             last_draw_calls: 0,
             rtt_scheduler: renderer::RttScheduler::new(2),
             last_rtt_passes: 0,
+            net: net::NetworkManager::new(),
 
             mouse_pos: [0.0, 0.0],
             pointer_locked: false,
@@ -4606,6 +4609,7 @@ impl EngineState {
             }
         }
         self.camera.update_cinematics(dt, &entity_pos_map);
+        self.net.update(std::time::Duration::from_secs_f32(dt));
 
         // Update camera follow (smooth lerp towards target entity world position)
         if let Some((ref target_id, offset, smoothness)) = self.camera.follow_target.clone() {
@@ -8932,6 +8936,60 @@ pub fn resolve_workspace_root() -> std::path::PathBuf {
     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
 }
 
+pub fn run_headless_server(port: u16) {
+    println!("[Motor-dif] Starting headless dedicated server on 0.0.0.0:{}...", port);
+    let mut net = match net::NetworkManager::host(port) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("[Motor-dif] Fatal error starting server: {}", e);
+            return;
+        }
+    };
+    println!("[Motor-dif Dedicated Server] Listening on UDP port {}. Simulation active at 60 Hz.", port);
+    println!("[Motor-dif Dedicated Server] Ready for connections. Press Ctrl+C to terminate.");
+
+    let tick_duration = std::time::Duration::from_millis(16);
+    let mut physics = physics::PhysicsEngine::new();
+    let mut last_tick = std::time::Instant::now();
+
+    let is_test_run = std::env::var("MOTOR_SERVER_TEST_EXIT").is_ok();
+    let mut ticks_run = 0;
+
+    loop {
+        let dt = last_tick.elapsed();
+        last_tick = std::time::Instant::now();
+
+        net.update(dt);
+        physics.step(0.01666667);
+
+        for event in net.connection_events.drain(..) {
+            match event {
+                renet::ServerEvent::ClientConnected { client_id } => {
+                    println!("[Motor-dif Server] Client #{} connected.", client_id);
+                }
+                renet::ServerEvent::ClientDisconnected { client_id, reason } => {
+                    println!("[Motor-dif Server] Client #{} disconnected: {:?}", client_id, reason);
+                }
+            }
+        }
+
+        let msgs = net.receive_messages();
+        for (_from, ch, data) in msgs {
+            if ch == net::CHANNEL_RELIABLE_ORDERED {
+                net.broadcast_message(net::CHANNEL_RELIABLE_ORDERED, &data);
+            }
+        }
+
+        ticks_run += 1;
+        if is_test_run && ticks_run >= 30 {
+            println!("[Motor-dif Server] Test exit triggered after {} ticks.", ticks_run);
+            break;
+        }
+
+        std::thread::sleep(tick_duration);
+    }
+}
+
 fn main() {
     let workspace_root = resolve_workspace_root();
     println!("Workspace root resolved: {}", workspace_root.display());
@@ -8990,6 +9048,28 @@ fn main() {
         } else if args[i] == "--scene" {
             if i + 1 < args.len() {
                 target_scene = args[i + 1].clone();
+                i += 1;
+            }
+        } else if args[i] == "--server" {
+            let mut port: u16 = 5000;
+            if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                if let Ok(p) = args[i + 1].parse::<u16>() {
+                    port = p;
+                }
+            }
+            run_headless_server(port);
+            return;
+        } else if args[i] == "--port" {
+            if i + 1 < args.len() {
+                if let Ok(p) = args[i + 1].parse::<u16>() {
+                    run_headless_server(p);
+                    return;
+                }
+                i += 1;
+            }
+        } else if args[i] == "--connect" {
+            if i + 1 < args.len() {
+                println!("[Motor-dif] Client auto-connecting to server: {}", args[i + 1]);
                 i += 1;
             }
         } else if args[i].ends_with(".json") {
