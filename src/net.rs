@@ -426,9 +426,52 @@ impl NetworkManager {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct EntityTransformSnapshot {
+    pub net_id: u64,
+    pub pos: [f32; 3],
+    pub rot: [f32; 4], // Quat [x, y, z, w]
+    pub scale: [f32; 3],
+    pub anim_clip: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct WorldSnapshotMessage {
+    pub timestamp: f64,
+    pub entities: Vec<EntityTransformSnapshot>,
+}
+
+impl WorldSnapshotMessage {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, bincode::Error> {
+        bincode::serialize(self)
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode::Error> {
+        bincode::deserialize(bytes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_world_snapshot_serialization_roundtrip() {
+        let snap = WorldSnapshotMessage {
+            timestamp: 123.456,
+            entities: vec![EntityTransformSnapshot {
+                net_id: 101,
+                pos: [1.0, 2.0, 3.0],
+                rot: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0, 1.0, 1.0],
+                anim_clip: Some("run".to_string()),
+            }],
+        };
+        let bytes = snap.to_bytes().expect("Serialize snapshot failed");
+        assert!(!bytes.is_empty());
+        let decoded = WorldSnapshotMessage::from_bytes(&bytes).expect("Deserialize snapshot failed");
+        assert_eq!(decoded, snap);
+    }
 
     #[test]
     fn test_network_connection_config_channels() {

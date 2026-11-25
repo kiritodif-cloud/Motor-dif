@@ -370,9 +370,98 @@ impl MaterialOverrideRtt {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NetworkId {
+    pub net_id: u64,
+    pub owner_id: u64,
+}
+
+impl Default for NetworkId {
+    fn default() -> Self {
+        Self { net_id: 0, owner_id: 0 }
+    }
+}
+
+impl NetworkId {
+    pub fn new(net_id: u64, owner_id: u64) -> Self {
+        Self { net_id, owner_id }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NetworkSync {
+    pub sync_transform: bool,
+    pub sync_anim: bool,
+    pub rate_hz: f32,
+    #[serde(default)]
+    pub last_sync_time: f64,
+}
+
+impl Default for NetworkSync {
+    fn default() -> Self {
+        Self {
+            sync_transform: true,
+            sync_anim: true,
+            rate_hz: 20.0,
+            last_sync_time: 0.0,
+        }
+    }
+}
+
+impl NetworkSync {
+    pub fn new(sync_transform: bool, sync_anim: bool, rate_hz: f32) -> Self {
+        Self {
+            sync_transform,
+            sync_anim,
+            rate_hz: rate_hz.max(1.0),
+            last_sync_time: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NetworkInterpolationTarget {
+    pub target_pos: Vec3,
+    pub target_rot: glam::Quat,
+    pub target_scale: Vec3,
+    pub last_update_time: f64,
+}
+
+impl NetworkInterpolationTarget {
+    pub fn new(pos: Vec3, rot: glam::Quat, scale: Vec3, time: f64) -> Self {
+        Self {
+            target_pos: pos,
+            target_rot: rot,
+            target_scale: scale,
+            last_update_time: time,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_network_components() {
+        let net_id = NetworkId::new(42, 1);
+        assert_eq!(net_id.net_id, 42);
+        assert_eq!(net_id.owner_id, 1);
+
+        let net_sync = NetworkSync::new(true, false, 30.0);
+        assert!(net_sync.sync_transform);
+        assert!(!net_sync.sync_anim);
+        assert_eq!(net_sync.rate_hz, 30.0);
+
+        let interp = NetworkInterpolationTarget::new(
+            Vec3::new(1.0, 2.0, 3.0),
+            glam::Quat::IDENTITY,
+            Vec3::ONE,
+            12.5,
+        );
+        assert_eq!(interp.target_pos, Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(interp.last_update_time, 12.5);
+    }
 
     #[test]
     fn test_rtt_components() {

@@ -128,6 +128,10 @@ pub struct EntityDef {
     pub camera_target: Option<crate::ecs::CameraTarget>,
     #[serde(default)]
     pub material_override_rtt: Option<crate::ecs::MaterialOverrideRtt>,
+    #[serde(default)]
+    pub network_id: Option<crate::ecs::NetworkId>,
+    #[serde(default)]
+    pub network_sync: Option<crate::ecs::NetworkSync>,
 }
 
 fn default_scale() -> [f32; 3] {
@@ -257,7 +261,7 @@ impl Default for SceneDef {
                     procedural_rig: None,
                     vfx_emitter: None,
             camera_target: None,
-            material_override_rtt: None,
+            material_override_rtt: None, network_id: None, network_sync: None,
                 },
                 EntityDef {
                     id: "cube_green".to_string(),
@@ -281,7 +285,7 @@ impl Default for SceneDef {
                     procedural_rig: None,
                     vfx_emitter: None,
             camera_target: None,
-            material_override_rtt: None,
+            material_override_rtt: None, network_id: None, network_sync: None,
                 },
                 EntityDef {
                     id: "cube_blue".to_string(),
@@ -305,7 +309,7 @@ impl Default for SceneDef {
                     procedural_rig: None,
                     vfx_emitter: None,
             camera_target: None,
-            material_override_rtt: None,
+            material_override_rtt: None, network_id: None, network_sync: None,
                 },
             ],
         }
@@ -364,6 +368,8 @@ pub fn extract_scene_from_world(
             let vfx_comp_opt = er.get::<&crate::vfx_forge::VfxEmitterComponent>();
             let cam_target_opt = er.get::<&crate::ecs::CameraTarget>().as_deref().cloned();
             let mat_rtt_opt = er.get::<&crate::ecs::MaterialOverrideRtt>().as_deref().cloned();
+            let net_id_opt = er.get::<&crate::ecs::NetworkId>().as_deref().cloned();
+            let net_sync_opt = er.get::<&crate::ecs::NetworkSync>().as_deref().cloned();
 
             let phys_def = rb_opt.as_deref().and_then(|rb| {
                 physics.rigid_body_set.get(rb.handle).map(|body| {
@@ -432,6 +438,8 @@ pub fn extract_scene_from_world(
                 vfx_emitter: vfx_opt,
                 camera_target: cam_target_opt,
                 material_override_rtt: mat_rtt_opt,
+                network_id: net_id_opt,
+                network_sync: net_sync_opt,
             });
         }
     }
@@ -549,6 +557,13 @@ pub fn apply_scene_to_world(
 
         if let Some(rtt_mat) = &entity.material_override_rtt {
             let _ = world.insert_one(e, rtt_mat.clone());
+        }
+
+        if let Some(nid) = entity.network_id {
+            let _ = world.insert_one(e, nid);
+        }
+        if let Some(nsync) = &entity.network_sync {
+            let _ = world.insert_one(e, nsync.clone());
         }
     }
 }
@@ -699,6 +714,8 @@ pub fn extract_entity_def(
     let rig_opt = world.get::<&crate::procedural_rig::ProceduralRig>(entity).ok().map(|r| (*r).clone());
     let cam_target_opt = world.get::<&crate::ecs::CameraTarget>(entity).ok().map(|c| (*c).clone());
     let mat_rtt_opt = world.get::<&crate::ecs::MaterialOverrideRtt>(entity).ok().map(|m| (*m).clone());
+    let net_id_opt = world.get::<&crate::ecs::NetworkId>(entity).ok().map(|n| (*n).clone());
+    let net_sync_opt = world.get::<&crate::ecs::NetworkSync>(entity).ok().map(|n| (*n).clone());
     let vfx_opt = world.get::<&crate::vfx_forge::VfxEmitterComponent>(entity).ok().map(|v| VfxEmitterDef {
         preset_or_recipe: v.recipe.name.clone(),
         enabled: v.enabled,
@@ -730,6 +747,8 @@ pub fn extract_entity_def(
         vfx_emitter: vfx_opt,
         camera_target: cam_target_opt,
         material_override_rtt: mat_rtt_opt,
+        network_id: net_id_opt,
+        network_sync: net_sync_opt,
     })
 }
 
@@ -788,7 +807,7 @@ mod tests {
             procedural_rig: None,
             vfx_emitter: None,
             camera_target: None,
-            material_override_rtt: None,
+            material_override_rtt: None, network_id: None, network_sync: None,
         };
         let json = serde_json::to_string(&def).unwrap();
         assert!(json.contains("\"parent\":\"parent_node\""));
@@ -822,7 +841,7 @@ mod tests {
             procedural_rig: None,
             vfx_emitter: None,
             camera_target: None,
-            material_override_rtt: None,
+            material_override_rtt: None, network_id: None, network_sync: None,
         };
         let json = serde_json::to_string(&def).unwrap();
         assert!(json.contains("\"blend_mode\":\"additive\""));
@@ -864,7 +883,7 @@ mod tests {
                 recipe: None,
             }),
             camera_target: None,
-            material_override_rtt: None,
+            material_override_rtt: None, network_id: None, network_sync: None,
         };
         let json = serde_json::to_string(&def).unwrap();
         assert!(json.contains("\"vfx_emitter\""));
@@ -996,7 +1015,7 @@ mod tests {
             procedural_rig: None,
             vfx_emitter: None,
             camera_target: None,
-            material_override_rtt: None,
+            material_override_rtt: None, network_id: None, network_sync: None,
         };
 
         let child = EntityDef {
@@ -1021,7 +1040,7 @@ mod tests {
             procedural_rig: None,
             vfx_emitter: None,
             camera_target: None,
-            material_override_rtt: None,
+            material_override_rtt: None, network_id: None, network_sync: None,
         };
 
         let prefab = PrefabDef {

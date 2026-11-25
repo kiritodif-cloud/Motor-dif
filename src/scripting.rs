@@ -178,6 +178,38 @@ pub struct LuaEngineContext {
     pub pending_rtt_targets: Arc<Mutex<Vec<(String, u32, u32)>>>,
     pub pending_rtt_cameras: Arc<Mutex<Vec<(String, String, f32, f32)>>>,
     pub pending_rtt_materials: Arc<Mutex<Vec<(String, String, bool)>>>,
+    pub pending_net_commands: Arc<Mutex<Vec<NetCommand>>>,
+    pub net_state: Arc<RwLock<NetState>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum NetCommand {
+    Host { port: u16 },
+    Connect { addr: String },
+    Disconnect,
+    Send { channel: u8, message: Vec<u8> },
+    Broadcast { channel: u8, message: Vec<u8> },
+}
+
+#[derive(Debug, Clone)]
+pub struct NetState {
+    pub is_server: bool,
+    pub is_client: bool,
+    pub client_id: u64,
+    pub peer_count: usize,
+    pub rtt_ms: f64,
+}
+
+impl Default for NetState {
+    fn default() -> Self {
+        Self {
+            is_server: false,
+            is_client: false,
+            client_id: 0,
+            peer_count: 0,
+            rtt_ms: 0.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -407,6 +439,8 @@ impl LuaEngineContext {
             pending_rtt_targets: Arc::new(Mutex::new(Vec::new())),
             pending_rtt_cameras: Arc::new(Mutex::new(Vec::new())),
             pending_rtt_materials: Arc::new(Mutex::new(Vec::new())),
+            pending_net_commands: Arc::new(Mutex::new(Vec::new())),
+            net_state: Arc::new(RwLock::new(NetState::default())),
             active_camera: Arc::new(RwLock::new(crate::camera::Camera::new_3d(glam::Vec3::new(0.0, 3.5, 9.0), glam::Vec3::ZERO, 16.0 / 9.0))),
             nav_grid: Arc::new(RwLock::new(crate::nav::NavGrid::new(1.0, 20.0))),
             pending_nav_bake: Arc::new(Mutex::new(None)),
@@ -645,7 +679,7 @@ impl ScriptComponent {
                     procedural_rig: None,
                     vfx_emitter: None,
             camera_target: None,
-            material_override_rtt: None,
+            material_override_rtt: None, network_id: None, network_sync: None,
                 };
 
                 if let Ok(mut spawns) = spawns_ref.lock() {
@@ -3411,6 +3445,113 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register ui_draw_rtt: {}", e))?;
         lua.globals().set("ui_draw_rtt", ui_draw_rtt).map_err(|e| e.to_string())?;
 
+        // 82. net_host(port) -> bool
+        let net_cmd_host = ctx.pending_net_commands.clone();
+        let net_host = lua
+            .create_function(move |_, port: Option<u16>| {
+                if let Ok(mut cmds) = net_cmd_host.lock() {
+                    cmds.push(NetCommand::Host { port: port.unwrap_or(5000) });
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register net_host: {}", e))?;
+        lua.globals().set("net_host", net_host).map_err(|e| e.to_string())?;
+
+        // 83. net_connect(ip_port) -> bool
+        let net_cmd_conn = ctx.pending_net_commands.clone();
+        let net_connect = lua
+            .create_function(move |_, addr: String| {
+                if let Ok(mut cmds) = net_cmd_conn.lock() {
+                    cmds.push(NetCommand::Connect { addr });
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register net_connect: {}", e))?;
+        lua.globals().set("net_connect", net_connect).map_err(|e| e.to_string())?;
+
+        // 84. net_disconnect() -> bool
+        let net_cmd_disc = ctx.pending_net_commands.clone();
+        let net_disconnect = lua
+            .create_function(move |_, ()| {
+                if let Ok(mut cmds) = net_cmd_disc.lock() {
+                    cmds.push(NetCommand::Disconnect);
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register net_disconnect: {}", e))?;
+        lua.globals().set("net_disconnect", net_disconnect).map_err(|e| e.to_string())?;
+
+        // 85. net_is_server() -> bool
+        let net_state_srv = ctx.net_state.clone();
+        let net_is_server = lua
+            .create_function(move |_, ()| {
+                let is_srv = net_state_srv.read().map(|s| s.is_server).unwrap_or(false);
+                Ok(is_srv)
+            })
+            .map_err(|e| format!("Failed to register net_is_server: {}", e))?;
+        lua.globals().set("net_is_server", net_is_server).map_err(|e| e.to_string())?;
+
+        // 86. net_is_client() -> bool
+        let net_state_cli = ctx.net_state.clone();
+        let net_is_client = lua
+            .create_function(move |_, ()| {
+                let is_cli = net_state_cli.read().map(|s| s.is_client).unwrap_or(false);
+                Ok(is_cli)
+            })
+            .map_err(|e| format!("Failed to register net_is_client: {}", e))?;
+        lua.globals().set("net_is_client", net_is_client).map_err(|e| e.to_string())?;
+
+        // 87. net_client_id() -> u64
+        let net_state_cid = ctx.net_state.clone();
+        let net_client_id = lua
+            .create_function(move |_, ()| {
+                let cid = net_state_cid.read().map(|s| s.client_id).unwrap_or(0);
+                Ok(cid)
+            })
+            .map_err(|e| format!("Failed to register net_client_id: {}", e))?;
+        lua.globals().set("net_client_id", net_client_id).map_err(|e| e.to_string())?;
+
+        // 88. net_send(channel, message) -> bool
+        let net_cmd_send = ctx.pending_net_commands.clone();
+        let net_send = lua
+            .create_function(move |_, (channel, val): (u8, mlua::Value)| {
+                let bytes = match &val {
+                    mlua::Value::String(s) => s.as_bytes().to_vec(),
+                    mlua::Value::Table(_) => {
+                        let json = lua_to_json(&val);
+                        serde_json::to_string(&json).unwrap_or_default().into_bytes()
+                    }
+                    _ => format!("{:?}", val).into_bytes(),
+                };
+                if let Ok(mut cmds) = net_cmd_send.lock() {
+                    cmds.push(NetCommand::Send { channel, message: bytes });
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register net_send: {}", e))?;
+        lua.globals().set("net_send", net_send).map_err(|e| e.to_string())?;
+
+        // 89. net_broadcast(channel, message) -> bool
+        let net_cmd_bcast = ctx.pending_net_commands.clone();
+        let net_broadcast = lua
+            .create_function(move |_, (channel, val): (u8, mlua::Value)| {
+                let bytes = match &val {
+                    mlua::Value::String(s) => s.as_bytes().to_vec(),
+                    mlua::Value::Table(_) => {
+                        let json = lua_to_json(&val);
+                        serde_json::to_string(&json).unwrap_or_default().into_bytes()
+                    }
+                    _ => format!("{:?}", val).into_bytes(),
+                };
+                if let Ok(mut cmds) = net_cmd_bcast.lock() {
+                    cmds.push(NetCommand::Broadcast { channel, message: bytes });
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register net_broadcast: {}", e))?;
+        lua.globals().set("net_broadcast", net_broadcast).map_err(|e| e.to_string())?;
+
+
         // Execute the script chunk to define on_update, on_collision, and globals
         lua.load(&code)
             .exec()
@@ -3588,6 +3729,49 @@ impl ScriptComponent {
             }
         } else {
             Ok(())
+        }
+    }
+}
+
+pub fn dispatch_net_callbacks(
+    world: &mut hecs::World,
+    connect_events: &[(u64, bool)],
+    incoming_messages: &[(Option<u64>, u8, Vec<u8>)],
+    logs: &mut Vec<String>,
+) {
+    if connect_events.is_empty() && incoming_messages.is_empty() {
+        return;
+    }
+
+    for (_meta, script) in world.query_mut::<(&crate::ecs::EntityMeta, &mut ScriptComponent)>() {
+        if let Some(lua_arc) = &script.lua {
+            if let Ok(lua) = lua_arc.lock() {
+                for &(cid, is_conn) in connect_events {
+                    if is_conn {
+                        if let Ok(func) = lua.globals().get::<mlua::Function>("on_net_connect") {
+                            if let Err(e) = func.call::<()>(cid) {
+                                logs.push(format!("on_net_connect error: {}", e));
+                            }
+                        }
+                    } else {
+                        if let Ok(func) = lua.globals().get::<mlua::Function>("on_net_disconnect") {
+                            if let Err(e) = func.call::<()>(cid) {
+                                logs.push(format!("on_net_disconnect error: {}", e));
+                            }
+                        }
+                    }
+                }
+
+                for (from_client, channel, bytes) in incoming_messages {
+                    if let Ok(func) = lua.globals().get::<mlua::Function>("on_net_message") {
+                        let msg_str = String::from_utf8_lossy(bytes).to_string();
+                        let sender_val = from_client.unwrap_or(0);
+                        if let Err(e) = func.call::<()>((sender_val, *channel, msg_str)) {
+                            logs.push(format!("on_net_message error: {}", e));
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -4880,6 +5064,130 @@ mod tests {
                 assert_eq!(*height, 240.0);
             }
             _ => panic!("Expected RttView element"),
+        }
+    }
+#[test]
+    fn test_network_lua_bindings_and_callbacks() {
+        let pressed_keys = Arc::new(RwLock::new(HashSet::new()));
+        let (_, audio_inner) = crate::audio::AudioManager::init();
+        let audio = Arc::new(std::sync::Mutex::new(audio_inner));
+        let ctx = LuaEngineContext::new(pressed_keys, audio);
+
+        if let Ok(mut state) = ctx.net_state.write() {
+            state.is_server = true;
+            state.client_id = 999;
+        }
+
+        let test_script = r#"
+            local h = net_host(8080)
+            assert(h == true, "net_host failed")
+
+            local c = net_connect("127.0.0.1:8080")
+            assert(c == true, "net_connect failed")
+
+            local srv = net_is_server()
+            assert(srv == true, "net_is_server should be true")
+
+            local cid = net_client_id()
+            assert(cid == 999, "client_id should be 999")
+
+            local s1 = net_send(1, "hello world")
+            assert(s1 == true, "net_send string failed")
+
+            local s2 = net_send(2, { type = "chat", msg = "hi" })
+            assert(s2 == true, "net_send table failed")
+
+            local b = net_broadcast(0, "all clients")
+            assert(b == true, "net_broadcast failed")
+
+            local d = net_disconnect()
+            assert(d == true, "net_disconnect failed")
+
+            _G.connected_clients = {}
+            _G.received_messages = {}
+
+            function on_net_connect(client_id)
+                table.insert(_G.connected_clients, client_id)
+            end
+
+            function on_net_message(sender, channel, message)
+                table.insert(_G.received_messages, { sender = sender, channel = channel, text = message })
+            end
+        "#;
+
+        let script_path = "assets/scripts/temp_net_test.lua";
+        std::fs::write(script_path, test_script).unwrap();
+
+        let mut comp = ScriptComponent::new(script_path.to_string());
+        let res = comp.init_or_reload(ctx.clone());
+        let _ = std::fs::remove_file(script_path);
+        assert!(res.is_ok(), "Net lua execution failed: {:?}", res.err());
+
+        // Check queued commands
+        let cmds = ctx.pending_net_commands.lock().unwrap();
+        assert_eq!(cmds.len(), 6);
+        match &cmds[0] {
+            NetCommand::Host { port } => assert_eq!(*port, 8080),
+            _ => panic!("Expected Host command"),
+        }
+        match &cmds[1] {
+            NetCommand::Connect { addr } => assert_eq!(addr, "127.0.0.1:8080"),
+            _ => panic!("Expected Connect command"),
+        }
+        match &cmds[2] {
+            NetCommand::Send { channel, message } => {
+                assert_eq!(*channel, 1);
+                assert_eq!(String::from_utf8_lossy(message), "hello world");
+            }
+            _ => panic!("Expected Send command"),
+        }
+        match &cmds[3] {
+            NetCommand::Send { channel, message } => {
+                assert_eq!(*channel, 2);
+                let json_str = String::from_utf8_lossy(message);
+                assert!(json_str.contains("chat"));
+            }
+            _ => panic!("Expected Send table command"),
+        }
+        match &cmds[4] {
+            NetCommand::Broadcast { channel, message } => {
+                assert_eq!(*channel, 0);
+                assert_eq!(String::from_utf8_lossy(message), "all clients");
+            }
+            _ => panic!("Expected Broadcast command"),
+        }
+        match &cmds[5] {
+            NetCommand::Disconnect => {},
+            _ => panic!("Expected Disconnect command"),
+        }
+        drop(cmds);
+
+        // Test dispatch_net_callbacks
+        let mut world = hecs::World::new();
+        let entity = world.spawn((
+            crate::ecs::EntityMeta::new("net_node", "net_node"),
+            comp,
+        ));
+
+        let conn_events = vec![(42u64, true)];
+        let incoming = vec![(Some(42u64), 1u8, b"ping payload".to_vec())];
+        let mut logs = Vec::new();
+        dispatch_net_callbacks(&mut world, &conn_events, &incoming, &mut logs);
+
+        if let Ok(script) = world.get::<&ScriptComponent>(entity) {
+            if let Some(lua_arc) = &script.lua {
+                let lua = lua_arc.lock().unwrap();
+                let clients: mlua::Table = lua.globals().get("connected_clients").unwrap();
+                assert_eq!(clients.len().unwrap(), 1);
+                let first_cid: u64 = clients.get(1).unwrap();
+                assert_eq!(first_cid, 42);
+
+                let msgs: mlua::Table = lua.globals().get("received_messages").unwrap();
+                assert_eq!(msgs.len().unwrap(), 1);
+                let first_msg: mlua::Table = msgs.get(1).unwrap();
+                let txt: String = first_msg.get("text").unwrap();
+                assert_eq!(txt, "ping payload");
+            }
         }
     }
 }

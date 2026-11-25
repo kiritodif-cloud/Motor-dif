@@ -88,7 +88,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "arena_inner",
@@ -133,7 +135,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "rig_beacon",
@@ -186,7 +190,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "rig_beacon_ring1",
@@ -231,7 +237,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "mech_root",
@@ -290,7 +298,9 @@
       },
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "mech_torso",
@@ -335,7 +345,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "mech_head",
@@ -380,7 +392,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "mech_arm_l",
@@ -421,7 +435,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "mech_arm_r",
@@ -462,7 +478,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "mech_weapon",
@@ -507,7 +525,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "mech_leg_l",
@@ -548,7 +568,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "mech_leg_r",
@@ -589,7 +611,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "spider_root",
@@ -648,7 +672,9 @@
       },
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "spider_torso",
@@ -693,7 +719,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "spider_eye",
@@ -738,7 +766,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "spider_leg_fl",
@@ -779,7 +809,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "spider_leg_fr",
@@ -820,7 +852,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "spider_leg_bl",
@@ -861,7 +895,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "spider_leg_br",
@@ -902,7 +938,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "turret_root",
@@ -961,7 +999,9 @@
       },
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "turret_base",
@@ -1002,7 +1042,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "turret_ring",
@@ -1047,7 +1089,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "turret_dome",
@@ -1092,7 +1136,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "turret_cannons",
@@ -1137,7 +1183,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "trooper_root",
@@ -1196,7 +1244,9 @@
       },
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "trooper_torso",
@@ -1241,7 +1291,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "trooper_head",
@@ -1286,7 +1338,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "trooper_arm_l",
@@ -1327,7 +1381,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "trooper_arm_r",
@@ -1368,7 +1424,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "trooper_weapon",
@@ -1413,7 +1471,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "trooper_leg_l",
@@ -1454,7 +1514,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     },
     {
       "id": "trooper_leg_r",
@@ -1495,7 +1557,9 @@
       "procedural_rig": null,
       "vfx_emitter": null,
       "camera_target": null,
-      "material_override_rtt": null
+      "material_override_rtt": null,
+      "network_id": null,
+      "network_sync": null
     }
   ]
 }

@@ -2224,7 +2224,7 @@ impl EngineState {
                             id, mesh, position: [x,y,z], rotation: [rx,ry,rz], scale: [sx,sy,sz],
                             color, texture, parent, emissive: 0.0,
                             fresnel_color: None, fresnel_power: None, blend_mode: None, wireframe: None, uv_scroll: None,
-                            script: None, physics: None, point_light: None, animation_player: None, procedural_rig: None, vfx_emitter: None, camera_target: None, material_override_rtt: None };
+                            script: None, physics: None, point_light: None, animation_player: None, procedural_rig: None, vfx_emitter: None, camera_target: None, material_override_rtt: None, network_id: None, network_sync: None };
                         if let Ok(mut list) = spawns_ref.lock() { list.push(def); }
                         Ok(())
                     });
@@ -4609,7 +4609,157 @@ impl EngineState {
             }
         }
         self.camera.update_cinematics(dt, &entity_pos_map);
+// 1. Drain pending net commands from Lua
+        let net_cmds = if let Ok(mut cmds) = self.lua_ctx.pending_net_commands.lock() {
+            std::mem::take(&mut *cmds)
+        } else {
+            Vec::new()
+        };
+        for cmd in net_cmds {
+            match cmd {
+                scripting::NetCommand::Host { port } => {
+                    match net::NetworkManager::host(port) {
+                        Ok(nm) => {
+                            println!("[Net] Hosting on UDP port {}", port);
+                            self.net = nm;
+                        }
+                        Err(e) => eprintln!("[Net] Host error: {}", e),
+                    }
+                }
+                scripting::NetCommand::Connect { addr } => {
+                    match net::NetworkManager::connect(&addr) {
+                        Ok(nm) => {
+                            println!("[Net] Connecting to {}", addr);
+                            self.net = nm;
+                        }
+                        Err(e) => eprintln!("[Net] Connect error: {}", e),
+                    }
+                }
+                scripting::NetCommand::Disconnect => {
+                    self.net.disconnect();
+                }
+                scripting::NetCommand::Send { channel, message } => {
+                    self.net.send(channel, &message);
+                }
+                scripting::NetCommand::Broadcast { channel, message } => {
+                    self.net.broadcast_message(channel, &message);
+                }
+            }
+        }
+
+        // 2. Update network clock & UDP I/O
         self.net.update(std::time::Duration::from_secs_f32(dt));
+
+        // 3. Update net state in lua_ctx
+        if let Ok(mut state) = self.lua_ctx.net_state.write() {
+            state.is_server = self.net.is_server();
+            state.is_client = self.net.is_client();
+            state.client_id = self.net.local_client_id;
+            state.peer_count = self.net.peer_count();
+            state.rtt_ms = self.net.rtt(None);
+        }
+
+        // 4. Server replication: pack snapshots and broadcast over Unreliable channel
+        if self.net.is_server() && self.net.peer_count() > 0 {
+            let mut sync_entities = Vec::new();
+            for (transform, nsync, nid) in self.world.query_mut::<(&Transform, &mut ecs::NetworkSync, &ecs::NetworkId)>() {
+                let interval = 1.0 / nsync.rate_hz.max(1.0) as f64;
+                if (self.total_time as f64) - nsync.last_sync_time >= interval {
+                    nsync.last_sync_time = self.total_time as f64;
+                    let q = glam::Quat::from_euler(
+                        glam::EulerRot::XYZ,
+                        transform.rotation.x,
+                        transform.rotation.y,
+                        transform.rotation.z,
+                    );
+                    sync_entities.push(net::EntityTransformSnapshot {
+                        net_id: nid.net_id,
+                        pos: [transform.position.x, transform.position.y, transform.position.z],
+                        rot: [q.x, q.y, q.z, q.w],
+                        scale: [transform.scale.x, transform.scale.y, transform.scale.z],
+                        anim_clip: None,
+                    });
+                }
+            }
+            if !sync_entities.is_empty() {
+                let msg = net::WorldSnapshotMessage {
+                    timestamp: self.total_time as f64,
+                    entities: sync_entities,
+                };
+                if let Ok(bytes) = msg.to_bytes() {
+                    self.net.broadcast_message(net::CHANNEL_UNRELIABLE, &bytes);
+                }
+            }
+        }
+
+        // 5. Receive messages & unpack client snapshots
+        let conn_events = std::mem::take(&mut self.net.connection_events)
+            .into_iter()
+            .map(|ev| match ev {
+                renet::ServerEvent::ClientConnected { client_id } => (client_id, true),
+                renet::ServerEvent::ClientDisconnected { client_id, .. } => (client_id, false),
+            })
+            .collect::<Vec<_>>();
+
+        let raw_messages = self.net.receive_messages();
+        let mut user_messages = Vec::new();
+
+        for (from_client, channel, bytes) in raw_messages {
+            if channel == net::CHANNEL_UNRELIABLE && self.net.is_client() {
+                if let Ok(snap) = net::WorldSnapshotMessage::from_bytes(&bytes) {
+                    for esnap in snap.entities {
+                        let mut target_entity = None;
+                        for er in self.world.iter() {
+                            if let Some(nid) = er.get::<&ecs::NetworkId>() {
+                                if nid.net_id == esnap.net_id {
+                                    target_entity = Some(er.entity());
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(e) = target_entity {
+                            let target_rot = glam::Quat::from_array(esnap.rot);
+                            let target_pos = Vec3::from(esnap.pos);
+                            let target_scale = Vec3::from(esnap.scale);
+                            let _ = self.world.insert_one(e, ecs::NetworkInterpolationTarget::new(
+                                target_pos,
+                                target_rot,
+                                target_scale,
+                                self.total_time as f64,
+                            ));
+                            if let Some(clip) = esnap.anim_clip {
+                                if let Ok(mut player) = self.world.get::<&mut crate::animation::AnimationPlayer>(e) {
+                                    if player.active_clip.as_deref() != Some(&clip) {
+                                        player.play(&clip, true);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+            }
+            user_messages.push((from_client, channel, bytes));
+        }
+
+        // 6. Apply smooth client-side interpolation (LERP pos, SLERP rot)
+        for (transform, target) in self.world.query_mut::<(&mut Transform, &ecs::NetworkInterpolationTarget)>() {
+            let factor = (dt * 15.0).clamp(0.0, 1.0);
+            transform.position = transform.position.lerp(target.target_pos, factor);
+            let cur_q = glam::Quat::from_euler(glam::EulerRot::XYZ, transform.rotation.x, transform.rotation.y, transform.rotation.z);
+            let slerped = cur_q.slerp(target.target_rot, factor);
+            let (rx, ry, rz) = slerped.to_euler(glam::EulerRot::XYZ);
+            transform.rotation = Vec3::new(rx, ry, rz);
+            transform.scale = transform.scale.lerp(target.target_scale, factor);
+        }
+
+        // 7. Dispatch Lua callbacks: on_net_connect, on_net_disconnect, on_net_message
+        scripting::dispatch_net_callbacks(
+            &mut self.world,
+            &conn_events,
+            &user_messages,
+            &mut self.logs,
+        );
 
         // Update camera follow (smooth lerp towards target entity world position)
         if let Some((ref target_id, offset, smoothness)) = self.camera.follow_target.clone() {
@@ -9471,7 +9621,7 @@ mod tests {
             procedural_rig: None,
             vfx_emitter: None,
             camera_target: None,
-            material_override_rtt: None,
+            material_override_rtt: None, network_id: None, network_sync: None,
         });
 
         // 1. Initial push of s1
