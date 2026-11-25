@@ -41,7 +41,6 @@ use ecs::{EntityMeta, MeshRender, Transform};
 use glam::{EulerRot, Quat, Vec3};
 use hot_reload::{HotReloadEvent, HotReloadManager};
 use mcp_server::{EngineLogsResponse, McpCommand, WorldInspection};
-use wgpu::util::DeviceExt;
 use physics::{CharacterControllerComponent, PhysicsEngine, RigidBodyComponent};
 use renderer::{create_instance_buffer, GpuContext, InstanceRaw, LightsUniform};
 use scripting::ScriptComponent;
@@ -8363,215 +8362,44 @@ impl EngineState {
         }
 
         // 1. 3D Scene Render Pass (HDR)
+        let is_playing = self.is_standalone_play || self.play_mode == PlayMode::Play;
+        let particle_instances = self.particles.get_instances();
+        if !particle_instances.is_empty() {
+            self.gpu.ensure_mesh("quad");
+        }
         {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("3D Scene Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.gpu.post_process.hdr_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.08,
-                            g: 0.09,
-                            b: 0.12,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.gpu.depth_texture.view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
+            let pass_params = renderer::ScenePassParams {
+                label: "3D Scene Pass",
+                camera_bind_group: &self.gpu.camera_bind_group,
+                color_view: &self.gpu.post_process.hdr_view,
+                depth_view: &self.gpu.depth_texture.view,
+                clear_color: Some(wgpu::Color {
+                    r: 0.08,
+                    g: 0.09,
+                    b: 0.12,
+                    a: 1.0,
                 }),
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            });
-
-            // 0. Render Procedural Skybox
-            render_pass.set_pipeline(&self.gpu.skybox_pipeline);
-            render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
-            render_pass.draw(0..3, 0..1);
-
-            // 1a. Render Opaque & Cutout Batches
-            render_pass.set_pipeline(&self.gpu.render_pipeline);
-            render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
-            render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
-            render_pass.set_bind_group(3, &self.gpu.shadow_bind_group, &[]);
-
-            for ((mesh_id, mat_key, blend_mode), instances) in &instances_by_batch {
-                if blend_mode == "additive" || blend_mode == "translucent" || blend_mode == "transparent" || instances.is_empty() {
-                    continue;
-                }
-                if let Some(mesh_gpu) = self.gpu.meshes.get(mesh_id) {
-                    let mat_bind = self.gpu.get_material(mat_key);
-                    render_pass.set_bind_group(1, mat_bind, &[]);
-
-                    let instance_buffer = create_instance_buffer(&self.gpu.device, instances);
-                    render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
-                    render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
-                    render_pass.set_index_buffer(
-                        mesh_gpu.index_buffer.slice(..),
-                        mesh_gpu.index_format,
-                    );
-                    render_pass.draw_indexed(
-                        0..mesh_gpu.num_indices,
-                        0,
-                        0..instances.len() as u32,
-                    );
-                }
-            }
-
-            // 1b. Render Translucent Batches (Water, Glass)
-            render_pass.set_pipeline(&self.gpu.translucent_render_pipeline);
-            render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
-            render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
-            render_pass.set_bind_group(3, &self.gpu.shadow_bind_group, &[]);
-
-            for ((mesh_id, mat_key, blend_mode), instances) in &instances_by_batch {
-                if (blend_mode != "translucent" && blend_mode != "transparent") || instances.is_empty() {
-                    continue;
-                }
-                if let Some(mesh_gpu) = self.gpu.meshes.get(mesh_id) {
-                    let mat_bind = self.gpu.get_material(mat_key);
-                    render_pass.set_bind_group(1, mat_bind, &[]);
-
-                    let instance_buffer = create_instance_buffer(&self.gpu.device, instances);
-                    render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
-                    render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
-                    render_pass.set_index_buffer(
-                        mesh_gpu.index_buffer.slice(..),
-                        mesh_gpu.index_format,
-                    );
-                    render_pass.draw_indexed(
-                        0..mesh_gpu.num_indices,
-                        0,
-                        0..instances.len() as u32,
-                    );
-                }
-            }
-
-            // 1c. Render Additive Batches
-            render_pass.set_pipeline(&self.gpu.additive_render_pipeline);
-            render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
-            render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
-            render_pass.set_bind_group(3, &self.gpu.shadow_bind_group, &[]);
-
-            for ((mesh_id, mat_key, blend_mode), instances) in &instances_by_batch {
-                if blend_mode != "additive" || instances.is_empty() {
-                    continue;
-                }
-                if let Some(mesh_gpu) = self.gpu.meshes.get(mesh_id) {
-                    let mat_bind = self.gpu.get_material(mat_key);
-                    render_pass.set_bind_group(1, mat_bind, &[]);
-
-                    let instance_buffer = create_instance_buffer(&self.gpu.device, instances);
-                    render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
-                    render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
-                    render_pass.set_index_buffer(
-                        mesh_gpu.index_buffer.slice(..),
-                        mesh_gpu.index_format,
-                    );
-                    render_pass.draw_indexed(
-                        0..mesh_gpu.num_indices,
-                        0,
-                        0..instances.len() as u32,
-                    );
-                }
-            }
-
-            // Render Instanced Particles
-            let particle_instances = self.particles.get_instances();
-            if !particle_instances.is_empty() {
-                self.gpu.ensure_mesh("quad");
-                if let Some(mesh_gpu) = self.gpu.meshes.get("quad") {
-                    render_pass.set_bind_group(1, &self.gpu.default_white_texture.bind_group, &[]);
-                    let instance_buffer = create_instance_buffer(&self.gpu.device, &particle_instances);
-                    render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
-                    render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
-                    render_pass.set_index_buffer(
-                        mesh_gpu.index_buffer.slice(..),
-                        mesh_gpu.index_format,
-                    );
-                    render_pass.draw_indexed(
-                        0..mesh_gpu.num_indices,
-                        0,
-                        0..particle_instances.len() as u32,
-                    );
-                }
-            }
-
-            // Render Dynamic Trails with Additive Blending
-            if !trail_indices.is_empty() {
-                let tv_buf = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Dynamic Trail Vertex Buffer"),
-                    contents: bytemuck::cast_slice(&trail_vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-                let ti_buf = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Dynamic Trail Index Buffer"),
-                    contents: bytemuck::cast_slice(&trail_indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
-                let id_instance = InstanceRaw {
-                    model: glam::Mat4::IDENTITY.to_cols_array_2d(),
-                    color: [1.0, 1.0, 1.0, 1.0],
-                    extra: [1.0, 0.0, 0.0, 0.0],
-                    fresnel: [0.0, 0.0, 0.0, 0.0],
-                    uv_offset: [0.0, 0.0],
-                    uv_scale: [1.0, 1.0],
-                    pbr_params: [0.0, 1.0, 1.0, 1.0],
-                };
-                let inst_buf = create_instance_buffer(&self.gpu.device, &[id_instance]);
-                render_pass.set_pipeline(&self.gpu.additive_render_pipeline);
-                render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
-                render_pass.set_bind_group(1, &self.gpu.default_white_texture.bind_group, &[]);
-                render_pass.set_bind_group(2, &self.gpu.lights_bind_group, &[]);
-                render_pass.set_bind_group(3, &self.gpu.shadow_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, tv_buf.slice(..));
-                render_pass.set_vertex_buffer(1, inst_buf.slice(..));
-                render_pass.set_index_buffer(ti_buf.slice(..), wgpu::IndexFormat::Uint16);
-                render_pass.draw_indexed(0..trail_indices.len() as u32, 0, 0..1);
-            }
-
-            // Render Dynamic Debug Lines & Rings
-            if !debug_line_vertices.is_empty() {
-                let line_vbuf = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Debug Lines Vertex Buffer"),
-                    contents: bytemuck::cast_slice(&debug_line_vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-                render_pass.set_pipeline(&self.gpu.line_pipeline);
-                render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, line_vbuf.slice(..));
-                render_pass.draw(0..debug_line_vertices.len() as u32, 0..1);
-            }
-
-            // Render 3D Grid on Y=0 (editor mode only when not playing)
-            let is_playing = self.is_standalone_play || self.play_mode == PlayMode::Play;
-            if !is_playing {
-                render_pass.set_pipeline(&self.gpu.line_pipeline);
-                render_pass.set_bind_group(0, &self.gpu.camera_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.gpu.grid_mesh.vertex_buffer.slice(..));
-                render_pass.set_index_buffer(
-                    self.gpu.grid_mesh.index_buffer.slice(..),
-                    self.gpu.grid_mesh.index_format,
-                );
-                render_pass.draw_indexed(
-                    0..self.gpu.grid_mesh.num_indices,
-                    0,
-                    0..1,
-                );
-            }
+                clear_depth: true,
+                quality: renderer::PassQuality::Full,
+                instances_by_batch: &instances_by_batch,
+                particles: Some(&particle_instances),
+                trail_data: if !trail_indices.is_empty() {
+                    Some((&trail_vertices, &trail_indices))
+                } else {
+                    None
+                },
+                debug_line_vertices: if !debug_line_vertices.is_empty() {
+                    Some(&debug_line_vertices)
+                } else {
+                    None
+                },
+                show_grid: !is_playing,
+                view_mode: self.view_mode,
+            };
+            self.gpu.render_scene_pass(&mut encoder, &pass_params);
         }
 
         // 1.5. View-Model Pass (First-Person Hand/Weapon with Anti-Clipping Depth Clear)
-        let is_playing = self.is_standalone_play || self.play_mode == PlayMode::Play;
         let active_vm = if is_playing {
             self.lua_ctx.active_viewmodel.read().ok().and_then(|vm| vm.clone())
         } else {

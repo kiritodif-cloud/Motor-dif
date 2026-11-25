@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
+use egui;
 use glam::{camera::rh, Vec3};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
@@ -178,6 +179,291 @@ impl DepthTexture {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Self { texture, view }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PassQuality {
+    Full,
+    Medium,
+    Low,
+}
+
+impl PassQuality {
+    pub fn includes_skybox(&self) -> bool {
+        matches!(self, PassQuality::Full | PassQuality::Medium)
+    }
+
+    pub fn includes_translucent(&self) -> bool {
+        matches!(self, PassQuality::Full | PassQuality::Medium)
+    }
+
+    pub fn includes_particles(&self) -> bool {
+        matches!(self, PassQuality::Full | PassQuality::Medium)
+    }
+
+    pub fn includes_debug_overlays(&self) -> bool {
+        matches!(self, PassQuality::Full)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderTargetDesc {
+    pub id: String,
+    pub width: u32,
+    pub height: u32,
+    pub format: wgpu::TextureFormat,
+    pub depth_format: wgpu::TextureFormat,
+}
+
+impl RenderTargetDesc {
+    pub fn aspect(&self) -> f32 {
+        self.width as f32 / self.height.max(1) as f32
+    }
+}
+
+pub struct RenderTargetEntry {
+    pub desc: RenderTargetDesc,
+    pub color_texture: wgpu::Texture,
+    pub color_view: wgpu::TextureView,
+    pub color_sampler: wgpu::Sampler,
+    pub depth_texture: DepthTexture,
+    pub material_bind_group: wgpu::BindGroup,
+    pub camera_buffer: wgpu::Buffer,
+    pub camera_bind_group: wgpu::BindGroup,
+    pub egui_texture_id: Option<egui::TextureId>,
+}
+
+#[derive(Default)]
+pub struct RenderTargetRegistry {
+    pub descriptors: HashMap<String, RenderTargetDesc>,
+    pub entries: HashMap<String, RenderTargetEntry>,
+}
+
+impl RenderTargetRegistry {
+    pub fn new() -> Self {
+        Self {
+            descriptors: HashMap::new(),
+            entries: HashMap::new(),
+        }
+    }
+
+    pub fn register_desc(&mut self, id: &str, width: u32, height: u32) -> RenderTargetDesc {
+        let desc = RenderTargetDesc {
+            id: id.to_string(),
+            width: width.max(1),
+            height: height.max(1),
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            depth_format: DepthTexture::DEPTH_FORMAT,
+        };
+        self.descriptors.insert(id.to_string(), desc.clone());
+        desc
+    }
+
+    pub fn get_desc(&self, id: &str) -> Option<&RenderTargetDesc> {
+        self.descriptors.get(id)
+    }
+
+    pub fn update_desc_size(&mut self, id: &str, width: u32, height: u32) -> bool {
+        if let Some(desc) = self.descriptors.get_mut(id) {
+            desc.width = width.max(1);
+            desc.height = height.max(1);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn remove_desc(&mut self, id: &str) -> bool {
+        self.descriptors.remove(id).is_some()
+    }
+
+    pub fn has_target(&self, id: &str) -> bool {
+        self.descriptors.contains_key(id) || self.entries.contains_key(id)
+    }
+
+    pub fn target_count(&self) -> usize {
+        self.descriptors.len().max(self.entries.len())
+    }
+
+    pub fn list_targets(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.descriptors.keys().cloned().collect();
+        for k in self.entries.keys() {
+            if !keys.contains(k) {
+                keys.push(k.clone());
+            }
+        }
+        keys.sort();
+        keys
+    }
+
+    pub fn create_or_resize(
+        &mut self,
+        device: &wgpu::Device,
+        camera_layout: &wgpu::BindGroupLayout,
+        texture_layout: &wgpu::BindGroupLayout,
+        dummy_normal: &wgpu::TextureView,
+        dummy_mr: &wgpu::TextureView,
+        mut egui_renderer: Option<&mut egui_wgpu::Renderer>,
+        id: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<&RenderTargetEntry, String> {
+        let w = width.max(1);
+        let h = height.max(1);
+
+        self.register_desc(id, w, h);
+
+        if let Some(existing) = self.entries.get(id) {
+            if existing.desc.width == w && existing.desc.height == h {
+                return Ok(self.entries.get(id).unwrap());
+            }
+        }
+
+        // Need creation or resize: free old egui texture if present
+        if let Some(old) = self.entries.remove(id) {
+            if let Some(tid) = old.egui_texture_id {
+                if let Some(r) = egui_renderer.as_deref_mut() {
+                    r.free_texture(&tid);
+                }
+            }
+        }
+
+        let size = wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        };
+        let color_desc = wgpu::TextureDescriptor {
+            label: Some(&format!("{}_rtt_color", id)),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        };
+        let color_texture = device.create_texture(&color_desc);
+        let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let color_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some(&format!("{}_rtt_sampler", id)),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let depth_texture = DepthTexture::create_depth_texture(device, w, h, &format!("{}_rtt_depth", id));
+
+        let material_bind_group = create_material_bind_group(
+            device,
+            texture_layout,
+            &color_view,
+            &color_sampler,
+            dummy_normal,
+            dummy_mr,
+            &color_view,
+            &format!("{}_rtt_mat_bind", id),
+        );
+
+        let camera_uniform = CameraUniform::new();
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("{}_rtt_cam_buf", id)),
+            contents: bytemuck::cast_slice(&[camera_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: camera_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+            label: Some(&format!("{}_rtt_cam_bind", id)),
+        });
+
+        let egui_texture_id = if let Some(r) = egui_renderer {
+            Some(r.register_native_texture(device, &color_view, wgpu::FilterMode::Linear))
+        } else {
+            None
+        };
+
+        let desc = RenderTargetDesc {
+            id: id.to_string(),
+            width: w,
+            height: h,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            depth_format: DepthTexture::DEPTH_FORMAT,
+        };
+
+        let entry = RenderTargetEntry {
+            desc,
+            color_texture,
+            color_view,
+            color_sampler,
+            depth_texture,
+            material_bind_group,
+            camera_buffer,
+            camera_bind_group,
+            egui_texture_id,
+        };
+
+        self.entries.insert(id.to_string(), entry);
+        Ok(self.entries.get(id).unwrap())
+    }
+
+    pub fn get(&self, id: &str) -> Option<&RenderTargetEntry> {
+        self.entries.get(id)
+    }
+
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut RenderTargetEntry> {
+        self.entries.get_mut(id)
+    }
+
+    pub fn remove(&mut self, id: &str, mut egui_renderer: Option<&mut egui_wgpu::Renderer>) -> bool {
+        self.descriptors.remove(id);
+        if let Some(entry) = self.entries.remove(id) {
+            if let Some(tid) = entry.egui_texture_id {
+                if let Some(r) = egui_renderer.as_deref_mut() {
+                    r.free_texture(&tid);
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn destroy_all(&mut self, mut egui_renderer: Option<&mut egui_wgpu::Renderer>) {
+        self.descriptors.clear();
+        for (_, entry) in self.entries.drain() {
+            if let Some(tid) = entry.egui_texture_id {
+                if let Some(r) = egui_renderer.as_deref_mut() {
+                    r.free_texture(&tid);
+                }
+            }
+        }
+    }
+}
+
+pub struct ScenePassParams<'a> {
+    pub label: &'a str,
+    pub camera_bind_group: &'a wgpu::BindGroup,
+    pub color_view: &'a wgpu::TextureView,
+    pub depth_view: &'a wgpu::TextureView,
+    pub clear_color: Option<wgpu::Color>,
+    pub clear_depth: bool,
+    pub quality: PassQuality,
+    pub instances_by_batch: &'a HashMap<(String, MaterialKey, String), Vec<InstanceRaw>>,
+    pub particles: Option<&'a [InstanceRaw]>,
+    pub trail_data: Option<(&'a [Vertex], &'a [u16])>,
+    pub debug_line_vertices: Option<&'a [Vertex]>,
+    pub show_grid: bool,
+    pub view_mode: ViewMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -466,7 +752,9 @@ pub struct GpuContext {
     pub wireframe_cube_mesh: MeshGpu,
     pub camera_buffer: wgpu::Buffer,
     pub camera_bind_group: wgpu::BindGroup,
+    pub camera_bind_group_layout: wgpu::BindGroupLayout,
     pub texture_bind_group_layout: wgpu::BindGroupLayout,
+    pub rtt_registry: RenderTargetRegistry,
     pub default_white_texture: TextureGpu,
     pub dummy_normal: GpuTextureRaw,
     pub dummy_mr: GpuTextureRaw,
@@ -2176,7 +2464,9 @@ impl GpuContext {
             wireframe_cube_mesh,
             camera_buffer,
             camera_bind_group,
+            camera_bind_group_layout,
             texture_bind_group_layout,
+            rtt_registry: RenderTargetRegistry::new(),
             default_white_texture,
             dummy_normal,
             dummy_mr,
@@ -2591,6 +2881,233 @@ impl GpuContext {
             0,
             bytemuck::cast_slice(&[*lights]),
         );
+    }
+
+    pub fn render_scene_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        params: &ScenePassParams,
+    ) {
+        let color_load = match params.clear_color {
+            Some(c) => wgpu::LoadOp::Clear(c),
+            None => wgpu::LoadOp::Load,
+        };
+        let depth_load = if params.clear_depth {
+            wgpu::LoadOp::Clear(1.0)
+        } else {
+            wgpu::LoadOp::Load
+        };
+
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(params.label),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: params.color_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: color_load,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: params.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: depth_load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            occlusion_query_set: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+        });
+
+        // 0. Render Procedural Skybox (Full or Medium quality, not wireframe)
+        if params.quality.includes_skybox() && params.view_mode != ViewMode::Wireframe {
+            render_pass.set_pipeline(&self.skybox_pipeline);
+            render_pass.set_bind_group(0, params.camera_bind_group, &[]);
+            render_pass.draw(0..3, 0..1);
+        }
+
+        // 1a. Render Opaque & Cutout Batches
+        render_pass.set_pipeline(&self.render_pipeline);
+        render_pass.set_bind_group(0, params.camera_bind_group, &[]);
+        render_pass.set_bind_group(2, &self.lights_bind_group, &[]);
+        render_pass.set_bind_group(3, &self.shadow_bind_group, &[]);
+
+        for ((mesh_id, mat_key, blend_mode), instances) in params.instances_by_batch {
+            if blend_mode == "additive" || blend_mode == "translucent" || blend_mode == "transparent" || instances.is_empty() {
+                continue;
+            }
+            if let Some(mesh_gpu) = self.meshes.get(mesh_id) {
+                let mat_bind = self.get_material(mat_key);
+                render_pass.set_bind_group(1, mat_bind, &[]);
+
+                let instance_buffer = create_instance_buffer(&self.device, instances);
+                render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
+                render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
+                render_pass.set_index_buffer(
+                    mesh_gpu.index_buffer.slice(..),
+                    mesh_gpu.index_format,
+                );
+                render_pass.draw_indexed(
+                    0..mesh_gpu.num_indices,
+                    0,
+                    0..instances.len() as u32,
+                );
+            }
+        }
+
+        // 1b. Render Translucent Batches (Water, Glass)
+        if params.quality.includes_translucent() {
+            render_pass.set_pipeline(&self.translucent_render_pipeline);
+            render_pass.set_bind_group(0, params.camera_bind_group, &[]);
+            render_pass.set_bind_group(2, &self.lights_bind_group, &[]);
+            render_pass.set_bind_group(3, &self.shadow_bind_group, &[]);
+
+            for ((mesh_id, mat_key, blend_mode), instances) in params.instances_by_batch {
+                if (blend_mode != "translucent" && blend_mode != "transparent") || instances.is_empty() {
+                    continue;
+                }
+                if let Some(mesh_gpu) = self.meshes.get(mesh_id) {
+                    let mat_bind = self.get_material(mat_key);
+                    render_pass.set_bind_group(1, mat_bind, &[]);
+
+                    let instance_buffer = create_instance_buffer(&self.device, instances);
+                    render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
+                    render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
+                    render_pass.set_index_buffer(
+                        mesh_gpu.index_buffer.slice(..),
+                        mesh_gpu.index_format,
+                    );
+                    render_pass.draw_indexed(
+                        0..mesh_gpu.num_indices,
+                        0,
+                        0..instances.len() as u32,
+                    );
+                }
+            }
+        }
+
+        // 1c. Render Additive Batches
+        if params.quality.includes_translucent() {
+            render_pass.set_pipeline(&self.additive_render_pipeline);
+            render_pass.set_bind_group(0, params.camera_bind_group, &[]);
+            render_pass.set_bind_group(2, &self.lights_bind_group, &[]);
+            render_pass.set_bind_group(3, &self.shadow_bind_group, &[]);
+
+            for ((mesh_id, mat_key, blend_mode), instances) in params.instances_by_batch {
+                if blend_mode != "additive" || instances.is_empty() {
+                    continue;
+                }
+                if let Some(mesh_gpu) = self.meshes.get(mesh_id) {
+                    let mat_bind = self.get_material(mat_key);
+                    render_pass.set_bind_group(1, mat_bind, &[]);
+
+                    let instance_buffer = create_instance_buffer(&self.device, instances);
+                    render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
+                    render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
+                    render_pass.set_index_buffer(
+                        mesh_gpu.index_buffer.slice(..),
+                        mesh_gpu.index_format,
+                    );
+                    render_pass.draw_indexed(
+                        0..mesh_gpu.num_indices,
+                        0,
+                        0..instances.len() as u32,
+                    );
+                }
+            }
+        }
+
+        // 2. Render Instanced Particles
+        if params.quality.includes_particles() {
+            if let Some(particle_instances) = params.particles {
+                if !particle_instances.is_empty() {
+                    if let Some(mesh_gpu) = self.meshes.get("quad") {
+                        render_pass.set_bind_group(1, &self.default_white_texture.bind_group, &[]);
+                        let instance_buffer = create_instance_buffer(&self.device, particle_instances);
+                        render_pass.set_vertex_buffer(0, mesh_gpu.vertex_buffer.slice(..));
+                        render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
+                        render_pass.set_index_buffer(
+                            mesh_gpu.index_buffer.slice(..),
+                            mesh_gpu.index_format,
+                        );
+                        render_pass.draw_indexed(
+                            0..mesh_gpu.num_indices,
+                            0,
+                            0..particle_instances.len() as u32,
+                        );
+                    }
+                }
+            }
+        }
+
+        // 3. Render Dynamic Trails, Debug Lines & Grid (Full quality only)
+        if params.quality.includes_debug_overlays() {
+            if let Some((trail_vertices, trail_indices)) = params.trail_data {
+                if !trail_indices.is_empty() {
+                    let tv_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Dynamic Trail Vertex Buffer"),
+                        contents: bytemuck::cast_slice(trail_vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    });
+                    let ti_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Dynamic Trail Index Buffer"),
+                        contents: bytemuck::cast_slice(trail_indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    });
+                    let id_instance = InstanceRaw {
+                        model: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                        color: [1.0, 1.0, 1.0, 1.0],
+                        extra: [1.0, 0.0, 0.0, 0.0],
+                        fresnel: [0.0, 0.0, 0.0, 0.0],
+                        uv_offset: [0.0, 0.0],
+                        uv_scale: [1.0, 1.0],
+                        pbr_params: [0.0, 1.0, 1.0, 1.0],
+                    };
+                    let inst_buf = create_instance_buffer(&self.device, &[id_instance]);
+                    render_pass.set_pipeline(&self.additive_render_pipeline);
+                    render_pass.set_bind_group(0, params.camera_bind_group, &[]);
+                    render_pass.set_bind_group(1, &self.default_white_texture.bind_group, &[]);
+                    render_pass.set_bind_group(2, &self.lights_bind_group, &[]);
+                    render_pass.set_bind_group(3, &self.shadow_bind_group, &[]);
+                    render_pass.set_vertex_buffer(0, tv_buf.slice(..));
+                    render_pass.set_vertex_buffer(1, inst_buf.slice(..));
+                    render_pass.set_index_buffer(ti_buf.slice(..), wgpu::IndexFormat::Uint16);
+                    render_pass.draw_indexed(0..trail_indices.len() as u32, 0, 0..1);
+                }
+            }
+
+            if let Some(debug_line_vertices) = params.debug_line_vertices {
+                if !debug_line_vertices.is_empty() {
+                    let line_vbuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Debug Lines Vertex Buffer"),
+                        contents: bytemuck::cast_slice(debug_line_vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    });
+                    render_pass.set_pipeline(&self.line_pipeline);
+                    render_pass.set_bind_group(0, params.camera_bind_group, &[]);
+                    render_pass.set_vertex_buffer(0, line_vbuf.slice(..));
+                    render_pass.draw(0..debug_line_vertices.len() as u32, 0..1);
+                }
+            }
+
+            if params.show_grid {
+                render_pass.set_pipeline(&self.line_pipeline);
+                render_pass.set_bind_group(0, params.camera_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.grid_mesh.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(
+                    self.grid_mesh.index_buffer.slice(..),
+                    self.grid_mesh.index_format,
+                );
+                render_pass.draw_indexed(
+                    0..self.grid_mesh.num_indices,
+                    0,
+                    0..1,
+                );
+            }
+        }
     }
 }
 
@@ -3976,5 +4493,51 @@ mod tests {
         assert_eq!(size_of::<ShadowUniform>() % 16, 0);
         assert_eq!(size_of::<CameraUniform>(), 240);
         assert_eq!(size_of::<CameraUniform>() % 16, 0);
+    }
+
+    #[test]
+    fn test_render_target_registry_metadata() {
+        let mut reg = RenderTargetRegistry::new();
+        assert_eq!(reg.target_count(), 0);
+        assert!(!reg.has_target("cctv_plaza"));
+
+        let desc = reg.register_desc("cctv_plaza", 640, 480);
+        assert_eq!(desc.id, "cctv_plaza");
+        assert_eq!(desc.width, 640);
+        assert_eq!(desc.height, 480);
+        assert!((desc.aspect() - (640.0 / 480.0)).abs() < 1e-4);
+        assert!(reg.has_target("cctv_plaza"));
+        assert_eq!(reg.target_count(), 1);
+
+        assert!(reg.update_desc_size("cctv_plaza", 1280, 720));
+        assert_eq!(reg.get_desc("cctv_plaza").unwrap().width, 1280);
+        assert_eq!(reg.get_desc("cctv_plaza").unwrap().height, 720);
+
+        reg.register_desc("cctv_hallway", 320, 240);
+        assert_eq!(reg.target_count(), 2);
+        let list = reg.list_targets();
+        assert_eq!(list, vec!["cctv_hallway", "cctv_plaza"]);
+
+        assert!(reg.remove_desc("cctv_plaza"));
+        assert!(!reg.has_target("cctv_plaza"));
+        assert_eq!(reg.target_count(), 1);
+    }
+
+    #[test]
+    fn test_pass_quality_profiles() {
+        assert!(PassQuality::Full.includes_skybox());
+        assert!(PassQuality::Full.includes_translucent());
+        assert!(PassQuality::Full.includes_particles());
+        assert!(PassQuality::Full.includes_debug_overlays());
+
+        assert!(PassQuality::Medium.includes_skybox());
+        assert!(PassQuality::Medium.includes_translucent());
+        assert!(PassQuality::Medium.includes_particles());
+        assert!(!PassQuality::Medium.includes_debug_overlays());
+
+        assert!(!PassQuality::Low.includes_skybox());
+        assert!(!PassQuality::Low.includes_translucent());
+        assert!(!PassQuality::Low.includes_particles());
+        assert!(!PassQuality::Low.includes_debug_overlays());
     }
 }
