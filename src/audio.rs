@@ -53,40 +53,54 @@ pub struct AudioManager {
 }
 
 impl AudioManager {
+    pub fn dummy() -> Self {
+        let mut bus_volumes = HashMap::new();
+        bus_volumes.insert("master".to_string(), 1.0);
+        bus_volumes.insert("sfx".to_string(), 1.0);
+        bus_volumes.insert("music".to_string(), 1.0);
+        Self {
+            stream_handle: None,
+            music_sink: None,
+            available: false,
+            bus_volumes,
+            current_music_intensity: None,
+        }
+    }
+
     pub fn init() -> (Option<OutputStream>, Self) {
+        if cfg!(test)
+            || std::env::var("CI").is_ok()
+            || std::env::var("GITHUB_ACTIONS").is_ok()
+        {
+            return (None, Self::dummy());
+        }
+
         let mut bus_volumes = HashMap::new();
         bus_volumes.insert("master".to_string(), 1.0);
         bus_volumes.insert("sfx".to_string(), 1.0);
         bus_volumes.insert("music".to_string(), 1.0);
 
-        match OutputStream::try_default() {
-            Ok((stream, handle)) => {
-                (
-                    Some(stream),
-                    Self {
-                        stream_handle: Some(handle),
-                        music_sink: None,
-                        available: true,
-                        bus_volumes,
-                        current_music_intensity: None,
-                    },
-                )
-            }
-            Err(e) => {
+        match std::panic::catch_unwind(OutputStream::try_default) {
+            Ok(Ok((stream, handle))) => (
+                Some(stream),
+                Self {
+                    stream_handle: Some(handle),
+                    music_sink: None,
+                    available: true,
+                    bus_volumes,
+                    current_music_intensity: None,
+                },
+            ),
+            Ok(Err(e)) => {
                 eprintln!(
                     "[Audio] Warning: No audio output device available ({:?}). Running in no-op audio mode.",
                     e
                 );
-                (
-                    None,
-                    Self {
-                        stream_handle: None,
-                        music_sink: None,
-                        available: false,
-                        bus_volumes,
-                        current_music_intensity: None,
-                    },
-                )
+                (None, Self::dummy())
+            }
+            Err(_) => {
+                eprintln!("[Audio] Warning: Audio backend panicked during init. Running in no-op audio mode.");
+                (None, Self::dummy())
             }
         }
     }
