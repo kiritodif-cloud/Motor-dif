@@ -5385,6 +5385,9 @@ let role_str = match self.net.role {
 
         let mut trigger_refresh_assets = false;
         let egui_ctx = self.gpu.egui_winit_state.egui_ctx().clone();
+        if self.pointer_locked {
+            egui_ctx.set_cursor_icon(egui::CursorIcon::None);
+        }
 
         let full_output = egui_ctx.run_ui(raw_input, |ui| {
                 ui_theme::apply_theme(ui.ctx());
