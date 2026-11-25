@@ -1802,6 +1802,18 @@ let role_str = match self.net.role {
                 let in_viewport = self.is_cursor_in_viewport();
                 let is_play_mode = self.play_mode == PlayMode::Play;
 
+                if self.pointer_locked && self.play_mode == PlayMode::Play && !self.is_paused {
+                    self.window.set_cursor_visible(false);
+                    if self.viewport_rect.is_positive() {
+                        let scale = self.window.scale_factor() as f32;
+                        let c = self.viewport_rect.center();
+                        let cx = c.x * scale;
+                        let cy = c.y * scale;
+                        if (new_x - cx).abs() > 4.0 || (new_y - cy).abs() > 4.0 {
+                            let _ = self.window.set_cursor_position(winit::dpi::PhysicalPosition::new(cx as f64, cy as f64));
+                        }
+                    }
+                }
                 if let Ok(mut minfo) = self.lua_ctx.mouse_info.write() {
                     minfo.screen_pos = [new_x, new_y];
                     if !self.pointer_locked {
@@ -1870,6 +1882,7 @@ let role_str = match self.net.role {
             WindowEvent::Focused(focused) => {
                 if !focused && self.pointer_locked {
                     self.set_pointer_lock(false);
+                    self.logs.push("[PointerLock] Unlocked by window focus loss".to_string());
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -3629,6 +3642,7 @@ let role_str = match self.net.role {
         } else if pl_cmd == -1 {
             self.pointer_lock_requested = false;
             self.set_pointer_lock(false);
+            self.logs.push("[PointerLock] Unlocked by Lua set_pointer_lock(false)".to_string());
         }
 
         self.frametime_history.push_back(dt * 1000.0);
