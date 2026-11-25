@@ -450,6 +450,88 @@ impl RenderTargetRegistry {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct RttCameraTask {
+    pub entity_id: u32,
+    pub target_id: String,
+    pub position: glam::Vec3,
+    pub rotation: glam::Vec3,
+    pub fov: f32,
+    pub width: u32,
+    pub height: u32,
+    pub update_hz: f32,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RttScheduler {
+    pub max_rtt_per_frame: usize,
+    pub last_render_times: HashMap<String, f64>,
+    pub round_robin_cursor: usize,
+}
+
+impl Default for RttScheduler {
+    fn default() -> Self {
+        Self::new(2)
+    }
+}
+
+impl RttScheduler {
+    pub fn new(max_rtt_per_frame: usize) -> Self {
+        Self {
+            max_rtt_per_frame: max_rtt_per_frame.max(1),
+            last_render_times: HashMap::new(),
+            round_robin_cursor: 0,
+        }
+    }
+
+    /// Filters and schedules up to `max_rtt_per_frame` cameras due for rendering.
+    pub fn schedule<'a>(&mut self, current_time: f64, candidates: &'a [RttCameraTask]) -> Vec<&'a RttCameraTask> {
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        let due: Vec<&'a RttCameraTask> = candidates
+            .iter()
+            .filter(|task| {
+                if !task.enabled {
+                    return false;
+                }
+                let interval = if task.update_hz > 0.0 {
+                    1.0 / task.update_hz as f64
+                } else {
+                    0.0
+                };
+                let last = self.last_render_times.get(&task.target_id).copied().unwrap_or(-9999.0);
+                (current_time - last) >= interval
+            })
+            .collect();
+
+        if due.is_empty() {
+            return Vec::new();
+        }
+
+        let selected = if due.len() <= self.max_rtt_per_frame {
+            due
+        } else {
+            let n = due.len();
+            let start = self.round_robin_cursor % n;
+            let mut picked = Vec::with_capacity(self.max_rtt_per_frame);
+            for i in 0..self.max_rtt_per_frame {
+                picked.push(due[(start + i) % n]);
+            }
+            self.round_robin_cursor = (start + self.max_rtt_per_frame) % n;
+            picked
+        };
+
+        for task in &selected {
+            self.last_render_times.insert(task.target_id.clone(), current_time);
+        }
+
+        selected
+    }
+}
+
 pub struct ScenePassParams<'a> {
     pub label: &'a str,
     pub camera_bind_group: &'a wgpu::BindGroup,
@@ -2602,7 +2684,32 @@ impl GpuContext {
         Ok("Shader syntax validated and compiled successfully".to_string())
     }
 
+    pub fn ensure_rtt_target(&mut self, id: &str, width: u32, height: u32) -> Result<(), String> {
+        self.rtt_registry.create_or_resize(
+            &self.device,
+            &self.camera_bind_group_layout,
+            &self.texture_bind_group_layout,
+            &self.dummy_normal.view,
+            &self.dummy_mr.view,
+            Some(&mut self.egui_renderer),
+            id,
+            width,
+            height,
+        )?;
+        Ok(())
+    }
+
     pub fn get_or_create_material(&mut self, key: &MaterialKey) -> &wgpu::BindGroup {
+        if let Some(diffuse) = &key.diffuse {
+            if let Some(rtt_id) = diffuse.strip_prefix("__rtt:") {
+                if self.rtt_registry.entries.contains_key(rtt_id) {
+                    return &self.rtt_registry.entries.get(rtt_id).unwrap().material_bind_group;
+                } else {
+                    return &self.default_white_texture.bind_group;
+                }
+            }
+        }
+
         if key.normal.is_none() && key.metallic_roughness.is_none() && key.emissive.is_none() {
             if let Some(diffuse) = &key.diffuse {
                 return &self.get_or_load_texture(diffuse).bind_group;
@@ -2667,6 +2774,16 @@ impl GpuContext {
     }
 
     pub fn get_material(&self, key: &MaterialKey) -> &wgpu::BindGroup {
+        if let Some(diffuse) = &key.diffuse {
+            if let Some(rtt_id) = diffuse.strip_prefix("__rtt:") {
+                if self.rtt_registry.entries.contains_key(rtt_id) {
+                    return &self.rtt_registry.entries.get(rtt_id).unwrap().material_bind_group;
+                } else {
+                    return &self.default_white_texture.bind_group;
+                }
+            }
+        }
+
         if key.normal.is_none() && key.metallic_roughness.is_none() && key.emissive.is_none() {
             if let Some(diffuse) = &key.diffuse {
                 return &self.get_texture(diffuse).bind_group;
@@ -4539,5 +4656,78 @@ mod tests {
         assert!(!PassQuality::Low.includes_translucent());
         assert!(!PassQuality::Low.includes_particles());
         assert!(!PassQuality::Low.includes_debug_overlays());
+    }
+
+    #[test]
+    fn test_rtt_scheduler_round_robin_and_budget() {
+        let mut scheduler = RttScheduler::new(2);
+        assert_eq!(scheduler.max_rtt_per_frame, 2);
+
+        let tasks = vec![
+            RttCameraTask {
+                entity_id: 1,
+                target_id: "cctv_1".to_string(),
+                position: glam::Vec3::ZERO,
+                rotation: glam::Vec3::ZERO,
+                fov: 60.0,
+                width: 320,
+                height: 240,
+                update_hz: 30.0,
+                enabled: true,
+            },
+            RttCameraTask {
+                entity_id: 2,
+                target_id: "cctv_2".to_string(),
+                position: glam::Vec3::ZERO,
+                rotation: glam::Vec3::ZERO,
+                fov: 60.0,
+                width: 320,
+                height: 240,
+                update_hz: 30.0,
+                enabled: true,
+            },
+            RttCameraTask {
+                entity_id: 3,
+                target_id: "cctv_3".to_string(),
+                position: glam::Vec3::ZERO,
+                rotation: glam::Vec3::ZERO,
+                fov: 60.0,
+                width: 320,
+                height: 240,
+                update_hz: 30.0,
+                enabled: true,
+            },
+            RttCameraTask {
+                entity_id: 4,
+                target_id: "cctv_disabled".to_string(),
+                position: glam::Vec3::ZERO,
+                rotation: glam::Vec3::ZERO,
+                fov: 60.0,
+                width: 320,
+                height: 240,
+                update_hz: 30.0,
+                enabled: false,
+            },
+        ];
+
+        // Frame 1 at t = 0.0: candidates are due (since never rendered). Budget = 2, so 2 are picked.
+        let scheduled_1 = scheduler.schedule(0.0, &tasks);
+        assert_eq!(scheduled_1.len(), 2);
+        assert_eq!(scheduled_1[0].target_id, "cctv_1");
+        assert_eq!(scheduled_1[1].target_id, "cctv_2");
+
+        // Frame 2 at t = 0.01: cctv_1 and cctv_2 rendered 0.01s ago (< 1/30s = 0.0333s), but cctv_3 never rendered.
+        let scheduled_2 = scheduler.schedule(0.01, &tasks);
+        assert_eq!(scheduled_2.len(), 1);
+        assert_eq!(scheduled_2[0].target_id, "cctv_3");
+
+        // Frame 3 at t = 0.02: none due yet
+        let scheduled_3 = scheduler.schedule(0.02, &tasks);
+        assert!(scheduled_3.is_empty());
+
+        // Frame 4 at t = 0.05: cctv_1, cctv_2, and cctv_3 are all due!
+        // Round robin cursor ensures fair rotation!
+        let scheduled_4 = scheduler.schedule(0.05, &tasks);
+        assert_eq!(scheduled_4.len(), 2);
     }
 }

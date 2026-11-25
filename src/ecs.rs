@@ -298,9 +298,96 @@ impl TrailComponent {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CameraTarget {
+    pub target_id: String,
+    #[serde(default = "default_rtt_width")]
+    pub width: u32,
+    #[serde(default = "default_rtt_height")]
+    pub height: u32,
+    #[serde(default = "default_rtt_fov")]
+    pub fov: f32,
+    #[serde(default = "default_rtt_hz")]
+    pub update_hz: f32,
+    #[serde(default = "default_rtt_true")]
+    pub enabled: bool,
+}
+
+fn default_rtt_width() -> u32 { 640 }
+fn default_rtt_height() -> u32 { 360 }
+fn default_rtt_fov() -> f32 { 60.0 }
+fn default_rtt_hz() -> f32 { 15.0 }
+fn default_rtt_true() -> bool { true }
+
+impl Default for CameraTarget {
+    fn default() -> Self {
+        Self {
+            target_id: "default_rtt".to_string(),
+            width: 640,
+            height: 360,
+            fov: 60.0,
+            update_hz: 15.0,
+            enabled: true,
+        }
+    }
+}
+
+impl CameraTarget {
+    pub fn new(target_id: impl Into<String>, width: u32, height: u32, fov: f32, update_hz: f32) -> Self {
+        Self {
+            target_id: target_id.into(),
+            width: width.max(1),
+            height: height.max(1),
+            fov: fov.clamp(10.0, 150.0),
+            update_hz: update_hz.max(0.1),
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MaterialOverrideRtt {
+    pub target_id: String,
+    #[serde(default)]
+    pub as_emissive: bool,
+}
+
+impl Default for MaterialOverrideRtt {
+    fn default() -> Self {
+        Self {
+            target_id: "default_rtt".to_string(),
+            as_emissive: false,
+        }
+    }
+}
+
+impl MaterialOverrideRtt {
+    pub fn new(target_id: impl Into<String>, as_emissive: bool) -> Self {
+        Self {
+            target_id: target_id.into(),
+            as_emissive,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_rtt_components() {
+        let cam = CameraTarget::new("cam_sec_1", 800, 600, 75.0, 30.0);
+        assert_eq!(cam.target_id, "cam_sec_1");
+        assert_eq!(cam.width, 800);
+        assert_eq!(cam.height, 600);
+        assert_eq!(cam.fov, 75.0);
+        assert_eq!(cam.update_hz, 30.0);
+        assert!(cam.enabled);
+
+        let mat = MaterialOverrideRtt::new("cam_sec_1", true);
+        assert_eq!(mat.target_id, "cam_sec_1");
+        assert!(mat.as_emissive);
+    }
 
     #[test]
     fn test_sprite_animation_math() {

@@ -124,6 +124,10 @@ pub struct EntityDef {
     pub procedural_rig: Option<crate::procedural_rig::ProceduralRig>,
     #[serde(default)]
     pub vfx_emitter: Option<VfxEmitterDef>,
+    #[serde(default)]
+    pub camera_target: Option<crate::ecs::CameraTarget>,
+    #[serde(default)]
+    pub material_override_rtt: Option<crate::ecs::MaterialOverrideRtt>,
 }
 
 fn default_scale() -> [f32; 3] {
@@ -252,6 +256,8 @@ impl Default for SceneDef {
                     animation_player: None,
                     procedural_rig: None,
                     vfx_emitter: None,
+            camera_target: None,
+            material_override_rtt: None,
                 },
                 EntityDef {
                     id: "cube_green".to_string(),
@@ -274,6 +280,8 @@ impl Default for SceneDef {
                     animation_player: None,
                     procedural_rig: None,
                     vfx_emitter: None,
+            camera_target: None,
+            material_override_rtt: None,
                 },
                 EntityDef {
                     id: "cube_blue".to_string(),
@@ -296,6 +304,8 @@ impl Default for SceneDef {
                     animation_player: None,
                     procedural_rig: None,
                     vfx_emitter: None,
+            camera_target: None,
+            material_override_rtt: None,
                 },
             ],
         }
@@ -352,6 +362,8 @@ pub fn extract_scene_from_world(
             let anim_comp_opt = er.get::<&crate::animation::AnimationPlayer>();
             let rig_comp_opt = er.get::<&crate::procedural_rig::ProceduralRig>();
             let vfx_comp_opt = er.get::<&crate::vfx_forge::VfxEmitterComponent>();
+            let cam_target_opt = er.get::<&crate::ecs::CameraTarget>().as_deref().cloned();
+            let mat_rtt_opt = er.get::<&crate::ecs::MaterialOverrideRtt>().as_deref().cloned();
 
             let phys_def = rb_opt.as_deref().and_then(|rb| {
                 physics.rigid_body_set.get(rb.handle).map(|body| {
@@ -418,6 +430,8 @@ pub fn extract_scene_from_world(
                 animation_player: anim_opt,
                 procedural_rig: rig_opt,
                 vfx_emitter: vfx_opt,
+                camera_target: cam_target_opt,
+                material_override_rtt: mat_rtt_opt,
             });
         }
     }
@@ -527,6 +541,14 @@ pub fn apply_scene_to_world(
                 burst_fired: false,
             };
             let _ = world.insert_one(e, comp);
+        }
+
+        if let Some(target) = &entity.camera_target {
+            let _ = world.insert_one(e, target.clone());
+        }
+
+        if let Some(rtt_mat) = &entity.material_override_rtt {
+            let _ = world.insert_one(e, rtt_mat.clone());
         }
     }
 }
@@ -675,6 +697,8 @@ pub fn extract_entity_def(
     });
 
     let rig_opt = world.get::<&crate::procedural_rig::ProceduralRig>(entity).ok().map(|r| (*r).clone());
+    let cam_target_opt = world.get::<&crate::ecs::CameraTarget>(entity).ok().map(|c| (*c).clone());
+    let mat_rtt_opt = world.get::<&crate::ecs::MaterialOverrideRtt>(entity).ok().map(|m| (*m).clone());
     let vfx_opt = world.get::<&crate::vfx_forge::VfxEmitterComponent>(entity).ok().map(|v| VfxEmitterDef {
         preset_or_recipe: v.recipe.name.clone(),
         enabled: v.enabled,
@@ -704,6 +728,8 @@ pub fn extract_entity_def(
         animation_player: anim_opt,
         procedural_rig: rig_opt,
         vfx_emitter: vfx_opt,
+        camera_target: cam_target_opt,
+        material_override_rtt: mat_rtt_opt,
     })
 }
 
@@ -761,6 +787,8 @@ mod tests {
             animation_player: None,
             procedural_rig: None,
             vfx_emitter: None,
+            camera_target: None,
+            material_override_rtt: None,
         };
         let json = serde_json::to_string(&def).unwrap();
         assert!(json.contains("\"parent\":\"parent_node\""));
@@ -793,6 +821,8 @@ mod tests {
             animation_player: None,
             procedural_rig: None,
             vfx_emitter: None,
+            camera_target: None,
+            material_override_rtt: None,
         };
         let json = serde_json::to_string(&def).unwrap();
         assert!(json.contains("\"blend_mode\":\"additive\""));
@@ -833,6 +863,8 @@ mod tests {
                 offset: [0.0, 0.5, 0.0],
                 recipe: None,
             }),
+            camera_target: None,
+            material_override_rtt: None,
         };
         let json = serde_json::to_string(&def).unwrap();
         assert!(json.contains("\"vfx_emitter\""));
@@ -963,6 +995,8 @@ mod tests {
             animation_player: None,
             procedural_rig: None,
             vfx_emitter: None,
+            camera_target: None,
+            material_override_rtt: None,
         };
 
         let child = EntityDef {
@@ -986,6 +1020,8 @@ mod tests {
             animation_player: None,
             procedural_rig: None,
             vfx_emitter: None,
+            camera_target: None,
+            material_override_rtt: None,
         };
 
         let prefab = PrefabDef {

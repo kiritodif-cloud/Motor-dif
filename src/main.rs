@@ -237,6 +237,8 @@ pub struct EngineState {
     pub view_mode: renderer::ViewMode,
     pub camera_bookmarks: [Option<(Vec3, Vec3)>; 4],
     pub last_draw_calls: usize,
+    pub rtt_scheduler: renderer::RttScheduler,
+    pub last_rtt_passes: usize,
 
     // Mouse & Gizmo Interaction
     pub mouse_pos: [f32; 2],
@@ -598,6 +600,8 @@ impl EngineState {
             view_mode: renderer::ViewMode::Lit,
             camera_bookmarks: [None, None, None, None],
             last_draw_calls: 0,
+            rtt_scheduler: renderer::RttScheduler::new(2),
+            last_rtt_passes: 0,
 
             mouse_pos: [0.0, 0.0],
             pointer_locked: false,
@@ -2213,8 +2217,7 @@ impl EngineState {
                             id, mesh, position: [x,y,z], rotation: [rx,ry,rz], scale: [sx,sy,sz],
                             color, texture, parent, emissive: 0.0,
                             fresnel_color: None, fresnel_power: None, blend_mode: None, wireframe: None, uv_scroll: None,
-                            script: None, physics: None, point_light: None, animation_player: None, procedural_rig: None, vfx_emitter: None
-                        };
+                            script: None, physics: None, point_light: None, animation_player: None, procedural_rig: None, vfx_emitter: None, camera_target: None, material_override_rtt: None };
                         if let Ok(mut list) = spawns_ref.lock() { list.push(def); }
                         Ok(())
                     });
@@ -4794,7 +4797,7 @@ impl EngineState {
                     renderer::ViewMode::Unlit => 1.0,
                     renderer::ViewMode::Wireframe => 2.0,
                 };
-                let (mat_key, pbr_params) = if let Some(pbr) = entity_ref.get::<&ecs::PbrMaterial>() {
+                let (mut mat_key, pbr_params) = if let Some(pbr) = entity_ref.get::<&ecs::PbrMaterial>() {
                     (
                         renderer::MaterialKey {
                             diffuse: mesh.texture.clone(),
@@ -4810,10 +4813,17 @@ impl EngineState {
                         [0.0, 0.5, 1.0, 1.0],
                     )
                 };
+                let mut emissive_val = mesh.emissive;
+                if let Some(rtt_mat) = entity_ref.get::<&ecs::MaterialOverrideRtt>() {
+                    mat_key.diffuse = Some(format!("__rtt:{}", rtt_mat.target_id));
+                    if rtt_mat.as_emissive {
+                        emissive_val = emissive_val.max(1.0);
+                    }
+                }
                 let raw = InstanceRaw {
                     model: model_mat,
                     color: mesh.color,
-                    extra: [mesh.emissive, scroll[0], scroll[1], wire_flag],
+                    extra: [emissive_val, scroll[0], scroll[1], wire_flag],
                     fresnel,
                     uv_offset,
                     uv_scale,
@@ -8361,6 +8371,99 @@ impl EngineState {
             }
         }
 
+        // 0.5. Render-To-Texture (RTT) Secondary Camera Passes (Budgeted & Round-Robin)
+        let current_engine_time = self.total_time as f64;
+        let mut rtt_tasks = Vec::new();
+        for entity_ref in self.world.iter() {
+            if let Some(target) = entity_ref.get::<&ecs::CameraTarget>() {
+                if target.enabled {
+                    let entity = entity_ref.entity();
+                    let (pos, rot) = if let Some((_, p)) = world_transforms.get(&entity) {
+                        let r = entity_ref.get::<&Transform>().map(|t| t.rotation).unwrap_or(Vec3::ZERO);
+                        (*p, r)
+                    } else if let Some(t) = entity_ref.get::<&Transform>() {
+                        (t.position, t.rotation)
+                    } else {
+                        (Vec3::ZERO, Vec3::ZERO)
+                    };
+                    rtt_tasks.push(renderer::RttCameraTask {
+                        entity_id: entity.id(),
+                        target_id: target.target_id.clone(),
+                        position: pos,
+                        rotation: rot,
+                        fov: target.fov,
+                        width: target.width,
+                        height: target.height,
+                        update_hz: target.update_hz,
+                        enabled: target.enabled,
+                    });
+                }
+            }
+        }
+
+        let scheduled_rtt = self.rtt_scheduler.schedule(current_engine_time, &rtt_tasks);
+        self.last_rtt_passes = scheduled_rtt.len();
+
+        for task in &scheduled_rtt {
+            let _ = self.gpu.ensure_rtt_target(&task.target_id, task.width, task.height);
+            if let Some(entry) = self.gpu.rtt_registry.get(&task.target_id) {
+                let rot_mat = glam::Mat4::from_euler(glam::EulerRot::YXZ, task.rotation.y, task.rotation.x, task.rotation.z);
+                let forward = (rot_mat * glam::Vec4::new(0.0, 0.0, -1.0, 0.0)).truncate().normalize();
+                let up = (rot_mat * glam::Vec4::new(0.0, 1.0, 0.0, 0.0)).truncate().normalize();
+
+                let aspect = entry.desc.aspect();
+                let mut rtt_cam = crate::camera::Camera::new_3d(task.position, task.position + forward, aspect);
+                rtt_cam.up = up;
+                rtt_cam.fovy = task.fov.to_radians();
+
+                let mut rtt_uniform = crate::camera::CameraUniform::new();
+                rtt_uniform.update_with_environment_fog(
+                    &rtt_cam,
+                    self.total_time,
+                    &self.environment_settings.sky_mode,
+                    self.environment_settings.zenith_color,
+                    self.environment_settings.horizon_color,
+                    self.environment_settings.fog_color,
+                    self.environment_settings.fog_density,
+                    &self.environment_settings.fog_mode.clone().unwrap_or_else(|| "exponential".to_string()),
+                    self.environment_settings.fog_start.unwrap_or(0.0),
+                    self.environment_settings.fog_end.unwrap_or(100.0),
+                    self.active_sun_dir.to_array(),
+                    self.active_sun_color.to_array(),
+                    self.active_sun_intensity,
+                    self.active_stars_vis,
+                );
+
+                self.gpu.queue.write_buffer(
+                    &entry.camera_buffer,
+                    0,
+                    bytemuck::cast_slice(&[rtt_uniform]),
+                );
+
+                let rtt_pass_params = renderer::ScenePassParams {
+                    label: "RTT Camera Scene Pass",
+                    camera_bind_group: &entry.camera_bind_group,
+                    color_view: &entry.color_view,
+                    depth_view: &entry.depth_texture.view,
+                    clear_color: Some(wgpu::Color {
+                        r: 0.05,
+                        g: 0.05,
+                        b: 0.08,
+                        a: 1.0,
+                    }),
+                    clear_depth: true,
+                    quality: renderer::PassQuality::Medium,
+                    instances_by_batch: &instances_by_batch,
+                    particles: None,
+                    trail_data: None,
+                    debug_line_vertices: None,
+                    show_grid: false,
+                    view_mode: renderer::ViewMode::Lit,
+                };
+                self.gpu.render_scene_pass(&mut encoder, &rtt_pass_params);
+            }
+        }
+
         // 1. 3D Scene Render Pass (HDR)
         let is_playing = self.is_standalone_play || self.play_mode == PlayMode::Play;
         let particle_instances = self.particles.get_instances();
@@ -9171,6 +9274,8 @@ mod tests {
             animation_player: None,
             procedural_rig: None,
             vfx_emitter: None,
+            camera_target: None,
+            material_override_rtt: None,
         });
 
         // 1. Initial push of s1
