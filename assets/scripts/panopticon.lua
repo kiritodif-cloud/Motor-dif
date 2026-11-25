@@ -11,6 +11,8 @@ local SERVER_HACK_GOAL = 15.0
 
 -- Estado global de partida
 local initialized = false
+local game_state = "MENU" -- "MENU" | "PLAYING"
+local menu_tab = "MAIN"   -- "MAIN" | "CONTROLS"
 local match_time = MATCH_DURATION
 local elapsed_time = 0.0
 local phase = 1
@@ -844,6 +846,52 @@ function on_btn_lockdown() trigger_lockdown() end
 function on_btn_phase() advance_phase_test() end
 function on_btn_rtt() show_rtt_matrix = not show_rtt_matrix end
 function on_btn_reset() reset_panopticon() end
+
+function on_menu_play_solo()
+    if net_is_server() or net_is_client() then net_disconnect() end
+    my_role = "OPERADOR"
+    my_controlled_npc = 0
+    game_state = "PLAYING"
+    menu_tab = "MAIN"
+    reset_panopticon()
+end
+
+function on_menu_host()
+    if not net_is_server() and not net_is_client() then
+        net_host(5000)
+    end
+    my_role = "OPERADOR"
+    my_controlled_npc = 0
+    game_state = "PLAYING"
+    menu_tab = "MAIN"
+    reset_panopticon()
+    set_alert("SERVIDOR UDP INICIADO EN PUERTO 5000 (ROL: OPERADOR)", 4.5)
+end
+
+function on_menu_join()
+    if not net_is_server() and not net_is_client() then
+        net_connect("127.0.0.1:5000")
+    end
+    game_state = "PLAYING"
+    menu_tab = "MAIN"
+    ui_clear()
+    set_alert("CONECTANDO A 127.0.0.1:5000...", 4.0)
+end
+
+function on_menu_controls()
+    menu_tab = (menu_tab == "MAIN") and "CONTROLS" or "MAIN"
+end
+
+function on_btn_to_menu()
+    if net_is_server() or net_is_client() then net_disconnect() end
+    if is_pointer_locked() then set_pointer_lock(false) end
+    my_role = "OPERADOR"
+    my_controlled_npc = 0
+    keypad_open = false
+    game_state = "MENU"
+    menu_tab = "MAIN"
+    ui_clear()
+end
 
 function on_btn_host()
     if not net_is_server() and not net_is_client() then
@@ -2224,14 +2272,40 @@ end
 local last_ui_sig = ""
 
 local function draw_hud()
-    local ui_sig = string.format("%s|%s|%s|%s|%s|%s|%s|%s|%s",
-        my_role, tostring(keypad_open), tostring(show_rtt_matrix),
+    local ui_sig = string.format("%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s",
+        game_state, menu_tab, my_role, tostring(keypad_open), tostring(show_rtt_matrix),
         tostring(alert_banner_timer > 0.0), tostring(game_over),
         tostring(is_cam_operational(1)), tostring(is_cam_operational(2)),
         tostring(is_cam_operational(3)), tostring(is_cam_operational(4)))
     if ui_sig ~= last_ui_sig then
         last_ui_sig = ui_sig
         ui_clear()
+    end
+
+    if game_state == "MENU" then
+        if menu_tab == "MAIN" then
+            ui_panel("pnl_menu", "center", 0, 0, 360, 286, 0.05, 0.08, 0.13, 0.94)
+            ui_label("lbl_m_tag", "center", -142, -120, "SISTEMA DE VIGILANCIA URBANA", 10, 0.30, 0.92, 1.0)
+            ui_label("lbl_m_tit", "center", -142, -96, "PROYECTO PANOPTICON", 20, 0.96, 0.98, 1.0)
+            ui_label("lbl_m_sub", "center", -142, -66, "Vigilancia Asimetrica | RTT CCTV | Red UDP", 10, 0.72, 0.80, 0.90)
+            ui_button("btn_m_solo", "center", 0, -24, 270, 34, "Jugar Modo Solo (Operador) [ENTER]", "on_menu_play_solo")
+            ui_button("btn_m_host", "center", 0,  20, 270, 32, "Crear Partida Host (UDP :5000)", "on_menu_host")
+            ui_button("btn_m_join", "center", 0,  62, 270, 32, "Unirse a Partida (127.0.0.1)", "on_menu_join")
+            ui_button("btn_m_ctrl", "center", 0, 106, 270, 30, "Controles y Reglas", "on_menu_controls")
+        else
+            ui_panel("pnl_m_c", "center", 0, 0, 476, 306, 0.05, 0.08, 0.13, 0.95)
+            ui_label("lbl_mc_t", "center", -212, -132, "CONTROLES Y REGLAS - PANOPTICON", 13, 0.30, 0.94, 1.0)
+            ui_label("lbl_mc_1", "center", -212, -104, "Personaje [0]: WASD Mover | SHIFT Correr | ESPACIO Saltar | Mouse Mirar ([L])", 10, 0.90, 0.94, 0.98)
+            ui_label("lbl_mc_2", "center", -212,  -84, "Camaras [1..5]: WASD/Flechas Rotar | Q/E Zoom | [M] Matriz RTT", 10, 0.90, 0.94, 0.98)
+            ui_label("lbl_mc_3", "center", -212,  -64, "Sala de Camaras: [G] Abrir Puerta (PIN Sistema: 4826) | Casas Transitables", 10, 0.95, 0.86, 0.45)
+            ui_label("lbl_mc_4", "center", -212,  -44, "Tactico: [TAB] Objetivo | [C/ESP] Escaner | [P] Ping | [B] Bloqueo | [F10] Menu", 10, 0.85, 0.90, 0.95)
+            ui_label("lbl_mc_5", "center", -212,  -16, "LEYES: I No Correr | II No Aglomerarse (Fase 2+) | III Contrabando", 10, 0.95, 0.72, 0.35)
+            ui_label("lbl_mc_6", "center", -212,    4, "       IV Sabotaje Infraestructura | V Toque de Queda Nocturno (Fase 3)", 10, 0.95, 0.72, 0.35)
+            ui_label("lbl_mc_7", "center", -212,   34, "VICTORIA SISTEMA: Arrestar 3 Rebeldes o resistir 12 min.", 10, 0.40, 0.95, 0.70)
+            ui_label("lbl_mc_8", "center", -212,   54, "VICTORIA REBELDES: Hackear 3 Antenas (35s) o el Servidor Central (15s).", 10, 1.0, 0.45, 0.45)
+            ui_button("btn_mc_back", "center", 0, 112, 180, 32, "Volver al Menu", "on_menu_controls")
+        end
+        return
     end
     local mins = math.floor(match_time / 60.0)
     local secs = math.floor(match_time % 60.0)
@@ -2377,7 +2451,8 @@ local function draw_hud()
         ui_panel("pnl_end", "center", 0, 0, 440, 140, sys_win and 0.05 or 0.25, sys_win and 0.18 or 0.06, sys_win and 0.24 or 0.08, 0.95)
         ui_label("lbl_end_1", "center", -175, -40, sys_win and "VICTORIA DEL SISTEMA (PANOPTICON)" or "VICTORIA DE LOS REBELDES", 15, sys_win and 0.3 or 1.0, sys_win and 0.95 or 0.35, sys_win and 1.0 or 0.35)
         ui_label("lbl_end_2", "center", -185, -10, win_reason, 11, 0.92, 0.95, 1.0)
-        ui_button("btn_rst", "center", 0, 32, 160, 30, "Nueva Partida [R]", "on_btn_reset")
+        ui_button("btn_rst", "center", -88, 32, 160, 30, "Nueva Partida [R]", "on_btn_reset")
+        ui_button("btn_mnu", "center",  88, 32, 140, 30, "Menu Principal", "on_btn_to_menu")
     end
 end
 
@@ -2396,6 +2471,30 @@ function on_update(entity, dt)
     elapsed_time = elapsed_time + dt
     if alert_banner_timer > 0.0 then
         alert_banner_timer = math.max(0.0, alert_banner_timer - dt)
+    end
+
+    if game_state == "MENU" then
+        if is_pointer_locked() then set_pointer_lock(false) end
+        if is_key_just_pressed("RETURN") or is_key_just_pressed("ENTER") then
+            on_menu_play_solo()
+            return
+        end
+        set_time_of_day(13.5)
+        local ang = elapsed_time * 0.14
+        local cx = math.sin(ang) * 19.0
+        local cz = 1.0 + math.cos(ang) * 19.0
+        local cy = 9.2 + math.sin(elapsed_time * 0.35) * 1.1
+        set_camera(cx, cy, cz, 0.0, 4.2, -8.5)
+        update_npcs(dt)
+        update_police(dt)
+        update_technician(dt)
+        draw_hud()
+        return
+    end
+
+    if is_key_just_pressed("F10") then
+        on_btn_to_menu()
+        return
     end
 
     if net_is_client() and net_client_id() > 0 then
