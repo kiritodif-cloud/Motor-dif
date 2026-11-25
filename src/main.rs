@@ -914,6 +914,7 @@ let role_str = match self.net.role {
                 mesh.blend_mode = prefab_def.root.blend_mode.clone();
                 mesh.wireframe = prefab_def.root.wireframe;
                 mesh.uv_scroll = prefab_def.root.uv_scroll;
+                mesh.uv_scale = prefab_def.root.uv_scale;
                 count += 1;
             }
             if let Some(script_path) = &prefab_def.root.script {
@@ -1111,6 +1112,7 @@ let role_str = match self.net.role {
             blend_mode: None,
             wireframe: None,
             uv_scroll: None,
+        uv_scale: None,
         };
 
         let entity = self.world.spawn((meta, transform, mesh));
@@ -1271,6 +1273,7 @@ let role_str = match self.net.role {
                 fresnel_color: None,
                 fresnel_power: None,
                 uv_scroll: None,
+            uv_scale: None,
             };
 
             let tri_indices: Vec<[u32; 3]> = mesh
@@ -1353,6 +1356,7 @@ let role_str = match self.net.role {
                     fresnel_color: None,
                     fresnel_power: None,
                     uv_scroll: None,
+                uv_scale: None,
                 };
                 let phys_def = crate::assets::PhysicsDef {
                     body: "fixed".to_string(),
@@ -1391,6 +1395,7 @@ let role_str = match self.net.role {
                     fresnel_color: None,
                     fresnel_power: None,
                     uv_scroll: None,
+                uv_scale: None,
                 };
                 let phys_def = crate::assets::PhysicsDef {
                     body: "fixed".to_string(),
@@ -1423,6 +1428,7 @@ let role_str = match self.net.role {
                 fresnel_color: None,
                 fresnel_power: None,
                 uv_scroll: None,
+            uv_scale: None,
             };
             self.world.spawn((sp_meta, sp_trans, sp_mesh));
 
@@ -1444,6 +1450,7 @@ let role_str = match self.net.role {
                 fresnel_color: None,
                 fresnel_power: None,
                 uv_scroll: None,
+            uv_scale: None,
             };
             self.world.spawn((bp_meta, bp_trans, bp_mesh));
 
@@ -1466,6 +1473,7 @@ let role_str = match self.net.role {
                     fresnel_color: None,
                     fresnel_power: None,
                     uv_scroll: None,
+                uv_scale: None,
                 };
                 self.world.spawn((lp_meta, lp_trans, lp_mesh));
             }
@@ -1531,6 +1539,7 @@ let role_str = match self.net.role {
                         None
                     },
                     uv_scroll: None,
+                uv_scale: None,
                 };
                 self.world.spawn((meta, transform, mesh));
             }
@@ -1868,6 +1877,7 @@ let role_str = match self.net.role {
                             mesh.blend_mode = entity.blend_mode.clone();
                             mesh.wireframe = entity.wireframe;
                             mesh.uv_scroll = entity.uv_scroll;
+                            mesh.uv_scale = entity.uv_scale;
                         }
                         if let Some(script_path) = &entity.script {
                             let mut script_comp = ScriptComponent::new(script_path.clone());
@@ -1887,6 +1897,12 @@ let role_str = match self.net.role {
                                 intensity: pl.intensity,
                                 radius: pl.radius,
                             });
+                        }
+                        if let Some(pbr) = &entity.pbr_material {
+                            let _ = self.world.insert_one(e, pbr.clone());
+                        }
+                        if let Some(spot) = &entity.spot_light {
+                            let _ = self.world.insert_one(e, *spot);
                         }
                     } else {
                         let meta = EntityMeta {
@@ -1909,6 +1925,7 @@ let role_str = match self.net.role {
                             blend_mode: entity.blend_mode.clone(),
                             wireframe: entity.wireframe,
                             uv_scroll: entity.uv_scroll,
+                            uv_scale: entity.uv_scale,
                         };
 
                         let e = self.world.spawn((meta, transform, mesh));
@@ -1930,6 +1947,12 @@ let role_str = match self.net.role {
                                 intensity: pl.intensity,
                                 radius: pl.radius,
                             });
+                        }
+                        if let Some(pbr) = &entity.pbr_material {
+                            let _ = self.world.insert_one(e, pbr.clone());
+                        }
+                        if let Some(spot) = &entity.spot_light {
+                            let _ = self.world.insert_one(e, *spot);
                         }
                     }
 
@@ -2236,8 +2259,8 @@ let role_str = match self.net.role {
                         let def = assets::EntityDef {
                             id, mesh, position: [x,y,z], rotation: [rx,ry,rz], scale: [sx,sy,sz],
                             color, texture, parent, emissive: 0.0,
-                            fresnel_color: None, fresnel_power: None, blend_mode: None, wireframe: None, uv_scroll: None,
-                            script: None, physics: None, point_light: None, animation_player: None, procedural_rig: None, vfx_emitter: None, camera_target: None, material_override_rtt: None, network_id: None, network_sync: None };
+                            fresnel_color: None, fresnel_power: None, blend_mode: None, wireframe: None, uv_scroll: None, uv_scale: None, pbr_material: None,
+                            script: None, physics: None, point_light: None, spot_light: None, animation_player: None, procedural_rig: None, vfx_emitter: None, camera_target: None, material_override_rtt: None, network_id: None, network_sync: None };
                         if let Ok(mut list) = spawns_ref.lock() { list.push(def); }
                         Ok(())
                     });
@@ -2532,6 +2555,7 @@ let role_str = match self.net.role {
                                 blend_mode: root.blend_mode.clone(),
                                 wireframe: root.wireframe,
                                 uv_scroll: root.uv_scroll,
+                            uv_scale: root.uv_scale,
                             };
                             let e = self.world.spawn((meta, transform, mesh));
                             let _ = self.world.insert_one(e, ecs::PrefabInstance { source: file_path.clone() });
@@ -2582,6 +2606,7 @@ let role_str = match self.net.role {
                                     blend_mode: child.blend_mode.clone(),
                                     wireframe: child.wireframe,
                                     uv_scroll: child.uv_scroll,
+                                uv_scale: child.uv_scale,
                                 };
                                 let c_e = self.world.spawn((c_meta, c_trans, c_mesh));
                                 let _ = self.world.insert_one(c_e, ecs::PrefabInstance { source: file_path.clone() });
@@ -2698,6 +2723,7 @@ let role_str = match self.net.role {
                                     fresnel_color: None,
                                     fresnel_power: None,
                                     uv_scroll: None,
+                                uv_scale: None,
                                 });
                                 let spawned = self.world.spawn(ent_builder.build());
                                 self.selected_entity = Some(spawned);
@@ -2889,6 +2915,7 @@ let role_str = match self.net.role {
                                 blend_mode: def.blend_mode.clone(),
                                 wireframe: def.wireframe,
                                 uv_scroll: def.uv_scroll,
+                            uv_scale: def.uv_scale,
                             };
                             let e = self.world.spawn((meta, transform, mesh));
                             if let Some(ref rig) = def.procedural_rig {
@@ -3035,6 +3062,7 @@ let role_str = match self.net.role {
                                 blend_mode: Some("opaque".to_string()),
                                 wireframe: None,
                                 uv_scroll: None,
+                                uv_scale: None,
                             },
                         ));
                     }
@@ -3070,6 +3098,7 @@ let role_str = match self.net.role {
                                 blend_mode: Some("translucent".to_string()),
                                 wireframe: None,
                                 uv_scroll: None,
+                                uv_scale: None,
                             },
                         ));
                     }
@@ -3217,6 +3246,7 @@ let role_str = match self.net.role {
                             blend_mode: Some("opaque".to_string()),
                             wireframe: None,
                             uv_scroll: None,
+                        uv_scale: None,
                         };
                         self.world.spawn((meta, transform, mesh))
                     };
@@ -3431,6 +3461,7 @@ let role_str = match self.net.role {
                 blend_mode: def.blend_mode.clone(),
                 wireframe: def.wireframe,
                 uv_scroll: def.uv_scroll,
+            uv_scale: def.uv_scale,
             };
             let e = self.world.spawn((meta, transform, mesh));
             if let Some(ref rig) = def.procedural_rig {
@@ -3619,6 +3650,15 @@ let role_str = match self.net.role {
                     self.logs.push(msg.clone());
                     self.hot_reload.last_reload_status = Some(msg.clone());
                     self.add_toast(msg, egui::Color32::from_rgb(56, 189, 248));
+                }
+                HotReloadEvent::ModelChanged(path) => {
+                    let p_str = path.to_string_lossy().replace('\\', "/");
+                    let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    let invalidated = self.gpu.invalidate_model(&p_str);
+                    let msg = format!("Hot-Reload: Model '{}' invalidated (cached: {})", fname, invalidated);
+                    self.logs.push(msg.clone());
+                    self.hot_reload.last_reload_status = Some(msg.clone());
+                    self.add_toast(msg, egui::Color32::from_rgb(168, 85, 247));
                 }
                 HotReloadEvent::TextureChanged(path) => {
                     let p_str = path.to_string_lossy().replace('\\', "/");
@@ -3962,6 +4002,7 @@ let role_str = match self.net.role {
                     blend_mode: def.blend_mode.clone(),
                     wireframe: def.wireframe,
                     uv_scroll: def.uv_scroll,
+                uv_scale: def.uv_scale,
                 };
                 let e = self.world.spawn((meta, transform, mesh));
 
@@ -4411,6 +4452,46 @@ let role_str = match self.net.role {
             }
         }
 
+        // Drain and apply spot light updates from Lua
+        let pending_spots = if let Ok(mut s) = self.lua_ctx.pending_spot_lights.lock() {
+            std::mem::take(&mut *s)
+        } else {
+            Vec::new()
+        };
+        for cmd in pending_spots {
+            let target_entity = {
+                let mut found = None;
+                for entity_ref in self.world.iter() {
+                    if let Some(meta) = entity_ref.get::<&EntityMeta>() {
+                        if meta.id == cmd.entity_id {
+                            found = Some(entity_ref.entity());
+                            break;
+                        }
+                    }
+                }
+                found
+            };
+            if let Some(entity) = target_entity {
+                if let Ok(mut spot) = self.world.get::<&mut ecs::SpotLight>(entity) {
+                    spot.color = cmd.color;
+                    spot.intensity = cmd.intensity;
+                    spot.radius = cmd.radius;
+                    spot.inner_angle = cmd.inner_angle;
+                    spot.outer_angle = cmd.outer_angle;
+                    if let Some(d) = cmd.direction { spot.direction = d; }
+                } else {
+                    let _ = self.world.insert_one(entity, ecs::SpotLight {
+                        color: cmd.color,
+                        intensity: cmd.intensity,
+                        radius: cmd.radius,
+                        direction: cmd.direction.unwrap_or([0.0, -1.0, 0.0]),
+                        inner_angle: cmd.inner_angle,
+                        outer_angle: cmd.outer_angle,
+                    });
+                }
+            }
+        }
+
         // Drain and apply material updates from Lua
         let pending_mat_updates = if let Ok(mut m) = self.lua_ctx.pending_materials.lock() {
             std::mem::take(&mut *m)
@@ -4430,6 +4511,7 @@ let role_str = match self.net.role {
                             if let Some(bm) = update.blend_mode { mesh.blend_mode = Some(bm); }
                             if let Some(wf) = update.wireframe { mesh.wireframe = Some(wf); }
                             if let Some(uv) = update.uv_scroll { mesh.uv_scroll = Some(uv); }
+                            if let Some(uvs) = update.uv_scale { mesh.uv_scale = Some(uvs); }
                         }
                         break;
                     }
@@ -5086,10 +5168,12 @@ let role_str = match self.net.role {
                 } else {
                     transform.matrix().to_cols_array_2d()
                 };
+                let base_uv_scale = mesh.uv_scale.unwrap_or([1.0, 1.0]);
                 let (uv_offset, uv_scale) = if let Some(anim) = entity_ref.get::<&ecs::SpriteAnimation>() {
-                    anim.uv_offset_and_scale()
+                    let (off, sc) = anim.uv_offset_and_scale();
+                    (off, [sc[0] * base_uv_scale[0], sc[1] * base_uv_scale[1]])
                 } else {
-                    ([0.0, 0.0], [1.0, 1.0])
+                    ([0.0, 0.0], base_uv_scale)
                 };
                 let fresnel = if let Some(fc) = mesh.fresnel_color {
                     [fc[0], fc[1], fc[2], mesh.fresnel_power.unwrap_or(2.0)]
@@ -5104,15 +5188,26 @@ let role_str = match self.net.role {
                     renderer::ViewMode::Unlit => 1.0,
                     renderer::ViewMode::Wireframe => 2.0,
                 };
+                let gltf_mat = self.gpu.gltf_materials.get(&mesh.mesh_type);
                 let (mut mat_key, pbr_params) = if let Some(pbr) = entity_ref.get::<&ecs::PbrMaterial>() {
                     (
                         renderer::MaterialKey {
-                            diffuse: mesh.texture.clone(),
-                            normal: pbr.normal_map.clone(),
-                            metallic_roughness: pbr.metallic_roughness_map.clone(),
-                            emissive: pbr.emissive_map.clone(),
+                            diffuse: mesh.texture.clone().or_else(|| gltf_mat.and_then(|g| g.diffuse.clone())),
+                            normal: pbr.normal_map.clone().or_else(|| gltf_mat.and_then(|g| g.normal.clone())),
+                            metallic_roughness: pbr.metallic_roughness_map.clone().or_else(|| gltf_mat.and_then(|g| g.metallic_roughness.clone())),
+                            emissive: pbr.emissive_map.clone().or_else(|| gltf_mat.and_then(|g| g.emissive.clone())),
                         },
                         [pbr.metallic, pbr.roughness, pbr.normal_scale, pbr.emissive_intensity],
+                    )
+                } else if let Some(g) = gltf_mat {
+                    (
+                        renderer::MaterialKey {
+                            diffuse: mesh.texture.clone().or_else(|| g.diffuse.clone()),
+                            normal: g.normal.clone(),
+                            metallic_roughness: g.metallic_roughness.clone(),
+                            emissive: g.emissive.clone(),
+                        },
+                        [g.metallic, g.roughness, 1.0, 1.0],
                     )
                 } else {
                     (
@@ -5976,6 +6071,7 @@ let role_str = match self.net.role {
                                                 fresnel_color: None,
                                                 fresnel_power: None,
                                                 uv_scroll: None,
+                                            uv_scale: None,
                                             });
                                             let spawned = self.world.spawn(ent_builder.build());
                                             self.selected_entity = Some(spawned);
@@ -6188,6 +6284,17 @@ let role_str = match self.net.role {
                                             });
 
                                             ui.horizontal(|ui| {
+                                                ui.label("UV Scale:");
+                                                let mut uvs = mesh.uv_scale.unwrap_or([1.0, 1.0]);
+                                                let mut changed = false;
+                                                changed |= ui.add(egui::DragValue::new(&mut uvs[0]).speed(0.05).prefix("U: ")).changed();
+                                                changed |= ui.add(egui::DragValue::new(&mut uvs[1]).speed(0.05).prefix("V: ")).changed();
+                                                if changed {
+                                                    mesh.uv_scale = if (uvs[0] - 1.0).abs() < 1e-4 && (uvs[1] - 1.0).abs() < 1e-4 { None } else { Some(uvs) };
+                                                }
+                                            });
+
+                                            ui.horizontal(|ui| {
                                                 ui.label("Mesh:");
                                                 egui::ComboBox::from_id_salt("mesh_select")
                                                     .selected_text(&mesh.mesh_type)
@@ -6267,6 +6374,48 @@ let role_str = match self.net.role {
 
                                     ui.add_space(4.0);
 
+                                    // 3b. PBR Material
+                                    ui_theme::collapsible_card(ui, "insp_pbr", "PBR Material", false, |ui| {
+                                        let has_pbr = self.world.get::<&ecs::PbrMaterial>(entity).is_ok();
+                                        let mut enable_pbr = has_pbr;
+                                        if ui.checkbox(&mut enable_pbr, "Enable PBR Material").changed() {
+                                            if enable_pbr {
+                                                let _ = self.world.insert_one(entity, ecs::PbrMaterial::default());
+                                            } else {
+                                                let _ = self.world.remove_one::<ecs::PbrMaterial>(entity);
+                                            }
+                                        }
+                                        if let Ok(mut pbr) = self.world.get::<&mut ecs::PbrMaterial>(entity) {
+                                            ui.add(egui::Slider::new(&mut pbr.metallic, 0.0..=1.0).text("Metallic"));
+                                            ui.add(egui::Slider::new(&mut pbr.roughness, 0.04..=1.0).text("Roughness"));
+                                            ui.add(egui::Slider::new(&mut pbr.normal_scale, 0.0..=3.0).text("Normal Scale"));
+                                            ui.add(egui::Slider::new(&mut pbr.emissive_intensity, 0.0..=10.0).text("Emissive Int."));
+                                            let mut nm = pbr.normal_map.clone().unwrap_or_default();
+                                            ui.horizontal(|ui| {
+                                                ui.label("Normal Map:");
+                                                if ui.text_edit_singleline(&mut nm).changed() {
+                                                    pbr.normal_map = if nm.trim().is_empty() { None } else { Some(nm.trim().to_string()) };
+                                                }
+                                            });
+                                            let mut mr = pbr.metallic_roughness_map.clone().unwrap_or_default();
+                                            ui.horizontal(|ui| {
+                                                ui.label("MR Map:");
+                                                if ui.text_edit_singleline(&mut mr).changed() {
+                                                    pbr.metallic_roughness_map = if mr.trim().is_empty() { None } else { Some(mr.trim().to_string()) };
+                                                }
+                                            });
+                                            let mut em = pbr.emissive_map.clone().unwrap_or_default();
+                                            ui.horizontal(|ui| {
+                                                ui.label("Emissive Map:");
+                                                if ui.text_edit_singleline(&mut em).changed() {
+                                                    pbr.emissive_map = if em.trim().is_empty() { None } else { Some(em.trim().to_string()) };
+                                                }
+                                            });
+                                        }
+                                    });
+
+                                    ui.add_space(4.0);
+
                                     // 4. Point Light
                                     ui_theme::collapsible_card(ui, "insp_light", "Point Light", true, |ui| {
                                         let has_light = self.world.get::<&ecs::PointLight>(entity).is_ok();
@@ -6298,6 +6447,49 @@ let role_str = match self.net.role {
                                             ui.horizontal(|ui| {
                                                 ui.label("Radius:");
                                                 ui.add(egui::DragValue::new(&mut light.radius).speed(0.2).range(0.1..=100.0));
+                                            });
+                                        }
+                                    });
+
+                                    ui.add_space(4.0);
+
+                                    // 4b. Spot Light
+                                    ui_theme::collapsible_card(ui, "insp_spotlight", "Spot Light", false, |ui| {
+                                        let has_spot = self.world.get::<&ecs::SpotLight>(entity).is_ok();
+                                        let mut enable_spot = has_spot;
+                                        if ui.checkbox(&mut enable_spot, "Enable Spot Light").changed() {
+                                            if enable_spot {
+                                                let _ = self.world.insert_one(entity, ecs::SpotLight::default());
+                                            } else {
+                                                let _ = self.world.remove_one::<ecs::SpotLight>(entity);
+                                            }
+                                        }
+                                        if let Ok(mut spot) = self.world.get::<&mut ecs::SpotLight>(entity) {
+                                            ui.horizontal(|ui| {
+                                                ui.label("Color:");
+                                                ui.color_edit_button_rgb(&mut spot.color);
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Intensity:");
+                                                ui.add(egui::DragValue::new(&mut spot.intensity).speed(0.1).range(0.0..=50.0));
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Radius:");
+                                                ui.add(egui::DragValue::new(&mut spot.radius).speed(0.2).range(0.1..=100.0));
+                                            });
+                                            let mut inner_deg = spot.inner_angle.to_degrees();
+                                            if ui.add(egui::Slider::new(&mut inner_deg, 1.0..=89.0).text("Inner Deg")).changed() {
+                                                spot.inner_angle = inner_deg.to_radians();
+                                            }
+                                            let mut outer_deg = spot.outer_angle.to_degrees();
+                                            if ui.add(egui::Slider::new(&mut outer_deg, 1.0..=90.0).text("Outer Deg")).changed() {
+                                                spot.outer_angle = outer_deg.to_radians().max(spot.inner_angle);
+                                            }
+                                            ui.horizontal(|ui| {
+                                                ui.label("Dir:");
+                                                ui.add(egui::DragValue::new(&mut spot.direction[0]).speed(0.05));
+                                                ui.add(egui::DragValue::new(&mut spot.direction[1]).speed(0.05));
+                                                ui.add(egui::DragValue::new(&mut spot.direction[2]).speed(0.05));
                                             });
                                         }
                                     });
@@ -6729,6 +6921,7 @@ let role_str = match self.net.role {
                                                                 blend_mode: def.blend_mode.clone(),
                                                                 wireframe: def.wireframe,
                                                                 uv_scroll: def.uv_scroll,
+                                                            uv_scale: def.uv_scale,
                                                             };
                                                             let e = self.world.spawn((meta, transform, mesh));
 
@@ -9651,9 +9844,12 @@ mod tests {
             blend_mode: None,
             wireframe: None,
             uv_scroll: None,
+            uv_scale: None,
+            pbr_material: None,
             script: None,
             physics: None,
             point_light: None,
+            spot_light: None,
             animation_player: None,
             procedural_rig: None,
             vfx_emitter: None,

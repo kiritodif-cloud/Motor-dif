@@ -136,6 +136,7 @@ pub struct LuaEngineContext {
     pub post_process_settings: Arc<RwLock<crate::assets::PostProcessDef>>,
     pub pending_materials: Arc<Mutex<Vec<MaterialUpdate>>>,
     pub pending_pbr_materials: Arc<Mutex<Vec<PbrMaterialUpdate>>>,
+    pub pending_spot_lights: Arc<Mutex<Vec<SpotLightUpdate>>>,
     pub pending_trails: Arc<Mutex<Vec<TrailCommand>>>,
     pub debug_lines: Arc<Mutex<Vec<DebugLine3D>>>,
     pub debug_rings: Arc<Mutex<Vec<DebugRing3D>>>,
@@ -337,6 +338,18 @@ pub struct MaterialUpdate {
     pub blend_mode: Option<String>,
     pub wireframe: Option<bool>,
     pub uv_scroll: Option<[f32; 2]>,
+    pub uv_scale: Option<[f32; 2]>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SpotLightUpdate {
+    pub entity_id: String,
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub radius: f32,
+    pub inner_angle: f32,
+    pub outer_angle: f32,
+    pub direction: Option<[f32; 3]>,
 }
 
 #[derive(Debug, Clone)]
@@ -411,6 +424,7 @@ impl LuaEngineContext {
             post_process_settings: Arc::new(RwLock::new(crate::assets::PostProcessDef::default())),
             pending_materials: Arc::new(Mutex::new(Vec::new())),
             pending_pbr_materials: Arc::new(Mutex::new(Vec::new())),
+            pending_spot_lights: Arc::new(Mutex::new(Vec::new())),
             pending_trails: Arc::new(Mutex::new(Vec::new())),
             debug_lines: Arc::new(Mutex::new(Vec::new())),
             debug_rings: Arc::new(Mutex::new(Vec::new())),
@@ -656,6 +670,7 @@ impl ScriptComponent {
                 let blend_mode: Option<String> = table.get("blend_mode").ok();
                 let wireframe: Option<bool> = table.get("wireframe").ok();
                 let uv_scroll: Option<[f32; 2]> = table.get("uv_scroll").ok();
+                let uv_scale: Option<[f32; 2]> = table.get("uv_scale").ok();
 
                 let entity_def = EntityDef {
                     id,
@@ -672,9 +687,12 @@ impl ScriptComponent {
                     blend_mode,
                     wireframe,
                     uv_scroll,
+                    uv_scale,
+                    pbr_material: None,
                     script,
                     physics: phys_def,
                     point_light: None,
+                    spot_light: None,
                     animation_player: None,
                     procedural_rig: None,
                     vfx_emitter: None,
@@ -1104,6 +1122,51 @@ impl ScriptComponent {
             .set("set_light", set_light)
             .map_err(|e| e.to_string())?;
 
+        // 14b. set_spot_light(entity_id, r, g, b, intensity, radius, inner_deg, outer_deg, [dx, dy, dz])
+        let spot_lights_ref = ctx.pending_spot_lights.clone();
+        let set_spot_light = lua
+            .create_function(move |_, args: mlua::MultiValue| {
+                let mut iter = args.into_iter();
+                let id = match iter.next() {
+                    Some(mlua::Value::String(s)) => s.to_str().map(|b| b.to_string()).unwrap_or_default(),
+                    _ => return Err(mlua::Error::runtime("Expected: set_spot_light(entity_id, r, g, b, intensity, radius, inner_deg, outer_deg, [dx, dy, dz])")),
+                };
+                let mut nums = Vec::new();
+                for val in iter {
+                    match val {
+                        mlua::Value::Number(n) => nums.push(n as f32),
+                        mlua::Value::Integer(i) => nums.push(i as f32),
+                        _ => {}
+                    }
+                }
+                if nums.len() >= 7 {
+                    let dir = if nums.len() >= 10 {
+                        let v = glam::Vec3::new(nums[7], nums[8], nums[9]).normalize_or_zero();
+                        Some(if v.length_squared() > 0.0 { [v.x, v.y, v.z] } else { [0.0, -1.0, 0.0] })
+                    } else {
+                        None
+                    };
+                    if let Ok(mut list) = spot_lights_ref.lock() {
+                        list.push(SpotLightUpdate {
+                            entity_id: id,
+                            color: [nums[0], nums[1], nums[2]],
+                            intensity: nums[3],
+                            radius: nums[4],
+                            inner_angle: nums[5].to_radians(),
+                            outer_angle: nums[6].to_radians(),
+                            direction: dir,
+                        });
+                    }
+                    Ok(true)
+                } else {
+                    Err(mlua::Error::runtime("Expected: set_spot_light(entity_id, r, g, b, intensity, radius, inner_deg, outer_deg)"))
+                }
+            })
+            .map_err(|e| format!("Failed to register set_spot_light: {}", e))?;
+        lua.globals()
+            .set("set_spot_light", set_spot_light)
+            .map_err(|e| e.to_string())?;
+
         // 15. set_camera(x, y, z, tx, ty, tz)
         let cam_set_ref = ctx.pending_camera_sets.clone();
         let set_camera = lua
@@ -1499,6 +1562,13 @@ impl ScriptComponent {
                 } else {
                     None
                 };
+                let uv_scale: Option<[f32; 2]> = if let Ok(uv) = mat_table.get::<mlua::Table>("uv_scale") {
+                    let u: f32 = uv.get(1).unwrap_or(1.0);
+                    let v: f32 = uv.get(2).unwrap_or(1.0);
+                    Some([u, v])
+                } else {
+                    None
+                };
 
                 if let Ok(mut list) = materials_ref.lock() {
                     list.push(MaterialUpdate {
@@ -1510,6 +1580,7 @@ impl ScriptComponent {
                         blend_mode,
                         wireframe,
                         uv_scroll,
+                        uv_scale,
                     });
                 }
                 Ok(true)
@@ -1517,6 +1588,30 @@ impl ScriptComponent {
             .map_err(|e| format!("Failed to register set_material: {}", e))?;
         lua.globals()
             .set("set_material", set_material)
+            .map_err(|e| e.to_string())?;
+
+        // 27a. set_uv_scale(entity_id, u, v)
+        let uv_scale_mat_ref = ctx.pending_materials.clone();
+        let set_uv_scale = lua
+            .create_function(move |_, (id, u, v): (String, f32, f32)| {
+                if let Ok(mut list) = uv_scale_mat_ref.lock() {
+                    list.push(MaterialUpdate {
+                        entity_id: id,
+                        color: None,
+                        emissive: None,
+                        fresnel_color: None,
+                        fresnel_power: None,
+                        blend_mode: None,
+                        wireframe: None,
+                        uv_scroll: None,
+                        uv_scale: Some([u, v]),
+                    });
+                }
+                Ok(true)
+            })
+            .map_err(|e| format!("Failed to register set_uv_scale: {}", e))?;
+        lua.globals()
+            .set("set_uv_scale", set_uv_scale)
             .map_err(|e| e.to_string())?;
 
         // 27b. set_pbr_material(entity_id, pbr_table)

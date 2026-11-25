@@ -168,6 +168,8 @@ pub struct MeshRender {
     pub wireframe: Option<bool>,
     #[serde(default)]
     pub uv_scroll: Option<[f32; 2]>,
+    #[serde(default)]
+    pub uv_scale: Option<[f32; 2]>,
 }
 
 impl MeshRender {
@@ -182,6 +184,7 @@ impl MeshRender {
             blend_mode: None,
             wireframe: None,
             uv_scroll: None,
+            uv_scale: None,
         }
     }
 
@@ -201,6 +204,7 @@ impl MeshRender {
             blend_mode: None,
             wireframe: None,
             uv_scroll: None,
+            uv_scale: None,
         }
     }
 
@@ -215,6 +219,7 @@ impl MeshRender {
             blend_mode: None,
             wireframe: None,
             uv_scroll: None,
+            uv_scale: None,
         }
     }
 }

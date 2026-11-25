@@ -113,11 +113,17 @@ pub struct EntityDef {
     #[serde(default)]
     pub uv_scroll: Option<[f32; 2]>,
     #[serde(default)]
+    pub uv_scale: Option<[f32; 2]>,
+    #[serde(default)]
+    pub pbr_material: Option<crate::ecs::PbrMaterial>,
+    #[serde(default)]
     pub script: Option<String>,
     #[serde(default)]
     pub physics: Option<PhysicsDef>,
     #[serde(default)]
     pub point_light: Option<PointLightDef>,
+    #[serde(default)]
+    pub spot_light: Option<crate::ecs::SpotLight>,
     #[serde(default)]
     pub animation_player: Option<crate::animation::AnimationPlayer>,
     #[serde(default)]
@@ -254,9 +260,12 @@ impl Default for SceneDef {
                     blend_mode: None,
                     wireframe: None,
                     uv_scroll: None,
+                    uv_scale: None,
+                    pbr_material: None,
                     script: None,
                     physics: None,
                     point_light: None,
+                    spot_light: None,
                     animation_player: None,
                     procedural_rig: None,
                     vfx_emitter: None,
@@ -278,9 +287,12 @@ impl Default for SceneDef {
                     blend_mode: None,
                     wireframe: None,
                     uv_scroll: None,
+                    uv_scale: None,
+                    pbr_material: None,
                     script: None,
                     physics: None,
                     point_light: None,
+                    spot_light: None,
                     animation_player: None,
                     procedural_rig: None,
                     vfx_emitter: None,
@@ -302,9 +314,12 @@ impl Default for SceneDef {
                     blend_mode: None,
                     wireframe: None,
                     uv_scroll: None,
+                    uv_scale: None,
+                    pbr_material: None,
                     script: None,
                     physics: None,
                     point_light: None,
+                    spot_light: None,
                     animation_player: None,
                     procedural_rig: None,
                     vfx_emitter: None,
@@ -363,6 +378,8 @@ pub fn extract_scene_from_world(
             let script_opt = er.get::<&ScriptComponent>();
             let rb_opt = er.get::<&RigidBodyComponent>();
             let light_comp_opt = er.get::<&crate::ecs::PointLight>();
+            let spot_comp_opt = er.get::<&crate::ecs::SpotLight>();
+            let pbr_comp_opt = er.get::<&crate::ecs::PbrMaterial>();
             let anim_comp_opt = er.get::<&crate::animation::AnimationPlayer>();
             let rig_comp_opt = er.get::<&crate::procedural_rig::ProceduralRig>();
             let vfx_comp_opt = er.get::<&crate::vfx_forge::VfxEmitterComponent>();
@@ -430,9 +447,12 @@ pub fn extract_scene_from_world(
                 blend_mode: mesh.blend_mode.clone(),
                 wireframe: mesh.wireframe,
                 uv_scroll: mesh.uv_scroll,
+                uv_scale: mesh.uv_scale,
+                pbr_material: pbr_comp_opt.as_deref().cloned(),
                 script: script_opt.as_deref().map(|s| s.path.clone()),
                 physics: phys_def,
                 point_light: light_opt,
+                spot_light: spot_comp_opt.as_deref().copied(),
                 animation_player: anim_opt,
                 procedural_rig: rig_opt,
                 vfx_emitter: vfx_opt,
@@ -494,9 +514,14 @@ pub fn apply_scene_to_world(
             blend_mode: entity.blend_mode.clone(),
             wireframe: entity.wireframe,
             uv_scroll: entity.uv_scroll,
+            uv_scale: entity.uv_scale,
         };
 
         let e = world.spawn((meta, transform, mesh));
+
+        if let Some(pbr) = &entity.pbr_material {
+            let _ = world.insert_one(e, pbr.clone());
+        }
 
         if let Some(phys_def) = &entity.physics {
             let handle = physics.add_body(&transform, phys_def);
@@ -520,6 +545,10 @@ pub fn apply_scene_to_world(
                     radius: light_def.radius,
                 },
             );
+        }
+
+        if let Some(spot_def) = &entity.spot_light {
+            let _ = world.insert_one(e, *spot_def);
         }
 
         if let Some(anim_player) = &entity.animation_player {
@@ -710,6 +739,8 @@ pub fn extract_entity_def(
         intensity: l.intensity,
         radius: l.radius,
     });
+    let spot_light = world.get::<&crate::ecs::SpotLight>(entity).ok().map(|s| *s);
+    let pbr_material = world.get::<&crate::ecs::PbrMaterial>(entity).ok().map(|p| (*p).clone());
 
     let rig_opt = world.get::<&crate::procedural_rig::ProceduralRig>(entity).ok().map(|r| (*r).clone());
     let cam_target_opt = world.get::<&crate::ecs::CameraTarget>(entity).ok().map(|c| (*c).clone());
@@ -739,9 +770,12 @@ pub fn extract_entity_def(
         blend_mode: mesh.blend_mode.clone(),
         wireframe: mesh.wireframe,
         uv_scroll: mesh.uv_scroll,
+        uv_scale: mesh.uv_scale,
+        pbr_material,
         script,
         physics: phys_def,
         point_light,
+        spot_light,
         animation_player: anim_opt,
         procedural_rig: rig_opt,
         vfx_emitter: vfx_opt,
@@ -796,6 +830,8 @@ mod tests {
             blend_mode: None,
             wireframe: None,
             uv_scroll: None,
+            uv_scale: None,
+            pbr_material: None,
             script: None,
             physics: None,
             point_light: Some(PointLightDef {
@@ -803,6 +839,7 @@ mod tests {
                 intensity: 3.5,
                 radius: 12.0,
             }),
+            spot_light: None,
             animation_player: None,
             procedural_rig: None,
             vfx_emitter: None,
@@ -834,9 +871,12 @@ mod tests {
             blend_mode: Some("additive".to_string()),
             wireframe: Some(true),
             uv_scroll: Some([0.1, -0.2]),
+            uv_scale: None,
+            pbr_material: None,
             script: None,
             physics: None,
             point_light: None,
+            spot_light: None,
             animation_player: None,
             procedural_rig: None,
             vfx_emitter: None,
@@ -870,9 +910,12 @@ mod tests {
             blend_mode: None,
             wireframe: None,
             uv_scroll: None,
+            uv_scale: None,
+            pbr_material: None,
             script: None,
             physics: None,
             point_light: None,
+            spot_light: None,
             animation_player: None,
             procedural_rig: None,
             vfx_emitter: Some(VfxEmitterDef {
@@ -1008,9 +1051,12 @@ mod tests {
             blend_mode: None,
             wireframe: None,
             uv_scroll: None,
+            uv_scale: None,
+            pbr_material: None,
             script: None,
             physics: None,
             point_light: None,
+            spot_light: None,
             animation_player: None,
             procedural_rig: None,
             vfx_emitter: None,
@@ -1033,9 +1079,12 @@ mod tests {
             blend_mode: None,
             wireframe: None,
             uv_scroll: None,
+            uv_scale: None,
+            pbr_material: None,
             script: None,
             physics: None,
             point_light: None,
+            spot_light: None,
             animation_player: None,
             procedural_rig: None,
             vfx_emitter: None,
@@ -1056,5 +1105,63 @@ mod tests {
         assert_eq!(loaded.children[0].parent.as_deref(), Some("turret_base"));
 
         let _ = std::fs::remove_file(prefab_file);
+    }
+
+    #[test]
+    fn test_entity_def_uv_scale_pbr_and_spotlight_roundtrip() {
+        let def = EntityDef {
+            id: "pbr_spot_ent".to_string(),
+            mesh: "cube".to_string(),
+            position: [1.0, 2.0, 3.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+            texture: Some("assets/textures/checker.png".to_string()),
+            parent: None,
+            color: [1.0, 1.0, 1.0, 1.0],
+            emissive: 0.0,
+            fresnel_color: None,
+            fresnel_power: None,
+            blend_mode: None,
+            wireframe: None,
+            uv_scroll: None,
+            uv_scale: Some([4.0, 2.0]),
+            pbr_material: Some(crate::ecs::PbrMaterial {
+                normal_map: Some("assets/textures/n.png".to_string()),
+                metallic_roughness_map: Some("assets/textures/mr.png".to_string()),
+                emissive_map: Some("assets/textures/e.png".to_string()),
+                metallic: 0.85,
+                roughness: 0.25,
+                normal_scale: 1.5,
+                emissive_intensity: 2.0,
+            }),
+            script: None,
+            physics: None,
+            point_light: None,
+            spot_light: Some(crate::ecs::SpotLight {
+                color: [1.0, 0.8, 0.5],
+                intensity: 5.0,
+                radius: 15.0,
+                direction: [0.0, -1.0, 0.0],
+                inner_angle: 0.3,
+                outer_angle: 0.6,
+            }),
+            animation_player: None,
+            procedural_rig: None,
+            vfx_emitter: None,
+            camera_target: None,
+            material_override_rtt: None,
+            network_id: None,
+            network_sync: None,
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        let decoded: EntityDef = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.uv_scale, Some([4.0, 2.0]));
+        let pbr = decoded.pbr_material.unwrap();
+        assert_eq!(pbr.normal_map.as_deref(), Some("assets/textures/n.png"));
+        assert!((pbr.metallic - 0.85).abs() < 1e-6);
+        assert!((pbr.roughness - 0.25).abs() < 1e-6);
+        let spot = decoded.spot_light.unwrap();
+        assert!((spot.intensity - 5.0).abs() < 1e-6);
+        assert!((spot.outer_angle - 0.6).abs() < 1e-6);
     }
 }

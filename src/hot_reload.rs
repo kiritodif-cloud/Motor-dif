@@ -8,6 +8,7 @@ pub enum HotReloadEvent {
     ScriptChanged(PathBuf),
     PrefabChanged(PathBuf),
     TextureChanged(PathBuf),
+    ModelChanged(PathBuf),
     ShaderChanged(PathBuf),
     Other(PathBuf),
 }
@@ -76,6 +77,8 @@ impl HotReloadManager {
                         events.push(HotReloadEvent::PrefabChanged(path));
                     } else if file_name.ends_with(".png") || file_name.ends_with(".jpg") || file_name.ends_with(".jpeg") {
                         events.push(HotReloadEvent::TextureChanged(path));
+                    } else if file_name.ends_with(".glb") || file_name.ends_with(".gltf") {
+                        events.push(HotReloadEvent::ModelChanged(path));
                     } else if file_name.ends_with(".wgsl") {
                         events.push(HotReloadEvent::ShaderChanged(path));
                     } else if file_name.ends_with(".json") && file_name != "input_map.json" && file_name != "save_data.json" && file_name != "game.json" && file_name != "game_config.json" {
@@ -116,6 +119,7 @@ pub mod tests {
         let script_ev = HotReloadEvent::ScriptChanged(PathBuf::from("assets/scripts/player.lua"));
         let prefab_ev = HotReloadEvent::PrefabChanged(PathBuf::from("assets/prefabs/chest.prefab.json"));
         let tex_ev = HotReloadEvent::TextureChanged(PathBuf::from("assets/textures/crate_diffuse.png"));
+        let model_ev = HotReloadEvent::ModelChanged(PathBuf::from("assets/models/hero.glb"));
         let shader_ev = HotReloadEvent::ShaderChanged(PathBuf::from("assets/shaders/pbr.wgsl"));
         let scene_ev = HotReloadEvent::SceneChanged;
 
@@ -131,6 +135,10 @@ pub mod tests {
         match tex_ev {
             HotReloadEvent::TextureChanged(p) => assert!(p.ends_with("crate_diffuse.png")),
             _ => panic!("Expected TextureChanged"),
+        }
+        match model_ev {
+            HotReloadEvent::ModelChanged(p) => assert!(p.ends_with("hero.glb")),
+            _ => panic!("Expected ModelChanged"),
         }
         match shader_ev {
             HotReloadEvent::ShaderChanged(p) => assert!(p.ends_with("pbr.wgsl")),

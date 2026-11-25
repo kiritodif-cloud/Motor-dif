@@ -54,6 +54,10 @@ La mayoría de los motores tradicionales fueron diseñados para flujos manuales 
 - **Métricas F3 en Tiempo Real:** Filas dedicadas en el overlay del Profiler para pases RTT y telemetría de Red (`Net: [Role] | Peers: [N] | RTT: [ms] | TX/RX: [KB/s]`).
 - **Resolución Inteligente de Assets:** Búsqueda recursiva con fallback automático a `../../assets` cuando el ejecutable se ejecuta desde subcarpetas (ej. `dist/`).
 
+### 5. Pipeline PBR Completo, Mipmaps y Hot-Reload GLB
+- **Materiales PBR & `uv_scale`:** Serialización completa de `pbr_material`, `uv_scale` y `spot_light` en escenas/prefabs, Inspector, Lua (`set_uv_scale`, `set_spot_light`) y MCP (`upsert_entity`).
+- **Mipmaps CPU & Muestreo Anisotrópico:** Generación automática de cadena de mipmaps en CPU y filtrado anisotrópico `16x` para texturas PBR, además de extracción/desduplicación de texturas embebidas en `.glb`/`.gltf` y hot-reload de modelos 3D.
+
 ---
 
 ## Novedades de Producción en Motor-dif v0.2.0

@@ -41,8 +41,11 @@ end
       "id": "player", "mesh": "cube", "position": [0, 1, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1],
       "color": [0.2, 0.7, 1.0, 1.0], "emissive": 0.15, "fresnel_color": [0.4, 0.8, 1.0], "fresnel_power": 2.5,
       "blend_mode": "opaque", "parent": null, "script": "assets/scripts/player.lua",
+      "uv_scale": [1, 1],
+      "pbr_material": { "normal_map": null, "metallic_roughness_map": null, "emissive_map": null, "metallic": 0.0, "roughness": 0.5, "normal_scale": 1.0, "emissive_intensity": 1.0 },
       "physics": { "body": "dynamic", "collider": "cuboid", "mass": 1.0, "restitution": 0.2, "is_sensor": false },
       "point_light": { "color": [0.3, 0.8, 1.0], "intensity": 2.5, "radius": 8.0 },
+      "spot_light": { "color": [1.0, 0.9, 0.7], "intensity": 3.0, "radius": 12.0, "direction": [0, -1, 0], "inner_angle": 0.4, "outer_angle": 0.65 },
       "vfx_emitter": { "preset_or_recipe": "fire", "enabled": true, "looping": true, "offset": [0, 1, 0] },
       "animation_player": { "default_clip": "idle_breathe" },
       "rig_controller": { "preset": "mech_biped", "locomotion_enabled": true }
@@ -64,9 +67,10 @@ Camera modes: `"2d"`, `"3d"`. Ortho size controls orthographic zoom in 2D.
   - `get_entity(id) -> table|nil`: Returns `{ x, y, z, rx, ry, rz, sx, sy, sz }`.
   - `get_all_entities() -> table`: Returns `{ [id] = { id, x, y, z, ... } }`.
   - `set_parent(child_id, parent_id_or_nil)`: Hierarchical transform attachment.
-  - `set_material(id, { color={r,g,b,a}, emissive=f, fresnel_color={r,g,b}, fresnel_power=f, blend_mode="opaque"|"additive", wireframe=b, uv_scroll={u,v} })`
+  - `set_material(id, { color={r,g,b,a}, emissive=f, fresnel_color={r,g,b}, fresnel_power=f, blend_mode="opaque"|"additive", wireframe=b, uv_scroll={u,v}, uv_scale={u,v} })`
+  - `set_uv_scale(id, u, v)`: Sets texture UV tiling scale.
   - `set_pbr_material(id, { metallic=f, roughness=f, normal_map=str, metallic_roughness_map=str, emissive_map=str, normal_scale=f, emissive_intensity=f })`
-  - `set_light(id, r, g, b, intensity, radius)`: Updates/creates PointLight component.
+  - `set_light(id, r, g, b, intensity, radius)`, `set_spot_light(id, r, g, b, intensity, radius, inner_deg, outer_deg, [dx, dy, dz])`
   - `tween_position(id, x, y, z, duration)`: Smooth linear interpolation of position.
   - `tween_scale(id, sx, sy, sz, duration)`: Smooth scale interpolation.
   - `set_sprite_frame(id, cols, rows, frame_idx)`: 2D sprite sheet tile selection.

@@ -416,7 +416,7 @@ pub fn create_cylinder(radius_top: f32, radius_bottom: f32, height: f32, segment
         let i2 = i0 + 2;
         let i3 = i0 + 3;
 
-        mesh.indices.extend_from_slice(&[i0, i1, i2, i1, i3, i2]);
+        mesh.indices.extend_from_slice(&[i0, i2, i1, i1, i2, i3]);
     }
 
     // Top cap
@@ -436,7 +436,7 @@ pub fn create_cylinder(radius_top: f32, radius_bottom: f32, height: f32, segment
             mesh.colors.push(color);
         }
         for i in 0..segs as u32 {
-            mesh.indices.extend_from_slice(&[top_center_idx, cap_start + i, cap_start + i + 1]);
+            mesh.indices.extend_from_slice(&[top_center_idx, cap_start + i + 1, cap_start + i]);
         }
     }
 
@@ -457,7 +457,7 @@ pub fn create_cylinder(radius_top: f32, radius_bottom: f32, height: f32, segment
             mesh.colors.push(color);
         }
         for i in 0..segs as u32 {
-            mesh.indices.extend_from_slice(&[bot_center_idx, cap_start + i + 1, cap_start + i]);
+            mesh.indices.extend_from_slice(&[bot_center_idx, cap_start + i, cap_start + i + 1]);
         }
     }
 
@@ -563,12 +563,17 @@ pub fn create_lathe(points: &[[f32; 2]], segments: usize, color: [f32; 4]) -> Fo
         }
     }
 
+    let reverse_winding = points[0][1] > points[points.len() - 1][1];
     for j in 0..points.len() - 1 {
         for i in 0..segs {
             let row1 = (j * (segs + 1) + i) as u32;
             let row2 = ((j + 1) * (segs + 1) + i) as u32;
 
-            mesh.indices.extend_from_slice(&[row1, row2, row1 + 1, row2, row2 + 1, row1 + 1]);
+            if reverse_winding {
+                mesh.indices.extend_from_slice(&[row1, row1 + 1, row2, row2, row1 + 1, row2 + 1]);
+            } else {
+                mesh.indices.extend_from_slice(&[row1, row2, row1 + 1, row2, row2 + 1, row1 + 1]);
+            }
         }
     }
 
@@ -1123,5 +1128,34 @@ mod tests {
         assert!(Path::new("assets/models/comet_shard.glb").exists());
         assert!(Path::new("assets/textures/arena_grid.png").exists());
         assert!(Path::new("assets/textures/planet_blue.png").exists());
+    }
+
+    #[test]
+    fn test_cylinder_and_lathe_outward_winding() {
+        let cyl = create_cylinder(0.5, 0.5, 2.0, 12, [1.0, 1.0, 1.0, 1.0]);
+        for tri in cyl.indices.chunks_exact(3) {
+            let p0 = Vec3::from(cyl.positions[tri[0] as usize]);
+            let p1 = Vec3::from(cyl.positions[tri[1] as usize]);
+            let p2 = Vec3::from(cyl.positions[tri[2] as usize]);
+            let face_n = (p1 - p0).cross(p2 - p0);
+            let centroid = (p0 + p1 + p2) / 3.0;
+            // For a convex cylinder centered at origin, face normal must point outward from origin
+            assert!(face_n.dot(centroid) > 0.0, "Inward triangle on cylinder: {:?} dot {:?}", face_n, centroid);
+        }
+
+        for pts in [
+            vec![[0.5, -1.0], [0.8, 0.0], [0.5, 1.0]],
+            vec![[0.5, 1.0], [0.8, 0.0], [0.5, -1.0]],
+        ] {
+            let lathe = create_lathe(&pts, 12, [1.0, 1.0, 1.0, 1.0]);
+            for tri in lathe.indices.chunks_exact(3) {
+                let p0 = Vec3::from(lathe.positions[tri[0] as usize]);
+                let p1 = Vec3::from(lathe.positions[tri[1] as usize]);
+                let p2 = Vec3::from(lathe.positions[tri[2] as usize]);
+                let face_n = (p1 - p0).cross(p2 - p0);
+                let centroid_xz = Vec3::new((p0.x + p1.x + p2.x) / 3.0, 0.0, (p0.z + p1.z + p2.z) / 3.0);
+                assert!(face_n.dot(centroid_xz) > 0.0, "Inward triangle on lathe: {:?} dot {:?}", face_n, centroid_xz);
+            }
+        }
     }
 }

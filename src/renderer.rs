@@ -252,7 +252,7 @@ impl RenderTargetRegistry {
             id: id.to_string(),
             width: width.max(1),
             height: height.max(1),
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: HDR_FORMAT,
             depth_format: DepthTexture::DEPTH_FORMAT,
         };
         self.descriptors.insert(id.to_string(), desc.clone());
@@ -339,7 +339,7 @@ impl RenderTargetRegistry {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: HDR_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         };
@@ -396,7 +396,7 @@ impl RenderTargetRegistry {
             id: id.to_string(),
             width: w,
             height: h,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: HDR_FORMAT,
             depth_format: DepthTexture::DEPTH_FORMAT,
         };
 
@@ -663,6 +663,44 @@ pub fn create_material_bind_group(
     })
 }
 
+pub fn compute_mip_level_count(width: u32, height: u32) -> u32 {
+    let max_dim = width.max(height).max(1);
+    (32 - max_dim.leading_zeros()).max(1)
+}
+
+pub fn generate_mipmaps_rgba(rgba: &[u8], width: u32, height: u32) -> Vec<(u32, u32, Vec<u8>)> {
+    let w = width.max(1);
+    let h = height.max(1);
+    let levels = compute_mip_level_count(w, h);
+    let mut mips = Vec::with_capacity(levels as usize);
+    let expected = (w * h * 4) as usize;
+    let mut cur_w = w;
+    let mut cur_h = h;
+    let mut cur_buf = if rgba.len() >= expected {
+        rgba[..expected].to_vec()
+    } else {
+        let mut padded = vec![255u8; expected];
+        padded[..rgba.len()].copy_from_slice(rgba);
+        padded
+    };
+    mips.push((cur_w, cur_h, cur_buf.clone()));
+
+    for _ in 1..levels {
+        let next_w = (cur_w / 2).max(1);
+        let next_h = (cur_h / 2).max(1);
+        if let Some(src_img) = image::RgbaImage::from_raw(cur_w, cur_h, cur_buf) {
+            let resized = image::imageops::resize(&src_img, next_w, next_h, image::imageops::FilterType::Triangle);
+            cur_buf = resized.into_raw();
+        } else {
+            cur_buf = vec![255u8; (next_w * next_h * 4) as usize];
+        }
+        cur_w = next_w;
+        cur_h = next_h;
+        mips.push((cur_w, cur_h, cur_buf.clone()));
+    }
+    mips
+}
+
 pub struct TextureGpu {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -733,15 +771,24 @@ impl TextureGpu {
         emissive_view: &wgpu::TextureView,
         label: &str,
     ) -> Result<Self, String> {
+        let w = width.max(1);
+        let h = height.max(1);
+        let is_nearest = label.contains("voxel") || label.contains("pixel") || label.contains("atlas") || label.ends_with("_nearest");
+        let mips = if is_nearest {
+            vec![(w, h, rgba.to_vec())]
+        } else {
+            generate_mipmaps_rgba(rgba, w, h)
+        };
+        let mip_level_count = mips.len() as u32;
         let size = wgpu::Extent3d {
-            width: width.max(1),
-            height: height.max(1),
+            width: w,
+            height: h,
             depth_or_array_layers: 1,
         };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size,
-            mip_level_count: 1,
+            mip_level_count,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -749,28 +796,38 @@ impl TextureGpu {
             view_formats: &[],
         });
 
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            rgba,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * width.max(1)),
-                rows_per_image: Some(height.max(1)),
-            },
-            size,
-        );
+        for (level, (mw, mh, data)) in mips.iter().enumerate() {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * *mw),
+                    rows_per_image: Some(*mh),
+                },
+                wgpu::Extent3d {
+                    width: *mw,
+                    height: *mh,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let is_nearest = label.contains("voxel") || label.contains("pixel") || label.contains("atlas") || label.ends_with("_nearest");
         let filter_mode = if is_nearest {
             wgpu::FilterMode::Nearest
         } else {
             wgpu::FilterMode::Linear
+        };
+        let (mipmap_filter, anisotropy_clamp) = if is_nearest {
+            (wgpu::MipmapFilterMode::Nearest, 1)
+        } else {
+            (wgpu::MipmapFilterMode::Linear, 16)
         };
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some(&format!("{}_sampler", label)),
@@ -779,7 +836,8 @@ impl TextureGpu {
             address_mode_w: wgpu::AddressMode::Repeat,
             mag_filter: filter_mode,
             min_filter: filter_mode,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            mipmap_filter,
+            anisotropy_clamp,
             ..Default::default()
         });
 
@@ -817,6 +875,16 @@ impl TextureGpu {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct GltfMaterialTextures {
+    pub diffuse: Option<String>,
+    pub normal: Option<String>,
+    pub metallic_roughness: Option<String>,
+    pub emissive: Option<String>,
+    pub metallic: f32,
+    pub roughness: f32,
+}
+
 pub struct GpuContext {
     pub instance: wgpu::Instance,
     pub surface: wgpu::Surface<'static>,
@@ -847,6 +915,7 @@ pub struct GpuContext {
     pub lights_bind_group_layout: wgpu::BindGroupLayout,
     pub lights_bind_group: wgpu::BindGroup,
     pub texture_cache: HashMap<String, TextureGpu>,
+    pub gltf_materials: HashMap<String, GltfMaterialTextures>,
     pub meshes: HashMap<String, MeshGpu>,
     pub egui_renderer: egui_wgpu::Renderer,
     pub egui_winit_state: egui_winit::State,
@@ -2559,6 +2628,7 @@ impl GpuContext {
             lights_bind_group_layout,
             lights_bind_group,
             texture_cache: HashMap::new(),
+            gltf_materials: HashMap::new(),
             meshes,
             egui_renderer,
             egui_winit_state,
@@ -2626,6 +2696,41 @@ impl GpuContext {
 
     pub fn get_texture(&self, path: &str) -> &TextureGpu {
         self.texture_cache.get(path).unwrap_or(&self.default_white_texture)
+    }
+
+    pub fn invalidate_model(&mut self, path: &str) -> bool {
+        let norm_path = path.replace('\\', "/").to_lowercase();
+        let file_name = std::path::Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        let matching_meshes: Vec<String> = self
+            .meshes
+            .keys()
+            .filter(|k| {
+                let norm_k = k.replace('\\', "/").to_lowercase();
+                norm_k == norm_path
+                    || norm_k.ends_with(&norm_path)
+                    || norm_path.ends_with(&norm_k)
+                    || (!file_name.is_empty() && norm_k.ends_with(&file_name))
+            })
+            .cloned()
+            .collect();
+
+        if matching_meshes.is_empty() {
+            return false;
+        }
+
+        for key in &matching_meshes {
+            self.meshes.remove(key);
+            self.gltf_materials.remove(key);
+            let glb_prefix = format!("glb::{}::img_", key.replace('\\', "/").to_lowercase());
+            self.texture_cache.retain(|tk, _| !tk.to_lowercase().starts_with(&glb_prefix));
+        }
+        self.material_cache.clear();
+        true
     }
 
     pub fn reload_texture(&mut self, path: &str) -> bool {
@@ -2845,8 +2950,29 @@ impl GpuContext {
                 self.meshes.insert("pickaxe".to_string(), create_pickaxe_mesh(&self.device));
             }
             _ => {
-                match load_gltf_mesh(&self.device, mesh_id) {
-                    Ok(mesh) => {
+                match load_gltf_mesh_with_textures(mesh_id, &self.device) {
+                    Ok((mesh, embedded_images, gltf_mat)) => {
+                        for (key, width, height, rgba) in embedded_images {
+                            if !self.texture_cache.contains_key(&key) {
+                                if let Ok(tex) = TextureGpu::from_rgba_pbr(
+                                    &self.device,
+                                    &self.queue,
+                                    &self.texture_bind_group_layout,
+                                    &rgba,
+                                    width,
+                                    height,
+                                    &self.dummy_normal.view,
+                                    &self.dummy_mr.view,
+                                    &self.dummy_black.view,
+                                    &key,
+                                ) {
+                                    self.texture_cache.insert(key, tex);
+                                }
+                            }
+                        }
+                        if let Some(mat) = gltf_mat {
+                            self.gltf_materials.insert(mesh_id.to_string(), mat);
+                        }
                         self.meshes.insert(mesh_id.to_string(), mesh);
                     }
                     Err(e) => {
@@ -3052,8 +3178,12 @@ impl GpuContext {
         render_pass.set_bind_group(2, &self.lights_bind_group, &[]);
         render_pass.set_bind_group(3, &self.shadow_bind_group, &[]);
 
+        let is_rtt_pass = params.label == "RTT Camera Scene Pass";
         for ((mesh_id, mat_key, blend_mode), instances) in params.instances_by_batch {
             if blend_mode == "additive" || blend_mode == "translucent" || blend_mode == "transparent" || instances.is_empty() {
+                continue;
+            }
+            if is_rtt_pass && mat_key.diffuse.as_deref().map_or(false, |d| d.starts_with("__rtt:")) {
                 continue;
             }
             if let Some(mesh_gpu) = self.meshes.get(mesh_id) {
@@ -4294,16 +4424,85 @@ pub fn create_pickaxe_mesh(device: &wgpu::Device) -> MeshGpu {
     }
 }
 
-pub fn load_gltf_mesh(device: &wgpu::Device, path: impl AsRef<Path>) -> Result<MeshGpu, String> {
+pub fn gltf_embedded_tex_key(path: &Path, image_index: usize) -> String {
+    let norm = path.to_string_lossy().replace('\\', "/");
+    format!("glb::{}::img_{}", norm, image_index)
+}
+
+fn gltf_image_to_rgba8(img: &gltf::image::Data) -> Vec<u8> {
+    match img.format {
+        gltf::image::Format::R8G8B8A8 => img.pixels.clone(),
+        gltf::image::Format::R8G8B8 => {
+            let mut out = Vec::with_capacity((img.width * img.height * 4) as usize);
+            for chunk in img.pixels.chunks_exact(3) {
+                out.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
+            }
+            out
+        }
+        gltf::image::Format::R8G8 => {
+            let mut out = Vec::with_capacity((img.width * img.height * 4) as usize);
+            for chunk in img.pixels.chunks_exact(2) {
+                out.extend_from_slice(&[chunk[0], chunk[1], 0, 255]);
+            }
+            out
+        }
+        gltf::image::Format::R8 => {
+            let mut out = Vec::with_capacity((img.width * img.height * 4) as usize);
+            for &v in &img.pixels {
+                out.extend_from_slice(&[v, v, v, 255]);
+            }
+            out
+        }
+        gltf::image::Format::R16G16B16A16 => {
+            let mut out = Vec::with_capacity((img.width * img.height * 4) as usize);
+            for chunk in img.pixels.chunks_exact(8) {
+                out.extend_from_slice(&[chunk[1], chunk[3], chunk[5], chunk[7]]);
+            }
+            out
+        }
+        gltf::image::Format::R16G16B16 => {
+            let mut out = Vec::with_capacity((img.width * img.height * 4) as usize);
+            for chunk in img.pixels.chunks_exact(6) {
+                out.extend_from_slice(&[chunk[1], chunk[3], chunk[5], 255]);
+            }
+            out
+        }
+        _ => vec![255u8; (img.width * img.height * 4) as usize],
+    }
+}
+
+pub fn load_gltf_mesh_with_textures(
+    path: impl AsRef<Path>,
+    device: &wgpu::Device,
+) -> Result<(MeshGpu, Vec<(String, u32, u32, Vec<u8>)>, Option<GltfMaterialTextures>), String> {
     let p = path.as_ref();
-    let (document, buffers, _images) = gltf::import(p)
+    let (document, buffers, images) = gltf::import(p)
         .map_err(|e| format!("Failed to import glTF model '{}': {}", p.display(), e))?;
 
     let mut vertices: Vec<Vertex> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
+    let mut first_mat: Option<GltfMaterialTextures> = None;
 
     for mesh in document.meshes() {
         for primitive in mesh.primitives() {
+            if first_mat.is_none() {
+                let mat = primitive.material();
+                let pbr = mat.pbr_metallic_roughness();
+                let diffuse = pbr.base_color_texture().map(|t| gltf_embedded_tex_key(p, t.texture().source().index()));
+                let metallic_roughness = pbr.metallic_roughness_texture().map(|t| gltf_embedded_tex_key(p, t.texture().source().index()));
+                let normal = mat.normal_texture().map(|t| gltf_embedded_tex_key(p, t.texture().source().index()));
+                let emissive = mat.emissive_texture().map(|t| gltf_embedded_tex_key(p, t.texture().source().index()));
+                if diffuse.is_some() || normal.is_some() || metallic_roughness.is_some() || emissive.is_some() {
+                    first_mat = Some(GltfMaterialTextures {
+                        diffuse,
+                        normal,
+                        metallic_roughness,
+                        emissive,
+                        metallic: pbr.metallic_factor(),
+                        roughness: pbr.roughness_factor(),
+                    });
+                }
+            }
             let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
             let positions: Vec<[f32; 3]> = if let Some(iter) = reader.read_positions() {
@@ -4356,6 +4555,13 @@ pub fn load_gltf_mesh(device: &wgpu::Device, path: impl AsRef<Path>) -> Result<M
         return Err(format!("glTF model '{}' contains no vertices or indices", p.display()));
     }
 
+    let mut embedded_images = Vec::with_capacity(images.len());
+    for (idx, img) in images.iter().enumerate() {
+        let key = gltf_embedded_tex_key(p, idx);
+        let rgba = gltf_image_to_rgba8(img);
+        embedded_images.push((key, img.width.max(1), img.height.max(1), rgba));
+    }
+
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(&format!("{} Vertex Buffer", p.display())),
         contents: bytemuck::cast_slice(&vertices),
@@ -4368,12 +4574,21 @@ pub fn load_gltf_mesh(device: &wgpu::Device, path: impl AsRef<Path>) -> Result<M
         usage: wgpu::BufferUsages::INDEX,
     });
 
-    Ok(MeshGpu {
-        vertex_buffer,
-        index_buffer,
-        num_indices: indices.len() as u32,
-        index_format: wgpu::IndexFormat::Uint32,
-    })
+    Ok((
+        MeshGpu {
+            vertex_buffer,
+            index_buffer,
+            num_indices: indices.len() as u32,
+            index_format: wgpu::IndexFormat::Uint32,
+        },
+        embedded_images,
+        first_mat,
+    ))
+}
+
+pub fn load_gltf_mesh(device: &wgpu::Device, path: impl AsRef<Path>) -> Result<MeshGpu, String> {
+    let (mesh, _, _) = load_gltf_mesh_with_textures(path, device)?;
+    Ok(mesh)
 }
 
 pub fn generate_checker_texture(path: &Path) -> Result<(), String> {
@@ -4729,5 +4944,23 @@ mod tests {
         // Round robin cursor ensures fair rotation!
         let scheduled_4 = scheduler.schedule(0.05, &tasks);
         assert_eq!(scheduled_4.len(), 2);
+    }
+
+    #[test]
+    fn test_cpu_mipmaps_and_glb_tex_keys() {
+        assert_eq!(compute_mip_level_count(1, 1), 1);
+        assert_eq!(compute_mip_level_count(64, 64), 7);
+        assert_eq!(compute_mip_level_count(256, 128), 9);
+
+        let rgba = vec![128u8; 16 * 16 * 4];
+        let mips = generate_mipmaps_rgba(&rgba, 16, 16);
+        assert_eq!(mips.len(), 5); // 16, 8, 4, 2, 1
+        assert_eq!((mips[0].0, mips[0].1), (16, 16));
+        assert_eq!((mips[4].0, mips[4].1), (1, 1));
+
+        let k0 = gltf_embedded_tex_key(Path::new("assets/models/crate.glb"), 0);
+        let k1 = gltf_embedded_tex_key(Path::new("assets/models/crate.glb"), 1);
+        assert_eq!(k0, "glb::assets/models/crate.glb::img_0");
+        assert_ne!(k0, k1);
     }
 }

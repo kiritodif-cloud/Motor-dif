@@ -414,7 +414,11 @@ pub async fn handle_jsonrpc(
                                         "minItems": 4,
                                         "maxItems": 4,
                                         "description": "Color RGBA normalizado [r, g, b, a]"
-                                    }
+                                    },
+                                    "texture": { "type": "string", "description": "Ruta a textura difusa" },
+                                    "uv_scale": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "Escala UV [u, v]" },
+                                    "pbr_material": { "type": "object", "description": "Material PBR (normal_map, metallic_roughness_map, emissive_map, metallic, roughness, normal_scale, emissive_intensity)" },
+                                    "spot_light": { "type": "object", "description": "Foco SpotLight (color, intensity, radius, direction, inner_angle, outer_angle)" }
                                 },
                                 "required": ["id", "mesh", "position", "color"]
                             }
