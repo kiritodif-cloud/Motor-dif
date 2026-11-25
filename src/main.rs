@@ -1577,12 +1577,24 @@ let role_str = match self.net.role {
     }
 
     pub fn handle_event(&mut self, event_loop: &ActiveEventLoop, event: &WindowEvent) {
-        let response = self.gpu.egui_winit_state.on_window_event(&self.window, event);
-        if response.repaint {
-            self.window.request_redraw();
-        }
-        if response.consumed {
-            return;
+        let pass_to_egui = if self.pointer_locked {
+            !matches!(
+                event,
+                WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+            )
+        } else {
+            true
+        };
+        if pass_to_egui {
+            let response = self.gpu.egui_winit_state.on_window_event(&self.window, event);
+            if response.repaint {
+                self.window.request_redraw();
+            }
+            if response.consumed && !self.pointer_locked {
+                return;
+            }
         }
 
         let egui_wants_kbd = self.gpu.egui_winit_state.egui_ctx().egui_wants_keyboard_input();
@@ -9017,9 +9029,16 @@ let role_str = match self.net.role {
             }
         }
 
+        let mut platform_output = full_output.platform_output;
+        if self.pointer_locked {
+            platform_output.cursor_icon = egui::CursorIcon::None;
+        }
         self.gpu
             .egui_winit_state
-            .handle_platform_output(&self.window, full_output.platform_output);
+            .handle_platform_output(&self.window, platform_output);
+        if self.pointer_locked {
+            self.window.set_cursor_visible(false);
+        }
 
         let pixels_per_point = self.window.scale_factor() as f32;
         let clipped_primitives = self
